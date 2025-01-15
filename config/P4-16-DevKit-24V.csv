@@ -1,0 +1,156 @@
+# This is a CANopen config file for the Maxon EC-max 16 (283835)
+
+Name,FILE_INFO,,,STRING,Configure Puck $ID
+Version,FILE_VERSION,,,STRING,V2.1.0 (2018-04-03)
+#Set node ID in device,,0x21B0,0,UNSIGNED16,$ID
+Set node ID in app,SETTING_NODE_ID,,,UNSIGNED8,$ID
+#Save ID,,0x1010,4,UNSIGNED32,0x21B000
+#Disable CAN Termination,,0x21B2,0,UNSIGNED8,0
+#Save CAN Termination,,0x1010,4,UNSIGNED32,0x21B200
+Set NMT Startup (0x00=Op; 0x04=PreOp),,0x1F80,0,UNSIGNED32,0x00
+#Save NMT Startup,,0x1010,4,UNSIGNED32,0x1F8000
+Reset node,CONTROL_NMT,,,UNSIGNED16,0x0101
+Set SYNC COB ID,,0x1005,0,UNSIGNED32,0x0080
+Heartbeat period in ms,,0x1017,0,UNSIGNED16,0
+EMCY inhibit time in 100uS,,0x1015,0,UNSIGNED16,50
+
+# Receive PDO - Connection Object IDs
+RPDO1 COB ID,,0x1400,1,UNSIGNED32,0x200 | $ID
+RPDO2 COB ID,,0x1401,1,UNSIGNED32,0x300 | $ID
+RPDO3 COB ID,,0x1402,1,UNSIGNED32,0x400 | $ID
+RPDO4 COB ID,,0x1403,1,UNSIGNED32,0x500 | $ID
+
+# Receive PDO - Number of entries
+RPDO1 Entries,,0x1600,0,UNSIGNED8,0
+RPDO2 Entries,,0x1601,0,UNSIGNED8,0
+RPDO3 Entries,,0x1602,0,UNSIGNED8,0
+RPDO4 Entries,,0x1603,0,UNSIGNED8,0
+
+# Receive PDO - Object Dictionary Mappings
+RPDO1 Receive type (APPLY ON EVERY SYNC),,0x1400,2,UNSIGNED8,0
+RPDO1 Entry 1 (CONTROL WORD),,0x1600,1,UNSIGNED32,0x60400010
+RPDO1 Entry 2 (MODE OF OPERATION),,0x1600,2,UNSIGNED32,0x60600008
+RPDO1 Entry 3 (TORQUE TARGET),,0x1600,3,UNSIGNED32,0x60710010
+Enable RPDO1 Entries,,0x1600,0,UNSIGNED8,3
+
+# Receive PDO - Object Dictionary Mappings
+RPDO2 Receive type (APPLY ON EVERY SYNC),,0x1401,2,UNSIGNED8,0
+RPDO2 Entry 1 (Target Velocity),,0x1601,1,UNSIGNED32,0x60FF0020
+RPDO2 Entry 2 (Target Position),,0x1601,2,UNSIGNED32,0x607A0020
+Enable RPDO2 Entries,,0x1601,0,UNSIGNED8,2
+
+# Transmit PDO - Connection Object IDs
+TPDO1 COB ID,,0x1800,1,UNSIGNED32,0x180 | $ID
+TPDO2 COB ID,,0x1801,1,UNSIGNED32,0x280 | $ID
+TPDO3 COB ID,,0x1802,1,UNSIGNED32,0x380 | $ID
+TPDO4 COB ID,,0x1803,1,UNSIGNED32,0x480 | $ID
+
+# Transmit PDO - Transmit type
+TPDO1 Transmit type (Every sync),,0x1800,2,UNSIGNED8,0
+TPDO2 Transmit type (Every sync),,0x1801,2,UNSIGNED8,0
+TPDO3 Transmit type,,0x1802,2,UNSIGNED8,255
+TPDO4 Transmit type,,0x1803,2,UNSIGNED8,255
+
+# Transmit PDO - Number of entries
+TPDO1 Entries,,0x1A00,0,UNSIGNED8,0
+TPDO2 Entries,,0x1A01,0,UNSIGNED8,0
+TPDO3 Entries,,0x1A02,0,UNSIGNED8,0
+TPDO4 Entries,,0x1A03,0,UNSIGNED8,0
+
+# Transmit PDO - Object Dictionary Mappings
+TPDO1 Entry 1 (STATUS WORD),,0x1A00,1,UNSIGNED32,0x60410010
+TPDO1 Entry 2 (MODE DISPLAY),,0x1A00,2,UNSIGNED32,0x60610008
+TPDO1 Entry 3 (ACTUAL POSITION),,0x1A00,3,UNSIGNED32,0x60640020
+Enable TPDO1 Entries,,0x1A00,0,UNSIGNED8,3
+
+# Transmit PDO - Object Dictionary Mappings
+TPDO2 Entry 1 (Actual Velocity),,0x1A01,1,UNSIGNED32,0x606C0020
+TPDO2 Entry 2 (Actual Current),,0x1A01,2,UNSIGNED32,0x60780010
+Enable TPDO2 Entries,,0x1A01,0,UNSIGNED8,2
+
+# Warnings and Faults
+Encoder magnet fault enable (bool),,0x2403,0,UNSIGNED8,0
+Motor temp limit in deg C to 85 (deg C),,0x220A,0,UNSIGNED8,70
+Bus overvoltage limit (0.1 V),,0x2384,6,UNSIGNED16,520
+Bus undervoltage limit (0.1 V),,0x2384,7,UNSIGNED16,180
+Amplifier overtemperature (deg C),,0x2384,9,UNSIGNED8,70
+CAN overrun fault enable (bool),,0x2404,0,UNSIGNED8,1
+CAN bus-off recovery fault enable (bool),,0x2405,0,UNSIGNED8,1
+SYNC loss fault timeout (ms),,0x2406,0,UNSIGNED16,0
+
+# Motor specifications (from datasheet)
+Motor rated torque (mNm),,0x6076,0,UNSIGNED32,22
+Max motor vel (cts/sec),,0x6080,0,UNSIGNED32,2000000
+Motor poles,,0x3011,3,UNSIGNED8,2
+Motor Kt (mNm/A),,0x3011,4,UNSIGNED16,19
+Motor Rt (0.01 Ohms),,0x3011,5,UNSIGNED16,2050
+Motor Lt (0.01 mH),,0x3011,6,UNSIGNED16,57
+Max continuous current (mA),,0x3011,8,UNSIGNED16,461
+Peak current (mA),,0x3011,9,UNSIGNED16,1170
+Peak current duration (ms),,0x3011,10,UNSIGNED16,500
+Motor calibration current (mA),,0x3011,11,UNSIGNED16,461
+
+# Profile mode
+Acceleration (cts/s^2),,0x6083,0,UNSIGNED32,2000000
+Deceleration (cts/s^2),,0x6084,0,UNSIGNED32,2000000
+Quick-stop deceleration (cts/s^2),,0x6085,0,UNSIGNED32,2000000
+Torque slope (rated trq/1000/s),,0x6087,0,UNSIGNED32,5000
+
+# Position control
+Kp,,0x2382,1,UNSIGNED16,10
+Velocity feed-forward gain,,0x2382,2,UNSIGNED16,0
+Acceleration feed-forward gain,,0x2382,3,UNSIGNED16,0
+Output multiplier (100=1.0),,0x2382,4,UNSIGNED16,100
+Position minimum (cts),,0x607D,1,INTEGER32,-0x7FFFFFFF
+Position maximum (cts),,0x607D,2,INTEGER32,0x7FFFFFFF
+Position tracking warning window (cts),,0x6065,0,UNSIGNED32,0
+Position tracking warning timeout (ms),,0x6066,0,UNSIGNED16,500
+Position tracking fault window (cts),,0x2120,0,UNSIGNED32,0
+Position tracking fault timeout (ms),,0x2121,0,UNSIGNED16,500
+
+# Velocity control
+# Gain = 1.0, Zeta = 1.0 1/10 Ki (good)
+#Kp,,0x2381,1,UNSIGNED32,0x3A9D4952
+#Ki,,0x2381,2,UNSIGNED32,0x37CB011B
+# Gain = 1.0, Zeta = 1.0 1/2 Ki (best)
+Kp,,0x2381,1,UNSIGNED32,0x3A9D4952
+Ki,,0x2381,2,UNSIGNED32,0x38FDC161
+
+Velocity tracking warning window (cts/sec) - 10%,,0x606D,0,UNSIGNED16,0
+Velocity tracking warning timeout (ms),,0x606E,0,UNSIGNED16,100
+Velocity tracking fault window (cts/sec),,0x2104,0,UNSIGNED16,0
+Velocity tracking fault timeout (ms),,0x2105,0,UNSIGNED16,100
+
+# Current control
+DQ-Axis current Kp,,0x2380,1,UNSIGNED32,0x3CB50B0F
+DQ-Axis current Ki,,0x2380,2,UNSIGNED32,0x48042F87
+#DQ-Axis current Kp,,0x2380,1,UNSIGNED32,0x4130CAC1
+#DQ-Axis current Ki,,0x2380,2,UNSIGNED32,0x4903A893
+
+# Amplifier settings
+PWM freq (Hz),,0x3001,1,UNSIGNED32,80000
+Dead time (ns),,0x3001,2,UNSIGNED16,290
+Max prop delay (ns),,0x3001,3,UNSIGNED16,530
+Max settling time (ns),,0x3001,5,UNSIGNED16,1600
+Sampling time (ns),,0x3001,6,UNSIGNED16,400
+Conversion time (ns),,0x3001,7,UNSIGNED16,1475
+Max sensor current (mA),,0x3001,8,UNSIGNED16,10000
+Nominal bus voltage (V*10),,0x3001,9,UNSIGNED16,240
+Gate driver input inversion? (bool),,0x3001,10,UNSIGNED8,0
+
+# iSense circuit values
+Alpha Gain (*1000),,0x3008,4,UNSIGNED16,7490
+Alpha Shunt (mOhms),,0x3008,5,UNSIGNED16,20
+Beta Gain (*1000),,0x3009,4,UNSIGNED16,7490
+Beta Shunt (mOhms),,0x3009,5,UNSIGNED16,20
+
+# Encoder settings
+Encoder resolution (cts),,0x3013,1,UNSIGNED32,4096
+Encoder user zero (cts),,0x3013,2,UNSIGNED32,0
+Encoder type,,0x3013,4,UNSIGNED8,0
+Encoder lag factor,,0x3013,5,UNSIGNED16,0
+#Electrical polarity,,0x3011,2,UNSIGNED8,0xFF
+Encoder user polarity,,0x3013,3,UNSIGNED8,0x01
+
+
+

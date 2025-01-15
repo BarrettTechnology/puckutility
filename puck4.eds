@@ -1,0 +1,1592 @@
+[FileInfo]
+FileName = puck3-r0.eds
+FileVersion = 0
+FileRevision = 0
+EDSVersion = 1.0
+Description = Base puck eds file
+CreationTime = 11:35AM
+CreationDate = 12-07-2017
+CreatedBy = cw
+ModificationTime = 01:19PM
+ModificationDate = 12-07-2017
+ModifiedBy = cw
+
+[DeviceInfo]
+VendorName = Barrett Technology
+VendorNumber = 0x0408
+ProductName = puck3
+ProductNumber = 0
+RevisionNumber = 0
+OrderCode = 
+BaudRate_10 = 0
+BaudRate_20 = 0
+BaudRate_50 = 0
+BaudRate_125 = 0
+BaudRate_250 = 0
+BaudRate_500 = 0
+BaudRate_800 = 0
+BaudRate_1000 = 1
+DynamicChannelsSupported = 0
+GroupMessaging = 0
+LSS_Supported = 1
+Granularity = 0
+SimpleBootUpSlave = 1
+SimpleBootUpMaster = 0
+NrOfRXPDO = 4
+NrOfTXPDO = 4
+
+[Comments]
+Lines = 0
+
+[DummyUsage]
+Dummy0001 = 0
+Dummy0002 = 0
+Dummy0003 = 0
+Dummy0004 = 0
+Dummy0005 = 0
+Dummy0006 = 0
+Dummy0007 = 0
+
+[1000]
+DataType = 0x07
+ParameterName = DeviceType
+DefaultValue =  0x0402
+AccessType = RW
+ObjectType = 0x07
+
+[1001]
+DataType = 0x05
+ParameterName = Error
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1002]
+DataType = 0x07
+ParameterName = MfgStatus
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1003]
+DataType = 0x05
+ParameterName = ErrorHistory
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x08
+
+[1003sub0]
+DataType = 0x05
+ParameterName = NumberOfEntries
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1003sub1]
+DataType = 0x07
+ParameterName = 1
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1003sub2]
+DataType = 0x07
+ParameterName = 2
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1003sub3]
+DataType = 0x07
+ParameterName = 3
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1003sub4]
+DataType = 0x07
+ParameterName = 4
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1003sub5]
+DataType = 0x07
+ParameterName = 5
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1003sub6]
+DataType = 0x07
+ParameterName = 6
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1003sub7]
+DataType = 0x07
+ParameterName = 7
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1003sub8]
+DataType = 0x07
+ParameterName = 8
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1005]
+DataType = 0x07
+ParameterName = SyncCobId
+DefaultValue =  0x0080
+AccessType = RW
+ObjectType = 0x07
+
+[1006]
+DataType = 0x07
+ParameterName = SyncPeriod
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1008]
+DataType = 0x07
+ParameterName = MfgDeviceName
+DefaultValue =  0x72726142
+AccessType = RW
+ObjectType = 0x07
+
+[1009]
+DataType = 0x07
+ParameterName = MfgHardwareVersion
+DefaultValue =  2
+AccessType = RW
+ObjectType = 0x07
+
+[100a]
+DataType = 0x07
+ParameterName = MfgSoftwareVersion
+DefaultValue =  85
+AccessType = RW
+ObjectType = 0x07
+
+[1010]
+DataType = 0x05
+ParameterName = Save
+DefaultValue =  4
+AccessType = RW
+ObjectType = 0x08
+
+[1010sub1]
+DataType = 0x07
+ParameterName = All
+DefaultValue =  1
+AccessType = RW
+ObjectType = 0x07
+
+[1010sub2]
+DataType = 0x07
+ParameterName = Comm
+DefaultValue =  1
+AccessType = RW
+ObjectType = 0x07
+
+[1010sub3]
+DataType = 0x07
+ParameterName = App
+DefaultValue =  1
+AccessType = RW
+ObjectType = 0x07
+
+[1010sub4]
+DataType = 0x07
+ParameterName = Single
+DefaultValue =  1
+AccessType = RW
+ObjectType = 0x07
+
+[1014]
+DataType = 0x07
+ParameterName = EmergencyCobId
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1015]
+DataType = 0x06
+ParameterName = EmergencyInhibitTime
+DefaultValue =  100
+AccessType = RW
+ObjectType = 0x07
+
+[1017]
+DataType = 0x06
+ParameterName = HeartbeatPeriod
+DefaultValue =  2000
+AccessType = RW
+ObjectType = 0x07
+
+[1018]
+DataType = 0x05
+ParameterName = Identity
+DefaultValue =  6
+AccessType = RW
+ObjectType = 0x08
+
+[1018sub0]
+DataType = 0x05
+ParameterName = NumberOfEntries
+DefaultValue =  6
+AccessType = RW
+ObjectType = 0x07
+
+[1018sub1]
+DataType = 0x07
+ParameterName = VendorId
+DefaultValue =  0x00000408
+AccessType = RW
+ObjectType = 0x07
+
+[1018sub2]
+DataType = 0x07
+ParameterName = ProductCode
+DefaultValue =  0x50333139
+AccessType = RW
+ObjectType = 0x07
+
+[1018sub3]
+DataType = 0x07
+ParameterName = RevisionNumber
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1018sub4]
+DataType = 0x07
+ParameterName = SerialNumber
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1018sub5]
+DataType = 0x07
+ParameterName = MachineCode
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1018sub6]
+DataType = 0x07
+ParameterName = RoleCode
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1200]
+DataType = 0x05
+ParameterName = SdoParameters
+DefaultValue =  2
+AccessType = RW
+ObjectType = 0x08
+
+[1200sub0]
+DataType = 0x05
+ParameterName = NumberOfEntries
+DefaultValue =  2
+AccessType = RW
+ObjectType = 0x07
+
+[1200sub1]
+DataType = 0x07
+ParameterName = SdoReceiveCobId
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1200sub2]
+DataType = 0x07
+ParameterName = SdoTransmitCobId
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1400]
+DataType = 0x05
+ParameterName = Rpdo1Parameters
+DefaultValue =  2
+AccessType = RW
+ObjectType = 0x08
+
+[1400sub0]
+DataType = 0x05
+ParameterName = NumberOfEntries
+DefaultValue =  2
+AccessType = RW
+ObjectType = 0x07
+
+[1400sub1]
+DataType = 0x07
+ParameterName = Rpdo1CobId
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1400sub2]
+DataType = 0x05
+ParameterName = Rpdo1RxType
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1401]
+DataType = 0x05
+ParameterName = Rpdo2Parameters
+DefaultValue =  2
+AccessType = RW
+ObjectType = 0x08
+
+[1401sub0]
+DataType = 0x05
+ParameterName = NumberOfEntries
+DefaultValue =  2
+AccessType = RW
+ObjectType = 0x07
+
+[1401sub1]
+DataType = 0x07
+ParameterName = Rpdo2CobId
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1401sub2]
+DataType = 0x05
+ParameterName = Rpdo2RxType
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1402]
+DataType = 0x05
+ParameterName = Rpdo3Parameters
+DefaultValue =  2
+AccessType = RW
+ObjectType = 0x08
+
+[1402sub0]
+DataType = 0x05
+ParameterName = NumberOfEntries
+DefaultValue =  2
+AccessType = RW
+ObjectType = 0x07
+
+[1402sub1]
+DataType = 0x07
+ParameterName = Rpdo3CobId
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1402sub2]
+DataType = 0x05
+ParameterName = Rpdo3RxType
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1403]
+DataType = 0x05
+ParameterName = Rpdo4Parameters
+DefaultValue =  2
+AccessType = RW
+ObjectType = 0x08
+
+[1403sub0]
+DataType = 0x05
+ParameterName = NumberOfEntries
+DefaultValue =  2
+AccessType = RW
+ObjectType = 0x07
+
+[1403sub1]
+DataType = 0x07
+ParameterName = Rpdo4CobId
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1403sub2]
+DataType = 0x05
+ParameterName = Rpdo4RxType
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1600]
+DataType = 0x05
+ParameterName = Rpdo1Mapping
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x08
+
+[1600sub0]
+DataType = 0x05
+ParameterName = NumberOfEntries
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1600sub1]
+DataType = 0x07
+ParameterName = 1
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1600sub2]
+DataType = 0x07
+ParameterName = 2
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1600sub3]
+DataType = 0x07
+ParameterName = 3
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1600sub4]
+DataType = 0x07
+ParameterName = 4
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1601]
+DataType = 0x07
+ParameterName = Rpdo2Mapping
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x08
+
+[1601sub0]
+DataType = 0x05
+ParameterName = NumberOfEntries
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1601sub1]
+DataType = 0x07
+ParameterName = 1
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1601sub2]
+DataType = 0x07
+ParameterName = 2
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1601sub3]
+DataType = 0x07
+ParameterName = 3
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1601sub4]
+DataType = 0x07
+ParameterName = 4
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1602]
+DataType = 0x07
+ParameterName = Rpdo3Mapping
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x08
+
+[1602sub0]
+DataType = 0x05
+ParameterName = NumberOfEntries
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1602sub1]
+DataType = 0x07
+ParameterName = 1
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1602sub2]
+DataType = 0x07
+ParameterName = 2
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1602sub3]
+DataType = 0x07
+ParameterName = 3
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1602sub4]
+DataType = 0x07
+ParameterName = 4
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1603]
+DataType = 0x07
+ParameterName = Rpdo4Mapping
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x08
+
+[1603sub0]
+DataType = 0x05
+ParameterName = NumberOfEntries
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1603sub1]
+DataType = 0x07
+ParameterName = 1
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1603sub2]
+DataType = 0x07
+ParameterName = 2
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1603sub3]
+DataType = 0x07
+ParameterName = 3
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1603sub4]
+DataType = 0x07
+ParameterName = 4
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1800]
+DataType = 0x05
+ParameterName = Tpdo1Parameters
+DefaultValue =  5
+AccessType = RW
+ObjectType = 0x08
+
+[1800sub0]
+DataType = 0x05
+ParameterName = NumberOfEntries
+DefaultValue =  5
+AccessType = RW
+ObjectType = 0x07
+
+[1800sub1]
+DataType = 0x07
+ParameterName = Tpdo1CobId
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1800sub2]
+DataType = 0x05
+ParameterName = Tpdo1TxType
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1800sub3]
+DataType = 0x06
+ParameterName = Tpdo1InhibitTime
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1800sub4]
+DataType = 0x05
+ParameterName = Unused
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1800sub5]
+DataType = 0x06
+ParameterName = Tpdo1EventTimer
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1801]
+DataType = 0x05
+ParameterName = Tpdo2Parameters
+DefaultValue =  5
+AccessType = RW
+ObjectType = 0x08
+
+[1801sub0]
+DataType = 0x05
+ParameterName = NumberOfEntries
+DefaultValue =  5
+AccessType = RW
+ObjectType = 0x07
+
+[1801sub1]
+DataType = 0x07
+ParameterName = Tpdo2CobId
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1801sub2]
+DataType = 0x05
+ParameterName = Tpdo2TxType
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1801sub3]
+DataType = 0x06
+ParameterName = Tpdo2InhibitTime
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1801sub4]
+DataType = 0x05
+ParameterName = Unused
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1801sub5]
+DataType = 0x06
+ParameterName = Tpdo2EventTimer
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1802]
+DataType = 0x05
+ParameterName = Tpdo3Parameters
+DefaultValue =  5
+AccessType = RW
+ObjectType = 0x08
+
+[1802sub0]
+DataType = 0x05
+ParameterName = NumberOfEntries
+DefaultValue =  5
+AccessType = RW
+ObjectType = 0x07
+
+[1802sub1]
+DataType = 0x07
+ParameterName = Tpdo3CobId
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1802sub2]
+DataType = 0x05
+ParameterName = Tpdo3TxType
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1802sub3]
+DataType = 0x06
+ParameterName = Tpdo3InhibitTime
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1802sub4]
+DataType = 0x05
+ParameterName = Unused
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1802sub5]
+DataType = 0x06
+ParameterName = Tpdo3EventTimer
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1803]
+DataType = 0x05
+ParameterName = Tpdo4Parameters
+DefaultValue =  5
+AccessType = RW
+ObjectType = 0x08
+
+[1803sub0]
+DataType = 0x05
+ParameterName = NumberOfEntries
+DefaultValue =  5
+AccessType = RW
+ObjectType = 0x07
+
+[1803sub1]
+DataType = 0x07
+ParameterName = Tpdo4CobId
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1803sub2]
+DataType = 0x05
+ParameterName = Tpdo4TxType
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1803sub3]
+DataType = 0x06
+ParameterName = Tpdo4Inhibit
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1803sub4]
+DataType = 0x05
+ParameterName = Unused
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1803sub5]
+DataType = 0x06
+ParameterName = Tpdo4EventTimer
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1a00]
+DataType = 0x05
+ParameterName = Tpdo1Mapping
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x08
+
+[1a00sub0]
+DataType = 0x05
+ParameterName = NumberOfEntries
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1a00sub1]
+DataType = 0x07
+ParameterName = 1
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1a00sub2]
+DataType = 0x07
+ParameterName = 2
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1a00sub3]
+DataType = 0x07
+ParameterName = 3
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1a00sub4]
+DataType = 0x07
+ParameterName = 4
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1a01]
+DataType = 0x05
+ParameterName = Tpdo2Mapping
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x08
+
+[1a01sub0]
+DataType = 0x05
+ParameterName = NumberOfEntries
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1a01sub1]
+DataType = 0x07
+ParameterName = 1
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1a01sub2]
+DataType = 0x07
+ParameterName = 2
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1a01sub3]
+DataType = 0x07
+ParameterName = 3
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1a01sub4]
+DataType = 0x07
+ParameterName = 4
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1a02]
+DataType = 0x05
+ParameterName = Tpdo3Mapping
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x08
+
+[1a02sub0]
+DataType = 0x05
+ParameterName = NumberOfEntries
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1a02sub1]
+DataType = 0x07
+ParameterName = 1
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1a02sub2]
+DataType = 0x07
+ParameterName = 2
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1a02sub3]
+DataType = 0x07
+ParameterName = 3
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1a02sub4]
+DataType = 0x07
+ParameterName = 4
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1a03]
+DataType = 0x05
+ParameterName = Tpdo4Mapping
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x08
+
+[1a03sub0]
+DataType = 0x05
+ParameterName = NumberOfEntries
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1a03sub1]
+DataType = 0x07
+ParameterName = 1
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1a03sub2]
+DataType = 0x07
+ParameterName = 2
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1a03sub3]
+DataType = 0x07
+ParameterName = 3
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1a03sub4]
+DataType = 0x07
+ParameterName = 4
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[1f80]
+DataType = 0x07
+ParameterName = NmtStartup
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[21b0]
+DataType = 0x06
+ParameterName = NetCfg
+PDOMapping = 0
+AccessType = rw
+ObjectType = 0x07
+DefaultValue = 0
+
+[2385]
+DataType = 0x05
+ParameterName = Execute
+DefaultValue = 3
+AccessType = RW
+ObjectType = 0x08
+
+[2385sub1]
+DataType = 0x06
+ParameterName = Function
+DefaultValue = 0
+AccessType = RW
+ObjectType = 0x07
+
+[2385sub2]
+DataType = 0x04
+ParameterName = Value
+DefaultValue = 0
+AccessType = RW
+ObjectType = 0x07
+
+[2385sub3]
+DataType = 0x06
+ParameterName = Status
+DefaultValue = 0
+AccessType = RW
+ObjectType = 0x07
+
+[3000]
+DataType = 0x05
+ParameterName = Amplifier
+DefaultValue =  3
+AccessType = RW
+ObjectType = 0x08
+
+[3000sub1]
+DataType = 0x03
+ParameterName = BusVoltage
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[3000sub2]
+DataType = 0x03
+ParameterName = Temperature
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[3000sub3]
+DataType = 0x07
+ParameterName = ResetSources
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[3001]
+DataType = 0x05
+ParameterName = Amp
+DefaultValue = 2
+AccessType = RW
+ObjectType = 0x08
+
+[3001sub1]
+DataType = 0x07
+ParameterName = Frequency
+DefaultValue = 16
+AccessType = RW
+ObjectType = 0x07
+
+[3001sub2]
+DataType = 0x06
+ParameterName = DeadTime
+DefaultValue = 0
+AccessType = RW
+ObjectType = 0x07
+
+[3002]
+DataType = 0x05
+ParameterName = Stats
+DefaultValue =  9
+AccessType = RW
+ObjectType = 0x08
+
+[3002sub1]
+DataType = 0x05
+ParameterName = Mode
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[3002sub2]
+DataType = 0x03
+ParameterName = Min
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[3002sub3]
+DataType = 0x03
+ParameterName = Max
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[3002sub4]
+DataType = 0x03
+ParameterName = Mean
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[3002sub5]
+DataType = 0x03
+ParameterName = Stdev
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[3002sub6]
+DataType = 0x03
+ParameterName = Min2
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[3002sub7]
+DataType = 0x03
+ParameterName = Max2
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[3002sub8]
+DataType = 0x03
+ParameterName = Mean2
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[3002sub9]
+DataType = 0x03
+ParameterName = Stdev2
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[3005]
+DataType = 0x05
+ParameterName = Eeprom
+DefaultValue =  2
+AccessType = RW
+ObjectType = 0x08
+
+[3005sub1]
+DataType = 0x07
+ParameterName = Address
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[3005sub2]
+DataType = 0x07
+ParameterName = Value
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[3008]
+DataType = 0x05
+ParameterName = Alpha
+DefaultValue =  6
+AccessType = RW
+ObjectType = 0x08
+
+[3008sub1]
+DataType = 0x06
+ParameterName = Raw
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x06
+
+[3008sub2]
+DataType = 0x06
+ParameterName = Filtered
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x06
+
+[3008sub3]
+DataType = 0x06
+ParameterName = Bias
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x06
+
+[3008sub4]
+DataType = 0x06
+ParameterName = Gain
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x06
+
+[3008sub5]
+DataType = 0x06
+ParameterName = Shunt
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x06
+
+[3008sub6]
+DataType = 0x06
+ParameterName = Gainfactor
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x06
+
+
+[3009]
+DataType = 0x05
+ParameterName = Beta
+DefaultValue =  6
+AccessType = RW
+ObjectType = 0x08
+
+[3009sub1]
+DataType = 0x06
+ParameterName = Raw
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x06
+
+[3009sub2]
+DataType = 0x06
+ParameterName = Filtered
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x06
+
+[3009sub3]
+DataType = 0x06
+ParameterName = Bias
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x06
+
+[3009sub4]
+DataType = 0x06
+ParameterName = Gain
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x06
+
+[3009sub5]
+DataType = 0x06
+ParameterName = Shunt
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x06
+
+[3009sub6]
+DataType = 0x06
+ParameterName = Gainfactor
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x06
+
+
+[3010]
+DataType = 0x05
+ParameterName = Motor
+DefaultValue =  6
+AccessType = RW
+ObjectType = 0x08
+
+[3010sub1]
+DataType = 0x03
+ParameterName = Theta_m
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[3010sub2]
+DataType = 0x03
+ParameterName = Unused
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[3010sub3]
+DataType = 0x03
+ParameterName = Therm
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[3010sub4]
+DataType = 0x03
+ParameterName = ud
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[3010sub5]
+DataType = 0x03
+ParameterName = uq
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[3010sub6]
+DataType = 0x03
+ParameterName = id
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[3011]
+DataType = 0x05
+ParameterName = Calibration
+DefaultValue =  11
+AccessType = RW
+ObjectType = 0x08
+
+[3011sub1]
+DataType = 0x06
+ParameterName = e_zero
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[3011sub2]
+DataType = 0x02
+ParameterName = e_polarity
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[3011sub3]
+DataType = 0x05
+ParameterName = poles
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[3011sub4]
+DataType = 0x06
+ParameterName = kt
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[3011sub5]
+DataType = 0x06
+ParameterName = rt
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[3011sub6]
+DataType = 0x06
+ParameterName = lt
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[3011sub7]
+DataType = 0x07
+ParameterName = j
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[3011sub8]
+DataType = 0x06
+ParameterName = i_cont
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[3011sub9]
+DataType = 0x06
+ParameterName = i_peak
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[3011suba]
+DataType = 0x06
+ParameterName = i_peak_time
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[3011subb]
+DataType = 0x06
+ParameterName = i_cal
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[3012]
+DataType = 0x05
+ParameterName = Encoder
+DefaultValue =  1
+AccessType = RW
+ObjectType = 0x08
+
+[3012sub1]
+DataType = 0x06
+ParameterName = RawPosition
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[3013]
+DataType = 0x05
+ParameterName = EncoderConfig
+DefaultValue =  1
+AccessType = RW
+ObjectType = 0x08
+
+[3013sub1]
+DataType = 0x07
+ParameterName = Resolution
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[3013sub2]
+DataType = 0x04
+ParameterName = UserZero
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[3013sub3]
+DataType = 0x02
+ParameterName = UserPolarity
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[3013sub4]
+DataType = 0x05
+ParameterName = Type
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[3013sub5]
+DataType = 0x06
+ParameterName = LagFactor
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[603f]
+DataType = 0x06
+ParameterName = LastError
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[6040]
+DataType = 0x06
+ParameterName = ControlWord
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[6041]
+DataType = 0x06
+ParameterName = StatusWord
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[6060]
+DataType = 0x05
+ParameterName = SetModeOfOperation
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[6061]
+DataType = 0x05
+ParameterName = ReadModeOfOperation
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[6064]
+DataType = 0x04
+ParameterName = PositionFeedback
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[606C]
+DataType = 0x04
+ParameterName = VelocityFeedback
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[6071]
+DataType = 0x03
+ParameterName = TargetTorque
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[6076]
+DataType = 0x07
+ParameterName = RatedTorque
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[6077]
+DataType = 0x03
+ParameterName = TorqueFeedback
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[6078]
+DataType = 0x03
+ParameterName = CurrentFeedback
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[607a]
+DataType = 0x04
+ParameterName = TargetPosition
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[607c]
+DataType = 0x04
+ParameterName = HomingOffset
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[6081]
+DataType = 0x04
+ParameterName = ProfileVelocity
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[6082]
+DataType = 0x04
+ParameterName = EndVelocity
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[6083]
+DataType = 0x04
+ParameterName = Acceleration
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[6084]
+DataType = 0x04
+ParameterName = Deceleration
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[60C2]
+DataType = 0x05
+ParameterName = Cyclic
+DefaultValue =  2
+AccessType = RW
+ObjectType = 0x08
+
+[60C2sub1]
+DataType = 0x05
+ParameterName = InterpolationPeriod
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[60C2sub2]
+DataType = 0x02
+ParameterName = InterpolationScale
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[60Ea]
+DataType = 0x03
+ParameterName = Theta_e
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[60ff]
+DataType = 0x04
+ParameterName = TargetVelocity
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[6502]
+DataType = 0x07
+ParameterName = SupportDriveModesBits
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+

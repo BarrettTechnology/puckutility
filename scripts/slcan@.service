@@ -1,0 +1,12 @@
+[Unit]
+Description=Starts slcan device
+
+[Service]
+User=root
+Restart=always
+Type=forking
+ExecStartPre=/bin/sleep 1
+ExecStart=/usr/local/bin/slcan_add.sh %I
+ExecStop=/usr/local/bin/slcan_remove.sh %I
+[Install]
+WantedBy=multi-user.target

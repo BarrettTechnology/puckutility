@@ -1,0 +1,389 @@
+# calibrate.py
+import wx
+import canopen
+import time
+import math
+
+class calibrate():
+    def calibrate_all(self, event):  # wxGlade: wxp3_frame.<event_handler>
+        print("Event handler 'calibrate_all' not implemented!")
+        event.Skip()
+
+    def calibrate_ibias(self, event):  # wxGlade: wxp3_frame.<event_handler>
+        print("Event handler 'calibrate_ibias'")
+        quick_test = self.choice_test.GetSelection()
+        if quick_test != 0:
+            self.lastMode = 0 # Reset lastMode
+            print("Setting Mode = IDLE")
+            self.choice_test.SetSelection(0)
+            self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
+        
+        if self.ADC_ON == True:
+           self.on_off_adc(self)
+           self.adcWasON = True
+        else:
+           self.adcWasON = False
+        self.frame_statusbar.SetStatusText("Calibrating ibias...", 1)
+        self.frame_statusbar.Update()
+        wx.Yield()
+
+        # Set Mode to Idle (0)
+        print("Setting Mode = IDLE")
+        self.node.sdo["SetModeOfOperation"].raw = 0
+        time.sleep(1) # Wait at least 75 ms for the filters to settle
+
+        # Calibrate iSense
+        for channel in ['Alpha', 'Beta']:
+          print("Previous {0} iSense bias = {1}".format(channel, self.node.sdo[channel]['Bias'].raw))
+          filt = self.node.sdo[channel]['Filtered'].raw # Q12.4
+          filt = (filt >> 4) + ((filt & 0x0008) >> 3) # Round Q12.4 to Q12.0
+          self.node.sdo[channel]['Bias'].raw = filt
+          print("New {0} iSense bias = {1}".format(channel, filt))
+
+        self.node.sdo['Save']['Single'].raw = ((0x3008 << 8) | 0x03) # Save Alpha iSense cal to EE
+        self.node.sdo['Save']['Single'].raw = ((0x3009 << 8) | 0x03) # Save Beta iSense cal to EE
+
+        self.frame_statusbar.SetStatusText("Ready", 1)
+        #self.text_ctrl_6.ChangeValue(str(self.node.sdo['Cal']['iSense1'].raw))
+        if self.ADC_ON == False and self.adcWasON == True:
+           self.on_off_adc(self)
+
+    def calibrate_igainfactor(self, event):  # wxGlade: wxp3_frame.<event_handler>
+        print("Event handler 'calibrate_igainfactor'")
+        quick_test = self.choice_test.GetSelection()
+        if quick_test != 0:
+            self.lastMode = 0 # Reset lastMode
+            print("Setting Mode = IDLE")
+            self.choice_test.SetSelection(0)
+            self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
+
+        if self.ADC_ON == True:
+           self.on_off_adc(self)
+           self.adcWasON = True
+        else:
+           self.adcWasON = False
+        self.frame_statusbar.SetStatusText("Calibrating igainfactor...", 1)
+        self.frame_statusbar.Update()
+        wx.Yield()
+
+        # Set Alpha & Beta gainfactors to 1.0 in Q4.12
+        self.node.sdo['Alpha']['Gainfactor'].raw = 4096 
+        self.node.sdo['Beta']['Gainfactor'].raw = 4096 
+
+        # Clear faults, RTSO, OpEnabled
+        print("Going OpEnabled")
+        self.node.sdo["ControlWord"].raw = 0x80
+        self.node.sdo["ControlWord"].raw = 0x06
+        self.node.sdo["ControlWord"].raw = 0x0F
+
+        # Set Mode to PhaseVoltageAngle (12)
+        print("Setting Mode = VOLTAGE")
+        self.node.sdo["SetModeOfOperation"].raw = 12
+
+        # Write theta_e, ud, StatsMode, vel
+        # theta_e is 16-bit signed from -pi to +pi
+        self.node.sdo['Theta_e'].raw = 0x7FFF # Stall @ Alpha Peak (+pi)
+
+        # Read this motor's calibration current (mA)
+        calibration_current = self.node.sdo['Calibration']['i_cal'].raw
+
+        # Read the motor.peak (mA)
+        i_peak = self.node.sdo['Calibration']['i_peak'].raw
+
+        # Increase Motor d-axis voltage (/1000 of i_peak)
+        # until measured d-axis current > calibration_current mA or ud > 32000
+        motor_ud = 0
+        while (self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak) < calibration_current and motor_ud < 32000:
+          print("alpha = {0}, beta = {1}, id = {2}, iq = {3}, ud = {4}".format(
+            self.node.sdo['Alpha']['Raw'].raw, 
+            self.node.sdo['Beta']['Raw'].raw, 
+            self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak, 
+            self.node.sdo['CurrentFeedback'].raw / 1000.0 * i_peak,
+            self.node.sdo['Motor']['ud'].raw))
+          motor_ud += 100
+          self.node.sdo['Motor']['ud'].raw = motor_ud
+          time.sleep(0.05)
+
+        time.sleep(1) # Wait at least 75 ms for the filters to settle
+
+        a_filt = self.node.sdo['Alpha']['Filtered'].raw # Q12.4
+        a_filt = (a_filt >> 4) + ((a_filt & 0x0008) >> 3) # Round Q12.4 to Q12.0
+        print("Peak Alpha = {0} at motor current = {1} mA (theta_e = {2:0.2f})".format(
+          a_filt, 
+          self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak, 
+          self.node.sdo['Theta_e'].raw / 32768.0 * 3.14159))
+
+        self.node.sdo['Theta_e'].raw = -0x4000 # Stall @ Beta Peak (-pi/2)
+        time.sleep(1) # Wait at least 75 ms for the filters to settle
+
+        b_filt = self.node.sdo['Beta']['Filtered'].raw # Q12.4
+        b_filt = (b_filt >> 4) + ((b_filt & 0x0008) >> 3) # Round Q12.4 to Q12.0
+        print("Peak Beta = {0} at motor current = {1} mA (theta_e = {2:0.2f})".format(
+          b_filt, 
+          self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak, 
+          self.node.sdo['Theta_e'].raw / 32768.0 * 3.14159))
+
+        self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
+
+        # Scale b by a/b to match a's amplitude
+        self.node.sdo['Beta']['Gainfactor'].raw = 4096 * a_filt / b_filt # Gain in Q4.12
+        print("New Beta Gainfactor = {0}".format(self.node.sdo['Beta']['Gainfactor'].raw))
+
+        self.node.sdo['Save']['Single'].raw = ((0x3008 << 8) | 0x06) # Save Alpha gainfactor to EE
+        self.node.sdo['Save']['Single'].raw = ((0x3009 << 8) | 0x06) # Save Beta gainfactor to EE
+
+        self.frame_statusbar.SetStatusText("Ready", 1)
+
+        if self.ADC_ON == False and self.adcWasON == True:
+           self.on_off_adc(self)
+
+    def calibrate_itiming(self, event):  # wxGlade: wxp3_frame.<event_handler>
+        print("Event handler 'calibrate_itiming' not implemented!")
+        # Current sampling moment tuning
+        # Collect noise statistics at/near falling edge of PWM
+        event.Skip()
+
+    def calibrate_islope(self, event):  # wxGlade: wxp3_frame.<event_handler>
+        print("Event handler 'calibrate_islope' not implemented!")
+        event.Skip()
+
+    def calibrate_enczero(self, event):  # wxGlade: wxp3_frame.<event_handler>
+        print("Event handler 'calibrate_enczero'")
+        quick_test = self.choice_test.GetSelection()
+        if quick_test != 0:
+            self.lastMode = 0 # Reset lastMode
+            print("Setting Mode = IDLE")
+            self.choice_test.SetSelection(0)
+            self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
+        
+        if self.ADC_ON == True:
+            self.adcWasON = True
+            self.on_off_adc(self)
+        else:
+            self.adcWasON = False
+
+        self.frame_statusbar.SetStatusText("Calibrating encoder...", 1)
+        self.frame_statusbar.Update()
+        wx.Yield()
+
+        # Clear faults, RTSO, OpEnabled
+        print("Going OpEnabled")
+        self.node.sdo["ControlWord"].raw = 0x80
+        self.node.sdo["ControlWord"].raw = 0x06
+        self.node.sdo["ControlWord"].raw = 0x0F
+        
+        # Set Mode to PhaseVoltageAngle (12)
+        print("Setting Mode = VOLTAGE")
+        self.node.sdo["SetModeOfOperation"].raw = 12
+
+        # Write theta_e, ud, StatsMode, vel
+        # theta_e is 16-bit signed from -pi to +pi
+        #self.node.sdo['Calibration']['e_polarity'].raw = 1
+        self.node.sdo['Theta_e'].raw = -0x4000 # -pi/2
+
+        # Read this motor's calibration current (mA)
+        calibration_current = self.node.sdo['Calibration']['i_cal'].raw
+
+        # Read the motor.peak (mA)
+        i_peak = self.node.sdo['Calibration']['i_peak'].raw
+
+        # Increase Motor d-axis voltage until measured d-axis current > calibration_current mA or ud > 32000
+        motor_ud = 0
+        while (self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak) < calibration_current and motor_ud < 32000:
+          print("id = {0}, ud = {1}".format(
+            self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak, 
+            self.node.sdo['Motor']['ud'].raw))
+          motor_ud += 100
+          self.node.sdo['Motor']['ud'].raw = motor_ud
+          time.sleep(0.05)
+
+        # Drive from theta_e = -90 to 0 in 10 steps of 0.05s
+        # Capture RawPosition when commanding theta_e = 0
+        # Also determine e_polarity by watching the raw encoder direction
+        pos0 = self.node.sdo['Encoder']['RawPosition'].raw
+        for i in range(int(-0x4000), 0, int(0x4000/8)):
+          self.node.sdo['Theta_e'].raw = i
+          time.sleep(0.05)
+        time.sleep(0.25)
+        pos1 = self.node.sdo['Encoder']['RawPosition'].raw
+        print("After approaching theta_e = 0 from -90, Encoder raw = {0}".format(pos1))
+
+
+        # Drive from theta_e = +90 to 0 in 10 steps of 0.05s
+        # Capture RawPosition when commanding theta_e = 0
+        self.node.sdo['Theta_e'].raw = 0x4000
+        time.sleep(1)
+        for i in range(int(0x4000), 0, int(-0x4000/8)):
+          self.node.sdo['Theta_e'].raw = i
+          time.sleep(0.05)
+        time.sleep(0.25)
+        pos2 = self.node.sdo['Encoder']['RawPosition'].raw
+        print("After approaching theta_e = 0 from +90, Encoder raw = {0}".format(pos2))
+
+        self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
+
+        # Take the average of the two measurements, store e_zero
+        encoder_resolution = self.node.sdo['EncoderConfig']['Resolution'].raw
+        motor_poles = self.node.sdo['Calibration']['poles'].raw
+        cts_per_elec_cyc = encoder_resolution * 2 / motor_poles
+        if abs(pos1-pos2) >  encoder_resolution / 2:
+          if pos1 > pos2:
+            pos1 += encoder_resolution
+          else:
+            pos2 += encoder_resolution
+        pos = (pos1 + pos2) / 2
+        pos = pos % cts_per_elec_cyc
+        pos = int(pos)
+
+        # Calculate e_polarity
+        if abs(pos1-pos0) < (cts_per_elec_cyc / 2): 
+          # If there was no rollover during the initial -90..0 movement
+          self.node.sdo['Calibration']['e_polarity'].raw = math.copysign(1, pos1-pos0)
+        else: 
+          # We rolled over
+          self.node.sdo['Calibration']['e_polarity'].raw = -math.copysign(1, pos1-pos0)
+        self.node.sdo['Save']['Single'].raw = ((0x3011 << 8) | 0x02) # Save e_polarity to EE
+        print("Electrical polarity = {0}".format(self.node.sdo['Calibration']['e_polarity'].raw))
+
+        print("Previous electrical zero = {0}".format(self.node.sdo['Calibration']['e_zero'].raw))
+        #pos = self.node.sdo['Encoder']['RawPosition'].raw
+        self.node.sdo['Calibration']['e_zero'].raw = pos
+        #self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
+        self.node.sdo['Save']['Single'].raw = ((0x3011 << 8) | 0x01) # Save e_zero to EE
+        print("New electrical zero = {0}".format(pos))
+
+        self.frame_statusbar.SetStatusText("Ready", 1)
+
+        if self.ADC_ON == False and self.adcWasON == True:
+            self.on_off_adc(self)
+
+    def calibrate_encdir(self, event):  # wxGlade: wxp3_frame.<event_handler>
+        print("Event handler 'calibrate_encdir' not implemented!")
+        event.Skip()
+
+    def calibrate_enclag(self, event):  # wxGlade: wxp3_frame.<event_handler>
+        print("Event handler 'calibrate_enclag'")
+
+        # Clear faults, RTSO, OpEnabled
+        print("Going OpEnabled")
+        self.node.sdo["ControlWord"].raw = 0x80
+        self.node.sdo["ControlWord"].raw = 0x06
+        self.node.sdo["ControlWord"].raw = 0x0F
+      
+        # Set Mode to Torque (4)
+        print("Setting Mode = TORQUE")
+        self.node.sdo["SetModeOfOperation"].raw = 4
+        self.node.sdo['EncoderConfig']['LagFactor'].raw = 0
+
+        # Increase TargetTorque until iq.fbk = 1000 mA
+        cmd_value = 500
+        self.node.sdo["TargetTorque"].raw = cmd_value # Send
+        #q_fbk = 0
+        #while True:
+        #  self.node.sdo["TargetTorque"].raw = cmd_value # Send
+        #  time.sleep(0.05)
+        #  q_fbk = self.node.sdo['CurrentFeedback'].raw
+        #  print("TargetTorque = {0}, CurrentFeedback = {1} mA".format(cmd_value, q_fbk))
+        #  if q_fbk > 1000:
+        #    break
+        #  cmd_value += 50
+          
+        # Set the number of lag increments to attempt without setting a new max_vel
+        max_cycles = 50
+
+        # Init: cycles = 0, max = 0, lag = 0
+        cycles = 0
+        max_vel = 0
+        lag = 0
+
+        while True:
+          # Read vel.fbk
+          vel = abs(self.node.sdo["VelocityFeedback"].raw)
+          # If |vel.fbk| > max, update max, remember lag, reset cycles to zero
+          if vel > max_vel:
+            max_vel = vel
+            saved_lag_1 = lag
+            cycles = 0
+          else: # Else, ++cycles
+            cycles += 1
+          
+          print("Lag: {0}, Vel: {1}, MaxVel: {2}, Cycles: {3}".format(lag, vel, max_vel, cycles))
+          # Increase EncoderLag until cycles == max_cycles
+          lag += 1
+          self.node.sdo['EncoderConfig']['LagFactor'].raw = lag
+          if cycles > max_cycles:
+            break
+          time.sleep(0.05)
+
+        # Invert TargetTorque
+        self.node.sdo["TargetTorque"].raw = -cmd_value # Send
+        self.node.sdo['EncoderConfig']['LagFactor'].raw = 0
+        time.sleep(0.5)
+
+        # Init: cycles = 0, max = 0, lag = 0
+        cycles = 0
+        max_vel = 0
+        lag = 0
+
+        while True:
+          # Read vel.fbk
+          vel = abs(self.node.sdo["VelocityFeedback"].raw)
+          # If |vel.fbk| > max, update max, remember lag, reset cycles to zero
+          if vel > max_vel:
+            max_vel = vel
+            saved_lag_2 = lag
+            cycles = 0
+          else: # Else, ++cycles
+            cycles += 1
+          
+          print("Lag: {0}, Vel: {1}, MaxVel: {2}, Cycles: {3}".format(lag, vel, max_vel, cycles))
+          # Increase EncoderLag until cycles == max_cycles
+          lag += 1
+          self.node.sdo['EncoderConfig']['LagFactor'].raw = lag
+          if cycles > max_cycles:
+            break
+          time.sleep(0.05)
+
+        # Take the average of the two lags
+        lag = (saved_lag_1 + saved_lag_2) / 2
+        print("Lag_1: {0}, Lag_2: {1}, Setting LagFactor: {2}".format(saved_lag_1, saved_lag_2, lag))
+
+        # Store the LagFactor
+        self.node.sdo['EncoderConfig']['LagFactor'].raw = lag
+        self.node.sdo['Save']['Single'].raw = ((0x3013 << 8) | 0x05) # Save lag to EE
+
+        # Set Mode to Idle (0)
+        print("Setting Mode = IDLE")
+        self.node.sdo["SetModeOfOperation"].raw = 0
+
+    def set_user_dir(self, event):  # wxGlade: wxp3_frame.<event_handler>
+        print("Event handler 'set_user_dir'")
+        
+        self.node.sdo['EncoderConfig']['UserPolarity'].raw = 1 # Assume positive to start
+        encoder_resolution = self.node.sdo['EncoderConfig']['Resolution'].raw
+        starting_position = self.node.sdo['PositionFeedback'].raw
+
+        self.frame_statusbar.SetStatusText("Please turn motor in positive (+) direction...", 1)
+        self.frame_statusbar.Update()
+        wx.Yield()
+
+        done = False
+        while not done:
+          print("Waiting...")
+          time.sleep(1)
+          ending_position = self.node.sdo['PositionFeedback'].raw
+          if abs(starting_position - ending_position) > (encoder_resolution / 8):
+            done = True
+          
+        
+
+    def tune_gains(self, event):  # wxGlade: wxp3_frame.<event_handler>
+        print("Event handler 'tune_gains' not implemented!")
+        event.Skip()
+
+    def save_calibration(self, event):  # wxGlade: wxp3_frame.<event_handler>
+        print("Event handler 'save_calibration' not implemented!")
+        event.Skip()
+    
+    def exit_program(self, event):  # wxGlade: wxp3_frame.<event_handler>
+        self.Close()

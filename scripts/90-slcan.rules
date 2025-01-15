@@ -1,0 +1,2 @@
+KERNEL=="ttyACM?", ATTRS{idVendor}=="04d8", ATTRS{idProduct}=="000a", ACTION=="add",SYMLINK+="USBtin", RUN+="/usr/bin/logger [udev] USBtin CANUSB detected!", RUN+="/bin/systemctl start slcan@ttyACM%E{MINOR}.service"
+KERNEL=="ttyACM?", ACTION=="remove", ATTRS{idVendor}=="04d8" , RUN+="/bin/systemctl stop slcan@ttyACM%E{MINOR}.service"
