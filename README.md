@@ -17,6 +17,12 @@ source bin/activate
 scripts/setup-pip.sh
 ```
 
+## Install the CAN Driver (Linux)
+```
+scripts/setup-socketcan.sh
+```
+Then, plug in your Peak USB-CAN hardware.
+
 ## Usage (launch the app)
 ```
 ./puckutilityapp.py
