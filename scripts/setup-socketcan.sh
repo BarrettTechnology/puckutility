@@ -1,4 +1,4 @@
-sudo cp reset_can.sh /bin
+sudo cp reset_can.sh /usr/bin
 sudo cp 60-can.rules /etc/udev/rules.d
 sudo udevadm control --reload-rules
 sudo udevadm trigger
