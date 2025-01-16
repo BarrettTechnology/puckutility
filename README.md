@@ -28,6 +28,12 @@ Then, plug in your Peak USB-CAN hardware.
 ./puckutilityapp.py
 ```
 
+## Puck Firmware
+```
+Download the latest Puck Firmware at barrett.com/puck-firmware
+Place the .ebin files in puckutility/firmware 
+```
+
 ## Support
 For technical support, email support@barrett.com.
 
