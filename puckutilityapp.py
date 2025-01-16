@@ -28,10 +28,15 @@ import time
 import webbrowser
 import sys
 import math
+import datetime
 
 # TODO
-# multi puck doesn't allow switching nodes on first try without adc monitor
-# I think ADC monitor is staying active across threads, try cutting threads when switching node
+# Add handling for ALL pucks (config, update, calibrate) - still need something to run through each puck on the BUS!!!
+# Add save feature for Puck configuration!!
+# Possibly add a way to update all puck firmware?
+# ADD a wxpython based frame for custom motor tuning (gains configuration)
+# Maybe add escape feature to close app?
+# Add reboot to startup, and closing to idle pucks
 
 def get_version(vers): # Convert uint32_t to semantic version: Major.Minor.Patch
     return "{0}.{1}.{2}".format(
@@ -71,8 +76,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         USE_BUFFERED_DC = True
 
         # Initialize self variables
-        #self.gearRatio = 3249 / 169 # Default for ec max 16mm dev kit
-        self.gearRatio = 1
+        self.gearRatio = 3249 / 169 # Default for ec max 16mm dev kit
+        #self.gearRatio = 1
         self.encoderResolution = 4096 # cts / revolution
         self.adcWasON = False
         self.lastMode = 0 
@@ -99,7 +104,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         self.Bind(wx.EVT_CLOSE, self.onCloseFrame)
         # Disable the unimplemented menu items
         menu = "Calibrate"
-        for item in ["Calibrate All", "Current Sense Timing", "Current Sense Slope", "Encoder Direction",
+        for item in [#"Calibrate All", 
+          "Current Sense Timing", "Current Sense Slope", "Encoder Direction",
           "Tune Gains...", "Save to CSV..."]:
           menu_item = self.frame_menubar.FindMenuItem(menu, item)
           self.frame_menubar.Enable(menu_item, False)
@@ -179,18 +185,14 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         self.scan_pucks(None)
         self.Rescanning = False
 
-    def scan_pucks(self, event):  # wxGlade: wxp3_frame.<event_handler>
-        print("Event handler 'scan_pucks'")
-        # Set Mode to IDLE in case test is active
-        if self.lastMode != 0:
-            self.lastMode = 0 # Reset lastMode
-            self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
-            self.button_6.SetBackgroundColour((66,255,0))
-            self.button_6.SetLabel("Go")
-            print("Idling...")
-
+    def can_port(self,event):
+        #print("Event handler 'can_port'")
+        #self.on_off_adc(self)
+        #print(self.adcWasON)
+        if(self.ADC_ON == True):
+            self.on_off_adc(self) # Turn off adc 
         try:
-          self.network.disconnect() # Close any open networks
+            self.network.disconnect() # Close any open networks
         except:
           pass
 
@@ -216,44 +218,88 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             msg = 'No CAN bus found! \nCheck connection and try again'
             dlg = wx.MessageDialog(None,msg)
             dlg.ShowModal()
+            # Try to clear out selection of select ID and set ID
+            n = ''
+            self.choice_id.SetItems([n])
+            self.text_id.ChangeValue(str(n))
+
             dlg.Destroy()
             return
         # We may need to wait a short while here to allow all nodes to respond
         time.sleep(0.05)
-        for node_id in self.network.scanner.nodes:
-            print("Found node %d!" % node_id) 
+        #self.scan_pucks(None)
 
-        MyApp.updateNodes(self, self.network.scanner.nodes)
 
-        # Populate the node choice list
-        self.choice_id.SetItems([str(i) for i in self.network.scanner.nodes])
+    def scan_pucks(self, event):  # wxGlade: wxp3_frame.<event_handler>
+        #print("Event handler 'scan_pucks'")
+        #print(str(datetime.datetime.now()) + " Event handler 'scan_pucks'")
+        # Set Mode to IDLE in case test is active
+        if self.lastMode != 0:
+            self.lastMode = 0 # Reset lastMode
+            self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
+            self.button_6.SetBackgroundColour((66,255,0))
+            self.button_6.SetLabel("Go")
+            print("Idling...")
+        
+        try:
+            # Think we need these  for scan to work...
+            # This will attempt to read an SDO from nodes 1 - 127
+            self.network.scanner.reset()
+            #print('network reset')
+            self.network.scanner.search()
+            #print('search completed')
+            time.sleep(0.5)
 
-        if self.init:                   
-            self.initialize = self.network.scanner.nodes              
-            print('Initializing CAN bus...')
-            if len(self.initialize) > 0:
-                self.init = False
-                print('Success!')
+            for node_id in self.network.scanner.nodes:
+                print("Found node %d!" % node_id) 
 
-        # If we found at least one, select the first
-        if len(self.network.scanner.nodes) > 0:
-            if self.getID() == 0:
-                self.choice_id.SetSelection(self.getID()) # This is actually what sets the initial
+            MyApp.updateNodes(self, self.network.scanner.nodes)
+
+            # Populate the node choice list
+            self.choice_id.SetItems([str(i) for i in self.network.scanner.nodes])
+
+            if self.init:                   
+                self.initialize = self.network.scanner.nodes              
+                print('Initializing CAN bus...')
+                if len(self.initialize) > 0:
+                    self.init = False
+                    print('Success!')
+
+            # If we found at least one, select the first
+            if len(self.network.scanner.nodes) > 0:
+                if self.getID() == 0:
+                    self.choice_id.SetSelection(self.getID()) # This is actually what sets the initial
+                else:
+                    # do some rescan if not in self scanner (THIS IS WHERE THE NOT IN LIST BUG OCCURS)
+                    indexID = self.network.scanner.nodes.index(self.getID())
+                    self.choice_id.SetSelection(indexID)
+                self.select_id(None)
+
             else:
-                indexID = self.network.scanner.nodes.index(self.getID())
-                self.choice_id.SetSelection(indexID)
-            self.select_id(None)
-            self.configure_Puck()
-        else:
-            print('No Pucks Found') # Establish error for no pucks
-            msg = 'No Pucks Found! \nDebug:\nPower Connection\nCAN Connection\n\nVerify Connection and Retry'
-            dlg = wx.MessageDialog(None,msg)
-            dlg.ShowModal()
-            dlg.Destroy()
-            return
+                if(node_id == 127):
+                    return
+                print('No Pucks Found') # Establish error for no pucks
+                msg = 'No Pucks Found! \nDebug:\nPower Connection\nCAN Connection\n\nVerify Connection and Retry'
+                dlg = wx.MessageDialog(None,msg)
+                dlg.ShowModal()
+                dlg.Destroy()
+                return
+            #self.configure_Puck()
+            #print(str(datetime.datetime.now()) + " Complete!!!")
+        except Exception as e: 
+            try:
+                if(node_id == 127):
+                    return
+            except:
+                print('No CAN driver found!')
+                msg = 'No CAN bus found! \nCheck connection and try again'
+                dlg = wx.MessageDialog(None,msg)
+                dlg.ShowModal()
+                dlg.Destroy()
+                return
 
     def select_id(self, event):  # wxGlade: wxp3_frame.<event_handler>
-        print("Event handler 'select_id'")
+        #print("Event handler 'select_id'")
         if self.firstRun:
             active = MyApp.getPucks(self)
             compare = []
@@ -271,6 +317,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             #base this on getNodes
             node_id = self.initialize[node_idx]
             self.setID(node_id)
+            self.firstRun = False
         else: # Not first run
             node_id = int(self.choice_id.GetString(self.choice_id.GetSelection()))
             # Popup error if Node is already active and not the selected frames current node
@@ -300,7 +347,46 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         self.text_id.ChangeValue(str(node_id))
 
         version = get_version(self.node.sdo['MfgSoftwareVersion'].raw)
+        # IF version is 0.0.0 and node_id is 127 update to say flashloader / bootloader (imply not ready) then skip the below part to avoid issues
         self.text_version.ChangeValue(version)
+
+        # if get mode != 0 (idle) then set the mode box to current mode
+        # then get target for whatever mode and populate input field
+        current_mode = self.node.sdo["SetModeOfOperation"].raw
+        if(current_mode == 0):     
+            # update select test to idle and input to 0
+            self.choice_test.SetSelection(0)
+            self.text_testvalue.SetValue('0')
+        elif(current_mode == 4):
+            # update select test to trq mode and update input to current target torque
+            self.choice_test.SetSelection(1)
+            input = self.node.sdo["TargetTorque"].raw # This is out of 1000% maximum, needs conversion
+            rated_torque = self.node.sdo["RatedTorque"].raw
+            cmd_value = input * rated_torque * self.gearRatio / 1000 # cmd_value * 1000 / (rated_torque * self.gearRatio) # Scale
+            self.text_testvalue.SetValue(str(round(cmd_value)))
+        elif(current_mode == 3):
+            # update select test to trq mode and update input to current target torque
+            print('updating mode...')
+            self.choice_test.SetSelection(2)
+            input = self.node.sdo["TargetVelocity"].raw
+            cmd_value = (input * 60) / (4096 * self.gearRatio) # ctspersec = cmd_value * 4096 / 60 * self.gearRatio
+            self.text_testvalue.SetValue(str(round(cmd_value)))
+        elif(current_mode == 1):
+            # update select test to trq mode and update input to current target torque
+            print('updating mode...')
+            self.choice_test.SetSelection(3)
+            # No good way to get last position update in degrees, and no real reason to have this
+            self.text_testvalue.SetValue('0')
+        elif(current_mode == 6):
+            # update select test to trq mode and update input to current target torque
+            print('updating mode...')
+            self.choice_test.SetSelection(4)
+            self.text_testvalue.SetValue('0')
+        
+        # may want to make this more centralized (like for loop to configure all at once)
+        self.configure_Puck() # This makes sure all pucks are configured to remove bug with first round adc on turning puck idle
+
+        #self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
         #self.text_ctrl_6.ChangeValue(str(self.node.sdo['Cal']['iSense1'].raw))
         #self.text_ctrl_7.ChangeValue(str(self.node.sdo['Calibration']['e_zero'].raw))
         #self.text_ctrl_9.ChangeValue(str(self.node.sdo['EncoderConfig']['LagFactor'].raw))
@@ -320,7 +406,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             print("Idling...")
 
         print("Event handler 'set_id'")
-        if int(self.text_id.GetValue()) in self.network.scanner.nodes:
+        if int(self.text_id.GetValue()) in MyApp.getNodes(self): # self.network.scanner.nodes: # Try this with active nodes??
             # Error message - resets ID to active if error
             indexID = self.network.scanner.nodes.index(self.getID())
             msg = ('ID already in use!')
@@ -822,28 +908,15 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.lastSysTime = currentSysTime #set current time to last
             self.firstRun = False
         except:
-            self.network.disconnect()
+            #self.network.disconnect()
             print('Lost connection with node ' + str(self.getID()))
             print('Disconnecting...')
             #MyApp.removePuck(self,self.getID())
-            # Reset Frame
-            self.VBus.SetLabel('N/A')
-            self.PTemp.SetLabel('N/A')
-            self.MTemp.SetLabel('N/A')
-            self.Vrpm.SetLabel('N/A')
-            self.VBus.SetForegroundColour((0,0,0))
-            self.PTemp.SetForegroundColour((0,0,0))
-            self.MTemp.SetForegroundColour((0,0,0))
-            self.Vrpm.SetForegroundColour((0,0,0))
-            self.choice_id.SetSelection(-1)
-            self.choice_test.SetSelection(0)
-            self.text_version.ChangeValue('')
-            self.text_id.ChangeValue('')
-            self.button_6.SetBackgroundColour((66,255,0))
-            self.button_6.SetLabel("Go")
-            
+
+            self.on_off_adc(self)
             # If ADC Thread is turned off, still need to rescan after disconnect
             self.scan_pucks(None)
+            self.on_off_adc(self)
 
             pass
    
@@ -895,8 +968,54 @@ class MyApp(wx.App):
         #self.SetTopWindow(self.frame)
         wx.App.ActiveID = []
         wx.App.Nodes = []
+
+        # Setup CAN network
+        # TODO BUG Now you can't switch CAN ports!!! need this as a function that can be called?
+        """
+        try:
+          self.network.disconnect() # Close any open networks
+        except:
+          pass
+
+        print("Establishing a new network...")
+        self.network = canopen.Network()
+        #can_device = self.choice_port.GetStringSelection()
+        can_device = "can0"
+
+        try:
+          if platform.system() == "Windows":
+            self.network.connect(bustype='pcan', channel='PCAN_USBBUS'+str(int(can_device[-1:])+1), bitrate=1000000)
+          elif platform.system() == "Linux":
+            self.network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)    
+          elif platform.system() == "Darwin":
+            self.network.connect(bustype='pcan', channel='PCAN_USBBUS1',bitrate=1000000) 
+          # This will attempt to read an SDO from nodes 1 - 127
+          self.network.scanner.reset()
+          #print('network reset')
+          self.network.scanner.search()
+          #print('search completed')
+        except Exception as e: 
+            print(e)
+            print('No CAN driver found!')
+            msg = 'No CAN bus found! \nCheck connection and try again'
+            dlg = wx.MessageDialog(None,msg)
+            dlg.ShowModal()
+            dlg.Destroy()
+            return
+        # We may need to wait a short while here to allow all nodes to respond
+        time.sleep(0.05)
+
+        """
+
         self.frame = MyFrame(None, wx.ID_ANY, "")
         self.frame.Show()
+        self.frame.can_port(None)
+        # Maybe set this ^ on a while loop for when no bus is active
+        # Transmit an NMT reboot command to this node
+        print("Booting...")
+        self.frame.network.send_message(0x0, [0x81, 0])
+        time.sleep(0.5) # wait for puck to reboot (avoids loss of communication)
+        #self.frame.network = self.network
         self.frame.scan_pucks(self)
         self.initialize = self.frame.network.scanner.nodes
         # Placement causes node not to get added!!
