@@ -15,3 +15,4 @@ iface can0 inet manual
     ip link set can0 txqueuelen 1000
     up /sbin/ip link set can0 up
     down /sbin/ip link set can0 down" | sudo tee -a /etc/network/interfaces > /dev/null
+sudo apt install -y can-utils
