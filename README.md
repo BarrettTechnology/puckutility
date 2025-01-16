@@ -34,7 +34,7 @@ For technical support, email support@barrett.com.
 Pull requests are welcome!
 
 ## Authors and acknowledgment
-Special thanks to Baily Noack and Brian Zenowich for their contributions to this code!
+Special thanks to Bailey Noack and Brian Zenowich for their contributions to this code!
 
 ## License
 Copyright 2025, Barrett Technology
