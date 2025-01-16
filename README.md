@@ -29,7 +29,7 @@ Then, plug in your Peak USB-CAN hardware.
 ```
 
 ## Puck Firmware
-Download the latest Puck Firmware at barrett.com/puck-firmware
+Download the latest Puck Firmware at [link](barrett.com/puck-firmware)  
 Place the .ebin files in puckutility/firmware 
 
 ## Support
