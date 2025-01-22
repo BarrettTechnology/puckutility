@@ -1,5 +1,5 @@
-sudo cp scripts/reset_can.sh /usr/bin
-sudo cp scripts/60-can.rules /etc/udev/rules.d
+sudo cp reset_can.sh /usr/bin
+sudo cp 60-can.rules /etc/udev/rules.d
 sudo udevadm control --reload-rules
 sudo udevadm trigger
 #sh install_pcan.sh # removing pcan usage
