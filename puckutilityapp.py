@@ -405,7 +405,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.button_6.SetLabel("Go")
             print("Idling...")
 
-        print("Event handler 'set_id'")
+        #print("Event handler 'set_id'")
         if int(self.text_id.GetValue()) in MyApp.getNodes(self): # self.network.scanner.nodes: # Try this with active nodes??
             # Error message - resets ID to active if error
             indexID = self.network.scanner.nodes.index(self.getID())
@@ -449,7 +449,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.on_off_adc(self)
 
     def browse_fw(self, event):  # wxGlade: wxp3_frame.<event_handler>
-        print("Event handler 'browse_fw'")
+        #print("Event handler 'browse_fw'")
 
         if self.ADC_ON == True:
            self.on_off_adc(self)
@@ -565,7 +565,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.on_off_adc(self)
 
     def file_to_p3(self, event):  # wxGlade: wxp3_frame.<event_handler>
-        print("Event handler 'file_to_p3'")
+        #print("Event handler 'file_to_p3'")
         # If motor is not idled, idle
         quick_test = self.choice_test.GetSelection()
         if quick_test != 0:
@@ -637,7 +637,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
               self.on_off_adc(self)
     
     def select_test(self, event):  # wxGlade: wxp3_frame.<event_handler>
-        print("Event handler 'select_test'")
+        #print("Event handler 'select_test'")
         
         if len(self.network.scanner.nodes) == 0:
             # Error message if no Bus
@@ -687,7 +687,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
 
     def run_test(self, event):  # wxGlade: wxp3_frame.<event_handler>
-        print("Event handler 'run_test'")
+        #print("Event handler 'run_test'")
         if len(self.network.scanner.nodes) == 0:
             # Error message if no Bus
             print('No active node!')
@@ -772,7 +772,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         self.lastMode = quick_test
 
     def logo_click(self,event): # wxGlade: wxp3_frame.<event_handler>
-        print("Event Handler 'logo_click'")
+        #print("Event Handler 'logo_click'")
 
         if self.ADC_ON == True:
            self.on_off_adc(self)
