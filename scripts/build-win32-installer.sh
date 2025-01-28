@@ -1,6 +1,6 @@
 #!/bin/sh
 cd ..
-pyinstaller --clean puckutilityapp.py --name PuckUtilityApp --distpath build/win/PuckUtilityApp --onefile --hiddenimport can.interfaces.pcan --icon=images/BarrettIcon.ico 
+python -m PyInstaller --clean puckutilityapp.py --name PuckUtilityApp --distpath build/win/PuckUtilityApp --onefile --hiddenimport can.interfaces.pcan --icon=images/BarrettIcon.ico 
 cp -r images build/win/PuckUtilityApp/
 cp -r config build/win/PuckUtilityApp/
 cp puck4.eds build/win/PuckUtilityApp/
@@ -11,4 +11,4 @@ cp puck4.eds build/win/PuckUtilityApp/
 curl https://web.barrett.com/support/Puck_ControlLibrary/PeakOemDrv.exe -o PeakOemDrv.exe
 mv PeakOemDrv.exe build/win/PuckUtilityApp/
 cd build/win
-zip -r ../PuckUtilityApp-win.zip PuckUtilityApp
+Tar -a -cf PuckUtilityApp.zip PuckUtilityApp/
