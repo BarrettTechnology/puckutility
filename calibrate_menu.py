@@ -4,10 +4,38 @@ import canopen
 import time
 import math
 
+# TODO - added calibrate all pucks feature
+
 class calibrate():
+    def calibrate_all_pucks(self, event):
+        print("Calibrate all pucks function not implemented...")
+        print(self.network.scanner.nodes)
+        starting_id = self.getID()
+        for i in self.network.scanner.nodes:
+            #if(i == 1):
+            #    print('skipping...')
+            #    continue
+            print(i)
+            indexID = self.network.scanner.nodes.index(i)
+            self.choice_id.SetSelection(indexID) # Move to next ID for calibration
+            self.select_id(None)
+
+            print("Running full calibration for Puck {}".format(self.getID()))
+            self.calibrate_ibias(None)
+            self.calibrate_igainfactor(None)
+            self.calibrate_enczero(None)
+
+        indexID = self.network.scanner.nodes.index(starting_id)
+        self.choice_id.SetSelection(indexID) # Return to starting ID after completion
+        self.select_id(None)
+
     def calibrate_all(self, event):  # wxGlade: wxp3_frame.<event_handler>
-        print("Event handler 'calibrate_all' not implemented!")
-        event.Skip()
+        # Try to add calibrate all step!
+        print("Running full calibration for Puck {}".format(self.getID()))
+        self.calibrate_ibias(None)
+        self.calibrate_igainfactor(None)
+        self.calibrate_enczero(None)
+        #event.Skip()
 
     def calibrate_ibias(self, event):  # wxGlade: wxp3_frame.<event_handler>
         print("Event handler 'calibrate_ibias'")
