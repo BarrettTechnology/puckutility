@@ -20,7 +20,8 @@ from timeit import default_timer as timer
 
 period = 5 # seconds, for cyclic sync sinusoids
 
-def configure_puck(node):
+def configure_puck():
+    global node
 
     # Read the existing PDOs from device (to allocate/populate local copy)
     print("Reading PDOs")
@@ -47,15 +48,15 @@ def tpdo2_callback(msg):
     global start
     global period
 
-    maxtrq = 1000
-    maxvel = 20000
-    maxpos = 5 * 4096
+    maxtrq = 1000     # /1000 of rated torque
+    maxvel = 20000    # cts/sec
+    maxpos = 5 * 4096 # 5 revolutions
     
     # Store data
     vel = node.tpdo[2]['VelocityFeedback'].raw
     current = node.tpdo[2]['CurrentFeedback'].raw
 
-    sin = math.sin(1/period * (timer() - start))
+    sin = math.sin(2*math.pi/period * (timer() - start))
 
     node.rpdo[1]['TargetTorque'].raw = sin * maxtrq
     node.rpdo[2]['TargetVelocity'].raw = sin * maxvel
@@ -101,6 +102,10 @@ def pv():
 def ppia():
     print("3) Profile Position, Immediate, Absolute")
     global node
+
+    # Home the motor first
+    home()
+
     print("Setting Mode = Profile Position")
     node.sdo["SetModeOfOperation"].raw = 1
 
@@ -142,6 +147,10 @@ def ppia():
 def ppir():
     print("4) Profile Position, Immediate, Relative")
     global node
+
+    # Home the motor first
+    home()
+    
     print("Setting Mode = Profile Position")
     node.sdo["SetModeOfOperation"].raw = 1
 
@@ -232,19 +241,13 @@ def ppbr():
     print("Setting Mode = Profile Position")
     node.sdo["SetModeOfOperation"].raw = 1
 
-def cst():
-    print("7) Cyclic Synchronous Torque")
-    global node
-
+def runcyclic():
     # Set up the Cyclic Sync timing
     node.sdo["Cyclic"]["InterpolationPeriod"].raw = 10
     node.sdo["Cyclic"]["InterpolationScale"].raw = -3 # milliseconds
 
     # Set the RPDO's ControlWord
     node.rpdo[1]['ControlWord'].raw = 0x0F
-
-    print("Setting Mode = CST")
-    node.rpdo[1]['SetModeOfOperation'].raw = 10
 
     # Set the initial targets
     node.rpdo[1]['TargetTorque'].raw = 0
@@ -261,7 +264,7 @@ def cst():
     # Start SYNC thread
     network.sync.start(0.01) # 100 Hz
 
-    # Wait 10s
+    # Wait 10s (while the RPDOs are running)
     time.sleep(10)
 
     # Stop SYNC thread
@@ -271,29 +274,60 @@ def cst():
     node.rpdo[1].stop()
     node.rpdo[2].stop()
 
-    # Set the final torque
-    node.sdo['TargetTorque'].raw = 0
+def cst():
+    print("7) Cyclic Synchronous Torque")
+    global node
+
+    print("Setting Mode = CST")
+    node.rpdo[1]['SetModeOfOperation'].raw = 10
+
+    runcyclic()
+
+    # Idle the motor
+    node.sdo["SetModeOfOperation"].raw = 0
 
 
 def csv():
     print("8) Cyclic Synchronous Velocity")
     global node
+
     print("Setting Mode = CSV")
-    node.sdo["SetModeOfOperation"].raw = 9
+    node.rpdo[1]["SetModeOfOperation"].raw = 9
+
+    runcyclic()
+
+    # Idle the motor
+    node.sdo["SetModeOfOperation"].raw = 0
 
 def csp():
     print("9) Cyclic Synchronous Position")
     global node
-    print("Setting Mode = CSP")
-    node.sdo["SetModeOfOperation"].raw = 8
 
-def hom():
+    # Home the motor first
+    home()
+
+    print("Setting Mode = CSP")
+    node.rpdo[1]["SetModeOfOperation"].raw = 8
+
+    runcyclic()
+
+    # Idle the motor
+    node.sdo["SetModeOfOperation"].raw = 0
+
+def home():
     print("10) Homing")
     global node
     print("Setting Mode = Homing")
     node.sdo["SetModeOfOperation"].raw = 6
+    node.sdo["HomingOffset"].raw = 0 # Initialize position to zero
+    node.sdo["HomingMethod"].raw = 37 # Home immediate, no limit switch
+    node.sdo["ControlWord"].raw = 0x1F # Start homing
+    while not (node.sdo["StatusWord"].raw & 0x1000): # Wait for homing complete
+        time.sleep(0.1)
+    node.sdo["ControlWord"].raw = 0x0F # Clear homing flag
 
 if __name__ == "__main__":
+    global node
     # Read the command arguments
     can_device = sys.argv[1]
     can_id = int(sys.argv[2])
@@ -311,13 +345,14 @@ if __name__ == "__main__":
 
       print("Connection succeeded, adding CANopen node...")
       # Add our canopen node along with its object dictionary (for parsing)
-      node = network.add_node(can_id, 'puck3.eds')
+      node = network.add_node(can_id, '../puck4.eds')
 
     except:
+      print("Connection failed. Exiting.")
       pass  
 
     # Initialize
-    configure_puck(node)
+    configure_puck()
 
     OpEnable()
 
@@ -333,7 +368,7 @@ if __name__ == "__main__":
            7 : cst,
            8 : csv,
            9 : csp,
-           10 : hom,
+           10 : home,
     }
 
     while True:
