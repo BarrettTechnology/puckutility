@@ -1,7 +1,7 @@
 # This is a CANopen config file for the Maxon EC-max 16 (283835)
 
 Name,FILE_INFO,,,STRING,Configure Puck $ID
-Version,FILE_VERSION,,,STRING,V2.1.0 (2018-04-03)
+Version,FILE_VERSION,,,STRING,V2.1.1 (2025-03-14)
 #Set node ID in device,,0x21B0,0,UNSIGNED16,$ID
 Set node ID in app,SETTING_NODE_ID,,,UNSIGNED8,$ID
 #Save ID,,0x1010,4,UNSIGNED32,0x21B000
@@ -115,6 +115,9 @@ Position tracking fault timeout (ms),,0x2121,0,UNSIGNED16,500
 # Gain = 1.0, Zeta = 1.0 1/2 Ki (best)
 Kp,,0x2381,1,UNSIGNED32,0x3A9D4952
 Ki,,0x2381,2,UNSIGNED32,0x38FDC161
+Encoder velocity low-pass filter (Hz),,0x2100,1,UNSIGNED16,200
+Velocity controller input low-pass filter (Hz),,0x2100,2,UNSIGNED16,0
+Velocity controller output low-pass filter (Hz),,0x2100,3,UNSIGNED16,0
 
 Velocity tracking warning window (cts/sec) - 10%,,0x606D,0,UNSIGNED16,0
 Velocity tracking warning timeout (ms),,0x606E,0,UNSIGNED16,100
