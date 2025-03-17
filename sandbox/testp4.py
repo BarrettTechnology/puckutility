@@ -20,7 +20,8 @@ from timeit import default_timer as timer
 
 period = 5 # seconds, for cyclic sync sinusoids
 
-def configure_puck(node):
+def configure_puck():
+    global node
 
     # Read the existing PDOs from device (to allocate/populate local copy)
     print("Reading PDOs")
@@ -47,15 +48,24 @@ def tpdo2_callback(msg):
     global start
     global period
 
-    maxtrq = 1000
-    maxvel = 20000
-    maxpos = 5 * 4096
+    maxtrq = 1000     # /1000 of rated torque
+    maxvel = 20000    # cts/sec
+    maxpos = 5 * 4096 # 5 revolutions
     
     # Store data
     vel = node.tpdo[2]['VelocityFeedback'].raw
     current = node.tpdo[2]['CurrentFeedback'].raw
 
-    sin = math.sin(1/period * (timer() - start))
+    sin = math.sin(2*math.pi/period * (timer() - start))
+
+    # Toggle "new position setpoint" every other cycle.
+    # This is cheating. We SHOULD be watching the StatusWord and waiting for 
+    # the setpoint to be acknowledged before sending a new one.
+    # This is ignored for trq/vel modes
+    if node.rpdo[1]['ControlWord'].raw == 0x2F:
+      node.rpdo[1]['ControlWord'].raw = 0x3F
+    else:
+      node.rpdo[1]['ControlWord'].raw = 0x2F
 
     node.rpdo[1]['TargetTorque'].raw = sin * maxtrq
     node.rpdo[2]['TargetVelocity'].raw = sin * maxvel
@@ -98,9 +108,13 @@ def pv():
         node.sdo["TargetVelocity"].raw = i
         time.sleep(3)
 
-def ppia():
-    print("3) Profile Position, Immediate, Absolute")
+def ppiad():
+    print("3) Profile Position, Immediate, Absolute, Discrete")
     global node
+
+    # Home the motor first
+    home()
+
     print("Setting Mode = Profile Position")
     node.sdo["SetModeOfOperation"].raw = 1
 
@@ -139,9 +153,61 @@ def ppia():
         while not (node.sdo["StatusWord"].raw & 0x0400):
             time.sleep(0.01)
 
-def ppir():
-    print("4) Profile Position, Immediate, Relative")
+def ppias10():
+    print("4) Profile Position, Immediate, Absolute, Streamed, 10 Hz")
     global node
+
+    # Home the motor first
+    home()
+
+    # Set the profile parameters
+    node.sdo["ProfileVelocity"].raw = 10000
+    node.sdo["EndVelocity"].raw = 0
+    node.sdo["Acceleration"].raw = 20000
+    node.sdo["Deceleration"].raw = 20000
+
+    print("Setting Mode = PP")
+    node.rpdo[1]["SetModeOfOperation"].raw = 1
+
+    # Set ControlWord to 0x2F (Immediate positions)
+    node.rpdo[1]["ControlWord"].raw = 0x2F
+
+    runpdo(10)
+
+    # Idle the motor
+    node.sdo["SetModeOfOperation"].raw = 0
+
+def ppias100():
+    print("5) Profile Position, Immediate, Absolute, Streamed, 100 Hz")
+    global node
+
+    # Home the motor first
+    home()
+
+    # Set the profile parameters
+    node.sdo["ProfileVelocity"].raw = 10000
+    node.sdo["EndVelocity"].raw = 0
+    node.sdo["Acceleration"].raw = 20000
+    node.sdo["Deceleration"].raw = 20000
+
+    print("Setting Mode = PP")
+    node.rpdo[1]["SetModeOfOperation"].raw = 1
+
+    # Set ControlWord to 0x2F (Immediate positions)
+    node.rpdo[1]["ControlWord"].raw = 0x2F
+
+    runpdo(100)
+
+    # Idle the motor
+    node.sdo["SetModeOfOperation"].raw = 0   
+
+def ppird():
+    print("6) Profile Position, Immediate, Relative, Discrete")
+    global node
+
+    # Home the motor first
+    home()
+
     print("Setting Mode = Profile Position")
     node.sdo["SetModeOfOperation"].raw = 1
 
@@ -180,7 +246,7 @@ def ppir():
             time.sleep(0.01)
 
 def ppba():
-    print("5) Profile Position, Buffered, Absolute")
+    print("7) Profile Position, Buffered, Absolute")
     global node
     print("Setting Mode = Profile Position")
     node.sdo["SetModeOfOperation"].raw = 1
@@ -227,24 +293,15 @@ def ppba():
         time.sleep(0.01)
 
 def ppbr():
-    print("6) Profile Position, Buffered, Relative")
+    print("8) Profile Position, Buffered, Relative")
     global node
     print("Setting Mode = Profile Position")
     node.sdo["SetModeOfOperation"].raw = 1
 
-def cst():
-    print("7) Cyclic Synchronous Torque")
-    global node
-
-    # Set up the Cyclic Sync timing
-    node.sdo["Cyclic"]["InterpolationPeriod"].raw = 10
+def runpdo(rate=100): # 100 Hz
+    # Set up the Cyclic Sync timing (only used in Cyclic Sync modes)
+    node.sdo["Cyclic"]["InterpolationPeriod"].raw = 1000 / rate # milliseconds
     node.sdo["Cyclic"]["InterpolationScale"].raw = -3 # milliseconds
-
-    # Set the RPDO's ControlWord
-    node.rpdo[1]['ControlWord'].raw = 0x0F
-
-    print("Setting Mode = CST")
-    node.rpdo[1]['SetModeOfOperation'].raw = 10
 
     # Set the initial targets
     node.rpdo[1]['TargetTorque'].raw = 0
@@ -255,13 +312,13 @@ def cst():
     start = timer()
 
     # Start sending RPDOs
-    node.rpdo[1].start(0.01)
-    node.rpdo[2].start(0.01)
+    node.rpdo[1].start(1/rate)
+    node.rpdo[2].start(1/rate)
 
     # Start SYNC thread
-    network.sync.start(0.01) # 100 Hz
+    network.sync.start(1/rate)
 
-    # Wait 10s
+    # Wait 10s (while the RPDOs are running)
     time.sleep(10)
 
     # Stop SYNC thread
@@ -271,29 +328,61 @@ def cst():
     node.rpdo[1].stop()
     node.rpdo[2].stop()
 
-    # Set the final torque
-    node.sdo['TargetTorque'].raw = 0
+def cst():
+    print("9) Cyclic Synchronous Torque")
+    global node
+
+    print("Setting Mode = CST")
+    node.rpdo[1]['SetModeOfOperation'].raw = 10
+
+    runpdo()
+
+    # Idle the motor
+    node.sdo["SetModeOfOperation"].raw = 0
 
 
 def csv():
-    print("8) Cyclic Synchronous Velocity")
+    print("10) Cyclic Synchronous Velocity")
     global node
+
     print("Setting Mode = CSV")
-    node.sdo["SetModeOfOperation"].raw = 9
+    node.rpdo[1]["SetModeOfOperation"].raw = 9
+
+    runpdo()
+
+    # Idle the motor
+    node.sdo["SetModeOfOperation"].raw = 0
 
 def csp():
-    print("9) Cyclic Synchronous Position")
+    print("11) Cyclic Synchronous Position")
     global node
-    print("Setting Mode = CSP")
-    node.sdo["SetModeOfOperation"].raw = 8
 
-def hom():
-    print("10) Homing")
+    # Home the motor first
+    home()
+
+    print("Setting Mode = CSP")
+    node.rpdo[1]["SetModeOfOperation"].raw = 8
+
+    runpdo()
+
+    # Idle the motor
+    node.sdo["SetModeOfOperation"].raw = 0
+
+def home():
+    print("12) Homing")
     global node
     print("Setting Mode = Homing")
+    node.sdo["ControlWord"].raw = 0x0F # Clear any mode-specific bits
     node.sdo["SetModeOfOperation"].raw = 6
+    node.sdo["HomingOffset"].raw = 0 # Initialize position to zero
+    node.sdo["HomingMethod"].raw = 37 # Home immediate, no limit switch
+    node.sdo["ControlWord"].raw = 0x1F # Start homing
+    while not (node.sdo["StatusWord"].raw & 0x1000): # Wait for homing complete
+        time.sleep(0.1)
+    node.sdo["ControlWord"].raw = 0x0F # Clear homing flag
 
 if __name__ == "__main__":
+    global node
     # Read the command arguments
     can_device = sys.argv[1]
     can_id = int(sys.argv[2])
@@ -311,13 +400,14 @@ if __name__ == "__main__":
 
       print("Connection succeeded, adding CANopen node...")
       # Add our canopen node along with its object dictionary (for parsing)
-      node = network.add_node(can_id, 'puck3.eds')
+      node = network.add_node(can_id, '../puck4.eds')
 
     except:
+      print("Connection failed. Exiting.")
       pass  
 
     # Initialize
-    configure_puck(node)
+    configure_puck()
 
     OpEnable()
 
@@ -326,14 +416,16 @@ if __name__ == "__main__":
            0 : end,
            1 : pt,
            2 : pv,
-           3 : ppia,
-           4 : ppir,
-           5 : ppba,
-           6 : ppbr,
-           7 : cst,
-           8 : csv,
-           9 : csp,
-           10 : hom,
+           3 : ppiad,
+           4 : ppias10,
+           5 : ppias100,
+           6 : ppird,
+           7 : ppba,
+           8 : ppbr,
+           9 : cst,
+           10 : csv,
+           11 : csp,
+           12 : home
     }
 
     while True:
@@ -342,15 +434,17 @@ if __name__ == "__main__":
         print("0) Exit")
         print("1) Profile Torque")
         print("2) Profile Velocity")
-        print("3) Profile Position, Immediate, Absolute")
-        print("4) Profile Position, Immediate, Relative")
-        print("5) Profile Position, Buffered, Absolute")
-        print("6) Profile Position, Buffered, Relative")
-        print("7) Cyclic Synchronous Torque")
-        print("8) Cyclic Synchronous Velocity")
-        print("9) Cyclic Synchronous Position")
-        print("10) Homing")
-
+        print("3) Profile Position, Immediate, Absolute, Discrete")
+        print("4) Profile Position, Immediate, Absolute, Streamed, 10 Hz")
+        print("5) Profile Position, Immediate, Absolute, Streamed, 100 Hz")
+        print("6) Profile Position, Immediate, Relative, Discrete")
+        print("7) Profile Position, Buffered, Absolute")
+        print("8) Profile Position, Buffered, Relative")
+        print("9) Cyclic Synchronous Torque")
+        print("10) Cyclic Synchronous Velocity")
+        print("11) Cyclic Synchronous Position")
+        print("12) Homing")
+        
         num = int(input("\nYour choice: "))
 
         # Run the requested test
