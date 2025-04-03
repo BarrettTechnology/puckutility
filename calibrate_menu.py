@@ -8,7 +8,6 @@ import math
 
 class calibrate():
     def calibrate_all_pucks(self, event):
-        print("Calibrate all pucks function not implemented...")
         print(self.network.scanner.nodes)
         starting_id = self.getID()
         for i in self.network.scanner.nodes:
@@ -167,8 +166,10 @@ class calibrate():
 
     def calibrate_itiming(self, event):  # wxGlade: wxp3_frame.<event_handler>
         print("Event handler 'calibrate_itiming' not implemented!")
-        # Current sampling moment tuning
-        # Collect noise statistics at/near falling edge of PWM
+        # Tune the current sampling moment to minimize noise
+        # Collect noise statistics at/near falling edge of the widest PWM, in all 6 sectors
+        
+
         event.Skip()
 
     def calibrate_islope(self, event):  # wxGlade: wxp3_frame.<event_handler>

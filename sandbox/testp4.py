@@ -8,7 +8,6 @@
 #
 # Dependencies:
 #   python3 -m pip install canopen
-#   python3 -m pip install numpy
 
 import sys
 import math
@@ -332,6 +331,9 @@ def cst():
     print("9) Cyclic Synchronous Torque")
     global node
 
+    # Set RPDO ControlWord to 0x0F (active)
+    node.rpdo[1]["ControlWord"].raw = 0x0F
+
     print("Setting Mode = CST")
     node.rpdo[1]['SetModeOfOperation'].raw = 10
 
@@ -344,6 +346,9 @@ def cst():
 def csv():
     print("10) Cyclic Synchronous Velocity")
     global node
+
+    # Set RPDO ControlWord to 0x0F (active)
+    node.rpdo[1]["ControlWord"].raw = 0x0F
 
     print("Setting Mode = CSV")
     node.rpdo[1]["SetModeOfOperation"].raw = 9
@@ -360,6 +365,9 @@ def csp():
     # Home the motor first
     home()
 
+    # Set RPDO ControlWord to 0x0F (active)
+    node.rpdo[1]["ControlWord"].raw = 0x0F
+    
     print("Setting Mode = CSP")
     node.rpdo[1]["SetModeOfOperation"].raw = 8
 
