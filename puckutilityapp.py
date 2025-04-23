@@ -37,6 +37,7 @@ import datetime
 # ADD a wxpython based frame for custom motor tuning (gains configuration)
 # Maybe add escape feature to close app?
 # Add reboot to startup, and closing to idle pucks
+# Add a mag enc check feature (2-5s of idle and hold pos to find pos variation)
 
 def get_version(vers): # Convert uint32_t to semantic version: Major.Minor.Patch
     return "{0}.{1}.{2}".format(
@@ -76,8 +77,10 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         USE_BUFFERED_DC = True
 
         # Initialize self variables
-        self.gearRatio = 3249 / 169 # Default for ec max 16mm dev kit
-        #self.gearRatio = 1
+        #self.gearRatio = 3249 / 169 # Default for ec max 16mm dev kit
+        #self.gearRatio = 225 / 16
+        self.gearRatio = 1
+        #self.gearRatio = 10
         self.encoderResolution = 4096 # cts / revolution
         self.adcWasON = False
         self.lastMode = 0 
@@ -526,6 +529,9 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
           pathname = fileDialog.GetPath()
 
           self.network.disconnect()
+
+          self.can_port(None)
+          self.scan_pucks(None)
 
           if semver.match(version, '==1.0.0'):
               l = ['blhost', '-p', can_device + "," + node_id, 'flash-erase-all']
