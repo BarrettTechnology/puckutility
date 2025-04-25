@@ -64,6 +64,8 @@ class calibrate():
           print("Previous {0} iSense bias = {1}".format(channel, self.node.sdo[channel]['Bias'].raw))
           filt = self.node.sdo[channel]['Filtered'].raw # Q12.4
           filt = (filt >> 4) + ((filt & 0x0008) >> 3) # Round Q12.4 to Q12.0
+          #self.node.sdo['Alpha']['Bias'].raw = 2050 # Alpha
+          #self.node.sdo['Beta']['Bias'].raw = 2075 # Beta
           self.node.sdo[channel]['Bias'].raw = filt
           print("New {0} iSense bias = {1}".format(channel, filt))
 
@@ -124,7 +126,7 @@ class calibrate():
           print("alpha = {0}, beta = {1}, id = {2}, iq = {3}, ud = {4}".format(
             self.node.sdo['Alpha']['Raw'].raw, 
             self.node.sdo['Beta']['Raw'].raw, 
-            self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak, 
+            round(self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak, 2), 
             self.node.sdo['CurrentFeedback'].raw / 1000.0 * i_peak,
             self.node.sdo['Motor']['ud'].raw))
           motor_ud += 100
@@ -137,7 +139,7 @@ class calibrate():
         a_filt = (a_filt >> 4) + ((a_filt & 0x0008) >> 3) # Round Q12.4 to Q12.0
         print("Peak Alpha = {0} at motor current = {1} mA (theta_e = {2:0.2f})".format(
           a_filt, 
-          self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak, 
+          round(self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak, 2), 
           self.node.sdo['Theta_e'].raw / 32768.0 * 3.14159))
 
         self.node.sdo['Theta_e'].raw = -0x4000 # Stall @ Beta Peak (-pi/2)
