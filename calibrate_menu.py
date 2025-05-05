@@ -59,6 +59,17 @@ class calibrate():
         self.node.sdo["SetModeOfOperation"].raw = 0
         time.sleep(1) # Wait at least 75 ms for the filters to settle
 
+        # # Clear faults, RTSO, OpEnabled
+        # print("Going OpEnabled")
+        # self.node.sdo["ControlWord"].raw = 0x80
+        # self.node.sdo["ControlWord"].raw = 0x06
+        # self.node.sdo["ControlWord"].raw = 0x0F
+
+        # # Set Mode to Torque
+        # print("Setting Mode = Zero Torque")
+        # self.node.sdo["SetModeOfOperation"].raw = 10
+        # time.sleep(1) # Wait at least 75 ms for the filters to settle
+
         # Calibrate iSense
         for channel in ['Alpha', 'Beta']:
           print("Previous {0} iSense bias = {1}".format(channel, self.node.sdo[channel]['Bias'].raw))
@@ -71,6 +82,11 @@ class calibrate():
 
         self.node.sdo['Save']['Single'].raw = ((0x3008 << 8) | 0x03) # Save Alpha iSense cal to EE
         self.node.sdo['Save']['Single'].raw = ((0x3009 << 8) | 0x03) # Save Beta iSense cal to EE
+
+        # # Set Mode to Idle (0)
+        # print("Setting Mode = IDLE")
+        # self.node.sdo["SetModeOfOperation"].raw = 0
+        # # time.sleep(1) # Wait at least 75 ms for the filters to settle
 
         self.frame_statusbar.SetStatusText("Ready", 1)
         #self.text_ctrl_6.ChangeValue(str(self.node.sdo['Cal']['iSense1'].raw))
@@ -387,6 +403,16 @@ class calibrate():
         print("Setting Mode = IDLE")
         self.node.sdo["SetModeOfOperation"].raw = 0
 
+    def test_encoder(self,event):
+        print("Testing magnetic encoder...")
+        # 2 seconds of Idle, get min/max and difference
+        # need to detect rollover probably to avoid edge case
+        # if 1-2 cts = perfect
+        # 3-8 cts = acceptable
+        # > 8 unususable
+        # List off debugging tricks and popup error message!
+        
+    
     def set_user_dir(self, event):  # wxGlade: wxp3_frame.<event_handler>
         print("Event handler 'set_user_dir'")
         
