@@ -411,7 +411,36 @@ class calibrate():
         # 3-8 cts = acceptable
         # > 8 unususable
         # List off debugging tricks and popup error message!
+
+        # Set Mode to Idle (0)
+        print("Setting Mode = IDLE")
+        self.node.sdo["SetModeOfOperation"].raw = 0
+        time.sleep(1) # Wait at least 75 ms for the filters to settle
+        timeEnd = time.time() + 1
+        Pos = []
+        while time.time() < timeEnd:
+          Pos.append(self.node.sdo['PositionFeedback'].raw)
+        posDif = max(Pos) - min(Pos)
+        print("Max Pos: {} Min Pos: {} Diff: {}".format(max(Pos), min(Pos), posDif))
+        maxDif = 8
+
+        if(posDif <= maxDif):
+          # Good, passed test
+          pass
+        if(posDif > maxDif):
+          # Bad Encoder reading (error dialog! debug steps)
+          # Offer to continue or cancel calibration?
+          msg = "Encoder Readings Unstable! \n\nEncoder variation: {} counts" \
+          "\nMax Acceptable Variation: {} counts" \
+          "\n\nDebugging steps:\n- Ensure magnet to encoder spacing is 1.5mm +/- 0.5mm\n- Verify magnet concentric to the shaft and rotates properly".format(posDif,maxDif)
+          dlg = wx.MessageDialog(None,msg)
+          dlg.ShowModal()
+          dlg.Destroy()
+          print("Encoder readings unstable...")
+
         
+
+
     
     def set_user_dir(self, event):  # wxGlade: wxp3_frame.<event_handler>
         print("Event handler 'set_user_dir'")

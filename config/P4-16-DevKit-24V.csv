@@ -134,7 +134,7 @@ DQ-Axis current Ki,,0x2380,2,UNSIGNED32,0x48042F87
 PWM freq (Hz),,0x3001,1,UNSIGNED32,80000
 Dead time (ns),,0x3001,2,UNSIGNED16,290
 Max prop delay (ns),,0x3001,3,UNSIGNED16,530
-Max settling time (ns),,0x3001,5,UNSIGNED16,1800
+Max settling time (ns),,0x3001,5,UNSIGNED16,1600
 Sampling time (ns),,0x3001,6,UNSIGNED16,400
 Conversion time (ns),,0x3001,7,UNSIGNED16,1475
 Max sensor current (mA),,0x3001,8,UNSIGNED16,10000
