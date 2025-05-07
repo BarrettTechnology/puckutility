@@ -31,6 +31,10 @@ class calibrate():
     def calibrate_all(self, event):  # wxGlade: wxp3_frame.<event_handler>
         # Try to add calibrate all step!
         print("Running full calibration for Puck {}".format(self.getID()))
+        continueCal = self.test_encoder(None, True)
+        if continueCal == False:
+          print('Ending calibration...')
+          return
         self.calibrate_ibias(None)
         self.calibrate_igainfactor(None)
         self.calibrate_enczero(None)
@@ -403,15 +407,8 @@ class calibrate():
         print("Setting Mode = IDLE")
         self.node.sdo["SetModeOfOperation"].raw = 0
 
-    def test_encoder(self,event):
+    def test_encoder(self,event,calAll=False):
         print("Testing magnetic encoder...")
-        # 2 seconds of Idle, get min/max and difference
-        # need to detect rollover probably to avoid edge case
-        # if 1-2 cts = perfect
-        # 3-8 cts = acceptable
-        # > 8 unususable
-        # List off debugging tricks and popup error message!
-
         # Set Mode to Idle (0)
         print("Setting Mode = IDLE")
         self.node.sdo["SetModeOfOperation"].raw = 0
@@ -432,16 +429,19 @@ class calibrate():
           # Offer to continue or cancel calibration?
           msg = "Encoder Readings Unstable! \n\nEncoder variation: {} counts" \
           "\nMax Acceptable Variation: {} counts" \
-          "\n\nDebugging steps:\n- Ensure magnet to encoder spacing is 1.5mm +/- 0.5mm\n- Verify magnet concentric to the shaft and rotates properly".format(posDif,maxDif)
-          dlg = wx.MessageDialog(None,msg)
-          dlg.ShowModal()
+          "\n\nDebugging steps:" \
+          "\n- Ensure magnet to encoder spacing is 1.5mm +/- 0.5mm" \
+          "\n- Verify magnet concentric to the shaft and rotates properly" \
+          "\n\nWould you like to continue calibration?"  .format(posDif,maxDif)
+          dlg = wx.MessageDialog(None,msg,'Warning!',wx.YES_NO | wx.ICON_WARNING)
+          answer = dlg.ShowModal()
           dlg.Destroy()
           print("Encoder readings unstable...")
+          if answer == wx.ID_YES:
+             return True
+          if answer == wx.ID_NO:
+             return False
 
-        
-
-
-    
     def set_user_dir(self, event):  # wxGlade: wxp3_frame.<event_handler>
         print("Event handler 'set_user_dir'")
         
