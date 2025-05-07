@@ -16,6 +16,8 @@ from puckutilityapp_gui import puckutilityapp_frame
 from calibrate_menu import calibrate
 from factory_menu import factory
 
+import canopen_runner
+
 import os
 import canopen
 import platform
@@ -594,55 +596,70 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         with wx.FileDialog(self, "Open CANopen CSV file", directory, wildcard="CSV files (*.csv)|*.csv",
                        style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST) as fileDialog:
 
-          if fileDialog.ShowModal() == wx.ID_CANCEL:
-              if self.adcWasON == True:
+            if fileDialog.ShowModal() == wx.ID_CANCEL:
+                if self.adcWasON == True:
+                    self.on_off_adc(self)
+                return     # the user changed their mind
+
+            self.frame_statusbar.SetStatusText("Updating configuration...", 1)
+            self.frame_statusbar.Update()
+            wx.Yield()
+
+            # Proceed loading the file chosen by the user
+            pathname = fileDialog.GetPath()
+
+            can_device = self.choice_port.GetStringSelection()
+            node_id = self.choice_id.GetString(self.choice_id.GetSelection())
+
+            # Call canopen_runner.py script with all required parameters
+            print("Writing OD entries")
+            self.network.disconnect()
+            if platform.system() == "Windows":
+                python_name = "python"
+            else:
+                python_name = "python3"
+            l = [python_name, 'canopen_runner.py', can_device, node_id, 'puck4.eds', pathname]
+            
+            # TRY TO CATCH ANY ERROR
+            
+            try:
+                subprocess.call(l)
+            except:
+                print('Upload Failed!')
+                msg = "Upload Failed!" \
+                "\n\nDebug:" \
+                "\n- Verify csv file is correctly formatted" \
+                "\n- Ensure proper installation of all required libraries"
+                dlg = wx.MessageDialog(None,msg)
+                dlg.ShowModal()
+                dlg.Destroy()         
+
+            # THIS IS NOT WORKING TO CATCH FAILED CSV UPLOADS
+
+            print("Establishing a new network...")
+            self.network = canopen.Network()
+
+            if platform.system() == "Windows":
+                self.network.connect(bustype='pcan', channel='PCAN_USBBUS'+str(int(can_device[-1:])+1), bitrate=1000000)
+            elif platform.system() == "Linux":
+                self.network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)
+                self.node = self.network.add_node(int(node_id), 'puck4.eds')
+            
+            # Save all OD entries to EEPROM (takes about 0.55 sec)
+            print("Saving OD entries")
+            default_timeout = canopen.sdo.SdoClient.RESPONSE_TIMEOUT
+            canopen.sdo.SdoClient.RESPONSE_TIMEOUT = 1.0
+            self.node.sdo['Save']['All'].raw = 0x65766173 # Key = 'SAVE'
+            canopen.sdo.SdoClient.RESPONSE_TIMEOUT = default_timeout
+
+            # Transmit an NMT reboot command to this node
+            print("Rebooting puck")
+            self.network.send_message(0x0, [0x81, int(node_id)])
+            time.sleep(0.5) # wait for puck to reboot (avoids loss of communication)
+            self.configure_Puck()
+            self.frame_statusbar.SetStatusText("Ready", 1)
+            if self.adcWasON == True:
                 self.on_off_adc(self)
-              return     # the user changed their mind
-
-          self.frame_statusbar.SetStatusText("Updating configuration...", 1)
-          self.frame_statusbar.Update()
-          wx.Yield()
-
-          # Proceed loading the file chosen by the user
-          pathname = fileDialog.GetPath()
-
-          can_device = self.choice_port.GetStringSelection()
-          node_id = self.choice_id.GetString(self.choice_id.GetSelection())
-
-          # Call canopen_runner.py script with all required parameters
-          print("Writing OD entries")
-          self.network.disconnect()
-          if platform.system() == "Windows":
-              python_name = "python"
-          else:
-              python_name = "python3"
-          l = [python_name, 'canopen_runner.py', can_device, node_id, 'puck4.eds', pathname]
-          subprocess.call(l) # Note: this waits until the subprocess exits
-
-          print("Establishing a new network...")
-          self.network = canopen.Network()
-
-          if platform.system() == "Windows":
-            self.network.connect(bustype='pcan', channel='PCAN_USBBUS'+str(int(can_device[-1:])+1), bitrate=1000000)
-          elif platform.system() == "Linux":
-            self.network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)
-          self.node = self.network.add_node(int(node_id), 'puck4.eds')
-          
-          # Save all OD entries to EEPROM (takes about 0.55 sec)
-          print("Saving OD entries")
-          default_timeout = canopen.sdo.SdoClient.RESPONSE_TIMEOUT
-          canopen.sdo.SdoClient.RESPONSE_TIMEOUT = 1.0
-          self.node.sdo['Save']['All'].raw = 0x65766173 # Key = 'SAVE'
-          canopen.sdo.SdoClient.RESPONSE_TIMEOUT = default_timeout
-
-          # Transmit an NMT reboot command to this node
-          print("Rebooting puck")
-          self.network.send_message(0x0, [0x81, int(node_id)])
-          time.sleep(0.5) # wait for puck to reboot (avoids loss of communication)
-          self.configure_Puck()
-          self.frame_statusbar.SetStatusText("Ready", 1)
-          if self.adcWasON == True:
-              self.on_off_adc(self)
     
     def select_test(self, event):  # wxGlade: wxp3_frame.<event_handler>
         #print("Event handler 'select_test'")
@@ -692,7 +709,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.node.sdo["SetModeOfOperation"].raw = 6
             # set text box value to 0
             self.text_testvalue.SetValue("0")
-
 
     def run_test(self, event):  # wxGlade: wxp3_frame.<event_handler>
         #print("Event handler 'run_test'")
