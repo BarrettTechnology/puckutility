@@ -73,22 +73,27 @@ class calibrate():
         # print("Setting Mode = Zero Torque")
         # self.node.sdo["SetModeOfOperation"].raw = 10
         # time.sleep(1) # Wait at least 75 ms for the filters to settle
+        while True:
+          # Calibrate iSense
+          for channel in ['Alpha', 'Beta']:
+            #print("Previous {0} iSense bias = {1}".format(channel, self.node.sdo[channel]['Bias'].raw))
+            filt = self.node.sdo[channel]['Filtered'].raw # Q12.4
+            filt = (filt >> 4) + ((filt & 0x0008) >> 3) # Round Q12.4 to Q12.0
+            #self.node.sdo['Alpha']['Bias'].raw = 2050 # Alpha
+            #self.node.sdo['Beta']['Bias'].raw = 2075 # Beta
+            self.node.sdo[channel]['Bias'].raw = filt
+            #print("New {0} iSense bias = {1}".format(channel, filt))
+            if channel == 'Alpha':
+              a = filt
+            if channel == 'Beta':
+              b = filt
 
-        # Calibrate iSense
-        for channel in ['Alpha', 'Beta']:
-          print("Previous {0} iSense bias = {1}".format(channel, self.node.sdo[channel]['Bias'].raw))
-          filt = self.node.sdo[channel]['Filtered'].raw # Q12.4
-          filt = (filt >> 4) + ((filt & 0x0008) >> 3) # Round Q12.4 to Q12.0
-          #self.node.sdo['Alpha']['Bias'].raw = 2050 # Alpha
-          #self.node.sdo['Beta']['Bias'].raw = 2075 # Beta
-          self.node.sdo[channel]['Bias'].raw = filt
-          print("New {0} iSense bias = {1}".format(channel, filt))
+          self.node.sdo['Save']['Single'].raw = ((0x3008 << 8) | 0x03) # Save Alpha iSense cal to EE
+          self.node.sdo['Save']['Single'].raw = ((0x3009 << 8) | 0x03) # Save Beta iSense cal to EE
 
-        self.node.sdo['Save']['Single'].raw = ((0x3008 << 8) | 0x03) # Save Alpha iSense cal to EE
-        self.node.sdo['Save']['Single'].raw = ((0x3009 << 8) | 0x03) # Save Beta iSense cal to EE
-
-        temp = self.node.sdo['Amplifier']['Temperature'].raw
-        print("Temperature: {}".format(temp))
+          temp = self.node.sdo['Amplifier']['Temperature'].raw
+          print("Alpha: {} Beta: {} Temperature: {}".format(a,b,temp))
+          time.sleep(.25)
 
         # # Set Mode to Idle (0)
         # print("Setting Mode = IDLE")

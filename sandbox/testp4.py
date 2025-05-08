@@ -27,6 +27,20 @@ def configure_puck():
     node.tpdo.read()
     node.rpdo.read()
 
+    print("Clearing PDOs...")
+    for i in (1,2,3,4):
+        node.tpdo[i].clear()
+        node.rpdo[i].clear()
+
+    # Add variables?
+    node.rpdo[1].add_variable('ControlWord') #U16 - 16 bits
+    node.rpdo[1].add_variable('SetModeOfOperation') #U8 - 8 bits
+    node.rpdo[1].add_variable('TargetTorque') # I16 - 16 bits
+    node.rpdo[2].add_variable('TargetVelocity')
+    node.rpdo[2].add_variable('TargetPosition')
+    node.rpdo.save()
+    node.tpdo.save()
+
     # Each time we receive this PDO from the puck, execute a callback
     node.tpdo[1].add_callback(tpdo1_callback)
     node.tpdo[2].add_callback(tpdo2_callback)
@@ -49,8 +63,8 @@ def tpdo2_callback(msg):
 
     maxtrq = 1000     # /1000 of rated torque
     maxvel = 20000    # cts/sec
-    maxpos = 5 * 4096 # 5 revolutions
-    
+    maxpos = 14 * 4096 # 5 revolutions
+
     # Store data
     vel = node.tpdo[2]['VelocityFeedback'].raw
     current = node.tpdo[2]['CurrentFeedback'].raw
@@ -311,6 +325,7 @@ def runpdo(rate=100): # 100 Hz
     start = timer()
 
     # Start sending RPDOs
+    print("Starting RPDOs...")
     node.rpdo[1].start(1/rate)
     node.rpdo[2].start(1/rate)
 
@@ -348,7 +363,7 @@ def csv():
     global node
 
     # Set RPDO ControlWord to 0x0F (active)
-    node.rpdo[1]["ControlWord"].raw = 0x0F
+    node.rpdo[1]['ControlWord'].raw = 0x0F
 
     print("Setting Mode = CSV")
     node.rpdo[1]["SetModeOfOperation"].raw = 9
@@ -366,10 +381,12 @@ def csp():
     home()
 
     # Set RPDO ControlWord to 0x0F (active)
-    node.rpdo[1]["ControlWord"].raw = 0x0F
+    node.rpdo[1]['ControlWord'].raw = 0x0F
+    # node.sdo["ControlWord"].raw = 0x0F
     
     print("Setting Mode = CSP")
     node.rpdo[1]["SetModeOfOperation"].raw = 8
+    # node.sdo["SetModeOfOperation"].raw = 8
 
     runpdo()
 
