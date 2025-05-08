@@ -47,6 +47,13 @@ Dummy0005 = 0
 Dummy0006 = 0
 Dummy0007 = 0
 
+[0003]
+DataType = 0x03
+ParameterName = DummyRpdo16
+DefaultValue = 0
+AccessType = RW
+ObjectType = 0x07
+
 [1000]
 DataType = 0x07
 ParameterName = DeviceType
@@ -1485,6 +1492,13 @@ DefaultValue =  0
 AccessType = RW
 ObjectType = 0x07
 
+[6074]
+DataType = 0x03
+ParameterName = InternalTorque
+DefaultValue =  0
+AccessType = RO
+ObjectType = 0x07
+
 [6076]
 DataType = 0x07
 ParameterName = RatedTorque
@@ -1516,6 +1530,13 @@ ObjectType = 0x07
 [607c]
 DataType = 0x04
 ParameterName = HomingOffset
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
+[6087]
+DataType = 0x07
+ParameterName = TorqueSlope
 DefaultValue =  0
 AccessType = RW
 ObjectType = 0x07

@@ -1009,32 +1009,32 @@ class MyApp(wx.App):
 
         self.frame = MyFrame(None, wx.ID_ANY, "")
         self.frame.Show()
-        self.frame.can_port(None)
+        #self.frame.can_port(None)
         # Maybe set this ^ on a while loop for when no bus is active
         # Transmit an NMT reboot command to this node
-        print("Booting...")
-        self.frame.network.send_message(0x0, [0x81, 0])
-        time.sleep(0.5) # wait for puck to reboot (avoids loss of communication)
-        #self.frame.network = self.network
-        self.frame.scan_pucks(self)
-        self.initialize = self.frame.network.scanner.nodes
-        # Placement causes node not to get added!!
-        if len(self.getNodes()) == 0:
-            print('No Pucks active')
-            return True
-
-        while len(self.frame.network.scanner.nodes) == 0:
-            try:
-                time.sleep(1)
-                first = min(self.getNodes())
-                self.frame.setID(first)
-                wx.CallAfter(self.frame.scan_pucks(self))
-            except:
-                pass
-        self.addPucks(self.frame.getID())
-        i = len(self.getNodes())
-        if i == 0:
-            return
+        #print("Booting...")
+        #self.frame.network.send_message(0x0, [0x81, 0])
+        #time.sleep(0.5) # wait for puck to reboot (avoids loss of communication)
+        ##self.frame.network = self.network
+        #self.frame.scan_pucks(self)
+        #self.initialize = self.frame.network.scanner.nodes
+        ## Placement causes node not to get added!!
+        #if len(self.getNodes()) == 0:
+        #    print('No Pucks active')
+        #    return True
+#
+        #while len(self.frame.network.scanner.nodes) == 0:
+        #    try:
+        #        time.sleep(1)
+        #        first = min(self.getNodes())
+        #        self.frame.setID(first)
+        #        wx.CallAfter(self.frame.scan_pucks(self))
+        #    except:
+        #        pass
+        #self.addPucks(self.frame.getID())
+        #i = len(self.getNodes())
+        #if i == 0:
+        #    return
         return True # Added for Windows DEMO - windows can't handle multi bus currently
 
     def addPucks(self,i): # Adds Puck ID to list of Active Frames
