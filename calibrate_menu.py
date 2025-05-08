@@ -59,6 +59,8 @@ class calibrate():
         self.node.sdo["SetModeOfOperation"].raw = 0
         time.sleep(1) # Wait at least 75 ms for the filters to settle
 
+        filt = 0
+
         # Calibrate iSense
         for channel in ['Alpha', 'Beta']:
           print("Previous {0} iSense bias = {1}".format(channel, self.node.sdo[channel]['Bias'].raw))
@@ -66,6 +68,13 @@ class calibrate():
           filt = (filt >> 4) + ((filt & 0x0008) >> 3) # Round Q12.4 to Q12.0
           self.node.sdo[channel]['Bias'].raw = filt
           print("New {0} iSense bias = {1}".format(channel, filt))
+
+        # Adjust Beta iSense bias to polyfit curve
+        # int32_t beta_bias = -0.00338216F * (*amp.temperature) * (*amp.temperature)
+        # + 0.33077781F * (*amp.temperature) + *isense[1].bias;
+        degc = self.node.sdo['Amplifier']['Temperature'].raw
+        self.node.sdo['Beta']['Bias'].raw = filt + 0.00338216 * degc * degc - 0.33077781 * degc
+        print("Thermally adjusted Beta iSense bias = {1}".format(filt))
 
         self.node.sdo['Save']['Single'].raw = ((0x3008 << 8) | 0x03) # Save Alpha iSense cal to EE
         self.node.sdo['Save']['Single'].raw = ((0x3009 << 8) | 0x03) # Save Beta iSense cal to EE
