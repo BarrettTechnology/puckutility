@@ -87,6 +87,9 @@ class calibrate():
         self.node.sdo['Save']['Single'].raw = ((0x3008 << 8) | 0x03) # Save Alpha iSense cal to EE
         self.node.sdo['Save']['Single'].raw = ((0x3009 << 8) | 0x03) # Save Beta iSense cal to EE
 
+        temp = self.node.sdo['Amplifier']['Temperature'].raw
+        print("Temperature: {}".format(temp))
+
         # # Set Mode to Idle (0)
         # print("Setting Mode = IDLE")
         # self.node.sdo["SetModeOfOperation"].raw = 0
