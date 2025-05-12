@@ -58,21 +58,16 @@ class calibrate():
         self.frame_statusbar.Update()
         wx.Yield()
 
-        # Set Mode to Idle (0)
-        print("Setting Mode = IDLE")
-        self.node.sdo["SetModeOfOperation"].raw = 0
+        # Clear faults, RTSO, OpEnabled
+        print("Going OpEnabled")
+        self.node.sdo["ControlWord"].raw = 0x80
+        self.node.sdo["ControlWord"].raw = 0x06
+        self.node.sdo["ControlWord"].raw = 0x0F
+
+        # Set Mode to Torque
+        print("Setting Mode = VOLTAGE MODE")
+        self.node.sdo["SetModeOfOperation"].raw = 12
         time.sleep(1) # Wait at least 75 ms for the filters to settle
-
-        # # Clear faults, RTSO, OpEnabled
-        # print("Going OpEnabled")
-        # self.node.sdo["ControlWord"].raw = 0x80
-        # self.node.sdo["ControlWord"].raw = 0x06
-        # self.node.sdo["ControlWord"].raw = 0x0F
-
-        # # Set Mode to Torque
-        # print("Setting Mode = Zero Torque")
-        # self.node.sdo["SetModeOfOperation"].raw = 10
-        # time.sleep(1) # Wait at least 75 ms for the filters to settle
 
         # Calibrate iSense
         for channel in ['Alpha', 'Beta']:
