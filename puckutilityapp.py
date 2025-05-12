@@ -106,7 +106,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
         # Setup Window + Icon
         self.SetIcon(wx.Icon('images/BarrettIcon.png'))
-        self.SetTitle("Puck Utility App - v1.1.2")
+        self.SetTitle("Puck Utility App - v1.1.3")
         self.button_6.SetBackgroundColour((66,255,0)) # Initialize with green button
         self.Bind(wx.EVT_CLOSE, self.onCloseFrame)
         # Disable the unimplemented menu items
