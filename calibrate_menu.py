@@ -177,8 +177,11 @@ class calibrate():
 
         self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
 
-        # Scale b by a/b to match a's amplitude
-        self.node.sdo['Beta']['Gainfactor'].raw = 4096 * a_filt / b_filt # Gain in Q4.12
+        abias = self.node.sdo['Alpha']['Bias'].raw
+        bbias = self.node.sdo['Beta']['Bias'].raw
+
+        # Scale b by (a-abias)/(b-bbias) to match a's amplitude while accounting for bias
+        self.node.sdo['Beta']['Gainfactor'].raw = 4096 * (a_filt - abias) / (b_filt - bbias) # Gain in Q4.12
         print("New Beta Gainfactor = {0}".format(self.node.sdo['Beta']['Gainfactor'].raw))
 
         self.node.sdo['Save']['Single'].raw = ((0x3008 << 8) | 0x06) # Save Alpha gainfactor to EE
