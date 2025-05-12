@@ -54,10 +54,26 @@ class calibrate():
         self.frame_statusbar.Update()
         wx.Yield()
 
-        # Set Mode to Idle (0)
-        print("Setting Mode = IDLE")
-        self.node.sdo["SetModeOfOperation"].raw = 0
-        time.sleep(1) # Wait at least 75 ms for the filters to settle
+        # Clear faults, RTSO, OpEnabled
+        #print("Going OpEnabled")
+        self.node.sdo.download(0x6040,0,0x80.to_bytes(length=2,byteorder='little'))
+        self.node.sdo.download(0x6040,0,0x06.to_bytes(length=2,byteorder='little'))
+        self.node.sdo.download(0x6040,0,0x0F.to_bytes(length=2,byteorder='little'))
+
+
+        print("Setting Mode = VOLTAGE")
+        self.node.sdo["SetModeOfOperation"].raw = 12
+
+        # Write theta_e, ud, StatsMode, vel
+        # theta_e is 16-bit signed from -pi to +pi
+        self.node.sdo['Theta_e'].raw = 0x7FFF # Stall @ Alpha Peak (+pi)
+
+        self.node.sdo['Motor']['ud'].raw = 000
+
+        # # Set Mode to Idle (0)
+        # print("Setting Mode = IDLE")
+        # self.node.sdo["SetModeOfOperation"].raw = 0
+        # time.sleep(1) # Wait at least 75 ms for the filters to settle
 
         filt = 0
 
@@ -74,7 +90,7 @@ class calibrate():
         # + 0.33077781F * (*amp.temperature) + *isense[1].bias;
         degc = self.node.sdo['Amplifier']['Temperature'].raw
         self.node.sdo['Beta']['Bias'].raw = filt + 0.00338216 * degc * degc - 0.33077781 * degc
-        print("Thermally adjusted Beta iSense bias = {1}".format(filt))
+        print("Thermally adjusted Beta iSense bias = {0}".format(filt))
 
         self.node.sdo['Save']['Single'].raw = ((0x3008 << 8) | 0x03) # Save Alpha iSense cal to EE
         self.node.sdo['Save']['Single'].raw = ((0x3009 << 8) | 0x03) # Save Beta iSense cal to EE
@@ -83,6 +99,10 @@ class calibrate():
         #self.text_ctrl_6.ChangeValue(str(self.node.sdo['Cal']['iSense1'].raw))
         if self.ADC_ON == False and self.adcWasON == True:
            self.on_off_adc(self)
+
+        # Set Mode to Idle (0)
+        print("Setting Mode = IDLE")
+        self.node.sdo["SetModeOfOperation"].raw = 0
 
     def calibrate_igainfactor(self, event):  # wxGlade: wxp3_frame.<event_handler>
         print("Event handler 'calibrate_igainfactor'")
