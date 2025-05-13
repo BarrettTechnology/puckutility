@@ -231,7 +231,7 @@ class calibrate():
         # Write theta_e, ud, StatsMode, vel
         # theta_e is 16-bit signed from -pi to +pi
         #self.node.sdo['Calibration']['e_polarity'].raw = 1
-        self.node.sdo['Theta_e'].raw = -0x4000 # -pi/2
+        self.node.sdo['Theta_e'].raw = -0x1000 # -pi/2
 
         # Read this motor's calibration current (mA)
         calibration_current = self.node.sdo['Calibration']['i_cal'].raw

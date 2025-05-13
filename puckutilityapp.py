@@ -34,11 +34,10 @@ import datetime
 
 # TODO
 # Add save feature for Puck configuration!!
-# Possibly add a way to update all puck firmware?
+# Possibly add a way to update all puck firmware??
 # ADD a wxpython based frame for custom motor tuning (gains configuration)
 # Maybe add escape feature to close app?
 # Add reboot to startup, and closing to idle pucks
-# Add a mag enc check feature (2-5s of idle and hold pos to find pos variation)
 # Add a failed message for failed config file uploads
 # Look into direction reversing at high velocities!
 # Look into possible issues with Pucks responding to sync messages when not in focus
