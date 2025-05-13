@@ -35,12 +35,21 @@ class calibrate():
         if continueCal == False:
           print('Ending calibration...')
           return
-        self.calibrate_ibias(None)
-        self.calibrate_igainfactor(None)
-        self.calibrate_enczero(None)
+        continueCal = self.calibrate_ibias(None, True)
+        if continueCal == False:
+          print('Ending calibration...')
+          return
+        continueCal = self.calibrate_igainfactor(None, True)
+        if continueCal == False:
+          print('Ending calibration...')
+          return
+        self.calibrate_enczero(None, True)
+        if continueCal == False:
+          print('Ending calibration...')
+          return
         #event.Skip()
 
-    def calibrate_ibias(self, event):  # wxGlade: wxp3_frame.<event_handler>
+    def calibrate_ibias(self, event, calAll=False):  # wxGlade: wxp3_frame.<event_handler>
         print("Event handler 'calibrate_ibias'")
         quick_test = self.choice_test.GetSelection()
         if quick_test != 0:
@@ -64,7 +73,7 @@ class calibrate():
         self.node.sdo["ControlWord"].raw = 0x06
         self.node.sdo["ControlWord"].raw = 0x0F
 
-        # Set Mode to Torque
+        # Set Mode to Voltage
         print("Setting Mode = VOLTAGE MODE")
         self.node.sdo["SetModeOfOperation"].raw = 12
         time.sleep(1) # Wait at least 75 ms for the filters to settle
@@ -82,20 +91,42 @@ class calibrate():
         self.node.sdo['Save']['Single'].raw = ((0x3008 << 8) | 0x03) # Save Alpha iSense cal to EE
         self.node.sdo['Save']['Single'].raw = ((0x3009 << 8) | 0x03) # Save Beta iSense cal to EE
 
-        temp = self.node.sdo['Amplifier']['Temperature'].raw
-        print("Temperature: {}".format(temp))
+        # Check Bounds for error!!
+        error = .02 # 2% error
 
-        # # Set Mode to Idle (0)
-        # print("Setting Mode = IDLE")
-        # self.node.sdo["SetModeOfOperation"].raw = 0
-        # # time.sleep(1) # Wait at least 75 ms for the filters to settle
+        a_bias = self.node.sdo['Alpha']['Bias'].raw
+        b_bias = self.node.sdo['Alpha']['Bias'].raw
+
+        if a_bias > 2048 * (1 + error) or a_bias < 2048 * (1 - error) or b_bias > 2048 * (1 + error) or b_bias < 2048 * (1 - error) :
+          print('iSense Bias out of bounds!')
+          msg = "iSense Bias out of bounds!" \
+          "\n\nAlpha Bias: {}" \
+          "\nBeta Bias: {}" \
+          "\nAcceptable Range: {} - {}" \
+          "\n\nDebugging steps:" \
+          "\n- Ensure proper configuration file has been loaded" \
+          "\n- Verify phase leads are properly connected" \
+          "\n\nWould you like to continue calibration?"  .format(a_bias,b_bias,round(2048*(1-error)),round(2048*(1+error)))
+          dlg = wx.MessageDialog(None,msg,'Warning!',wx.YES_NO | wx.ICON_WARNING)
+          answer = dlg.ShowModal()
+          dlg.Destroy()
+          print("Encoder readings unstable...")
+          if answer == wx.ID_YES:
+             return True
+          if answer == wx.ID_NO:
+             return False
+
+        # Set Mode to Idle (0)
+        print("Setting Mode = IDLE")
+        self.node.sdo["SetModeOfOperation"].raw = 0
+        # time.sleep(1) # Wait at least 75 ms for the filters to settle
 
         self.frame_statusbar.SetStatusText("Ready", 1)
         #self.text_ctrl_6.ChangeValue(str(self.node.sdo['Cal']['iSense1'].raw))
         if self.ADC_ON == False and self.adcWasON == True:
            self.on_off_adc(self)
 
-    def calibrate_igainfactor(self, event):  # wxGlade: wxp3_frame.<event_handler>
+    def calibrate_igainfactor(self, event, calAll=False):  # wxGlade: wxp3_frame.<event_handler>
         print("Event handler 'calibrate_igainfactor'")
         quick_test = self.choice_test.GetSelection()
         if quick_test != 0:
@@ -176,8 +207,30 @@ class calibrate():
         bbias = self.node.sdo['Beta']['Bias'].raw
 
         # Scale b by (a-abias)/(b-bbias) to match a's amplitude while accounting for bias
-        self.node.sdo['Beta']['Gainfactor'].raw = 4096 * (a_filt - abias) / (b_filt - bbias) # Gain in Q4.12
+        gainfactor = self.node.sdo['Beta']['Gainfactor'].raw = 4096 * (a_filt - abias) / (b_filt - bbias) # Gain in Q4.12
+        gainfactor = round(gainfactor)
         print("New Beta Gainfactor = {0}".format(self.node.sdo['Beta']['Gainfactor'].raw))
+
+        # Check Bounds for error!!
+        error = .05
+
+        if gainfactor > round(4096 * (1 + error)) or gainfactor < round(4096 * (1 - error)):
+          print('Beta Gainfactor out of bounds!')
+          # Bad Encoder reading (error dialog! debug steps)
+          # Offer to continue or cancel calibration?
+          msg = "Beta Gainfactor out of bounds! \n\nGainfactor: {}" \
+          "\nAcceptable Range: {} - {}" \
+          "\n\nDebugging steps:" \
+          "\n- Ensure proper configuration file has been loaded" \
+          "\n- Verify phase leads are properly connected" \
+          "\n\nWould you like to continue calibration?"  .format(gainfactor,round(4096*(1-error)),round(4096*(1+error)))
+          dlg = wx.MessageDialog(None,msg,'Warning!',wx.YES_NO | wx.ICON_WARNING)
+          answer = dlg.ShowModal()
+          dlg.Destroy()
+          if answer == wx.ID_YES:
+             return True
+          if answer == wx.ID_NO:
+             return False
 
         self.node.sdo['Save']['Single'].raw = ((0x3008 << 8) | 0x06) # Save Alpha gainfactor to EE
         self.node.sdo['Save']['Single'].raw = ((0x3009 << 8) | 0x06) # Save Beta gainfactor to EE
@@ -199,7 +252,7 @@ class calibrate():
         print("Event handler 'calibrate_islope' not implemented!")
         event.Skip()
 
-    def calibrate_enczero(self, event):  # wxGlade: wxp3_frame.<event_handler>
+    def calibrate_enczero(self, event, calAll=False):  # wxGlade: wxp3_frame.<event_handler>
         print("Event handler 'calibrate_enczero'")
         quick_test = self.choice_test.GetSelection()
         if quick_test != 0:
@@ -253,26 +306,28 @@ class calibrate():
         # Capture RawPosition when commanding theta_e = 0
         # Also determine e_polarity by watching the raw encoder direction
         pos0 = self.node.sdo['Encoder']['RawPosition'].raw
-        for i in range(int(-0x4000), 0, int(0x4000/8)):
+        startPos1 = self.node.sdo['PositionFeedback'].raw
+        for i in range(int(-0x1000), 0, int(0x1000/32)):
           self.node.sdo['Theta_e'].raw = i
           time.sleep(0.05)
         time.sleep(0.25)
         pos1 = self.node.sdo['Encoder']['RawPosition'].raw
-        print("After approaching theta_e = 0 from -90, Encoder raw = {0}".format(pos1))
+        print("After approaching theta_e = 0 from -22.5, Encoder raw = {0}".format(pos1))
 
+        zeroPos1 = self.node.sdo['PositionFeedback'].raw
 
         # Drive from theta_e = +90 to 0 in 10 steps of 0.05s
         # Capture RawPosition when commanding theta_e = 0
-        self.node.sdo['Theta_e'].raw = 0x4000
+        self.node.sdo['Theta_e'].raw = 0x1000
         time.sleep(1)
-        for i in range(int(0x4000), 0, int(-0x4000/8)):
+        startPos2 = self.node.sdo['PositionFeedback'].raw
+        for i in range(int(0x1000), 0, int(-0x1000/32)):
           self.node.sdo['Theta_e'].raw = i
           time.sleep(0.05)
         time.sleep(0.25)
         pos2 = self.node.sdo['Encoder']['RawPosition'].raw
-        print("After approaching theta_e = 0 from +90, Encoder raw = {0}".format(pos2))
-
-        self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
+        print("After approaching theta_e = 0 from +22.5, Encoder raw = {0}".format(pos2))
+        zeroPos2 = self.node.sdo['PositionFeedback'].raw
 
         # Take the average of the two measurements, store e_zero
         encoder_resolution = self.node.sdo['EncoderConfig']['Resolution'].raw
@@ -297,12 +352,41 @@ class calibrate():
         self.node.sdo['Save']['Single'].raw = ((0x3011 << 8) | 0x02) # Save e_polarity to EE
         print("Electrical polarity = {0}".format(self.node.sdo['Calibration']['e_polarity'].raw))
 
-        print("Previous electrical zero = {0}".format(self.node.sdo['Calibration']['e_zero'].raw))
-        #pos = self.node.sdo['Encoder']['RawPosition'].raw
+        previous_zero = self.node.sdo['Calibration']['e_zero'].raw
+
+        print("Previous electrical zero = {0}".format(previous_zero))
         self.node.sdo['Calibration']['e_zero'].raw = pos
-        #self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
         self.node.sdo['Save']['Single'].raw = ((0x3011 << 8) | 0x01) # Save e_zero to EE
         print("New electrical zero = {0}".format(pos))
+
+        pos_change1 = round(abs(startPos1 - zeroPos1) * (360/4096) * motor_poles)
+        pos_change2 = round(abs(startPos2 - zeroPos2) * (360/4096) * motor_poles)
+
+        # Check Bounds for error!!
+        error = .25 # 25%
+        expected_change = 50
+
+        self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
+
+        if pos_change1 < round(expected_change * (1 - error)) or pos_change2 < round(expected_change * (1 - error)):
+          print('Encoder Zero Failed!')
+          # Bad Encoder reading (error dialog! debug steps)
+          # Can grab kt and cal current to determine required torque
+          cal_torque = calibration_current * self.node.sdo['Calibration']['kt'].raw / 1000
+          msg = "Encoder Zero Failed! \n\nFirst Jump: {}°" \
+          "\nSecond Jump: {}°" \
+          "\nExpected Jump: >= {}°" \
+          "\n\nDebugging steps:" \
+          "\n- Ensure proper configuration file has been loaded" \
+          "\n- Verify output friction is less than cal torque for the motor ({}mNm)" \
+          "\n\nWould you like to continue calibration?"  .format(pos_change1,pos_change2,round(22.5*(1-error)),cal_torque)
+          dlg = wx.MessageDialog(None,msg,'Warning!',wx.YES_NO | wx.ICON_WARNING)
+          answer = dlg.ShowModal()
+          dlg.Destroy()
+          if answer == wx.ID_YES:
+             return True
+          if answer == wx.ID_NO:
+             return False
 
         self.frame_statusbar.SetStatusText("Ready", 1)
 

@@ -80,9 +80,9 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         USE_BUFFERED_DC = True
 
         # Initialize self variables
-        self.gearRatio = 3249 / 169 # Default for ec max 16mm dev kit
+        #self.gearRatio = 3249 / 169 # Default for ec max 16mm dev kit
         #self.gearRatio = 225 / 16
-        #self.gearRatio = 1
+        self.gearRatio = 1
         #self.gearRatio = 10
         self.encoderResolution = 4096 # cts / revolution
         self.adcWasON = False
