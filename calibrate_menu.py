@@ -364,7 +364,7 @@ class calibrate():
 
         # Check Bounds for error!!
         error = .25 # 25%
-        expected_change = 50
+        expected_change = 22.5
 
         self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
 
