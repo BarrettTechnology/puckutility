@@ -171,7 +171,8 @@ class calibrate():
         # Increase Motor d-axis voltage (/1000 of i_peak)
         # until measured d-axis current > calibration_current mA or ud > 32000
         motor_ud = 0
-        while (self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak) < calibration_current and motor_ud < 32000:
+        motor_id = self.node.sdo['Motor']['id'].raw
+        while (motor_id < 1000 and self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak) < calibration_current and motor_ud < 32000:
           print("alpha = {0}, beta = {1}, id = {2}, iq = {3}, ud = {4}".format(
             self.node.sdo['Alpha']['Raw'].raw, 
             self.node.sdo['Beta']['Raw'].raw, 
@@ -294,7 +295,8 @@ class calibrate():
 
         # Increase Motor d-axis voltage until measured d-axis current > calibration_current mA or ud > 32000
         motor_ud = 0
-        while (self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak) < calibration_current and motor_ud < 32000:
+        motor_id = self.node.sdo['Motor']['id'].raw
+        while (motor_id < 1000 and self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak) < calibration_current and motor_ud < 32000:
           print("id = {0}, ud = {1}".format(
             self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak, 
             self.node.sdo['Motor']['ud'].raw))
