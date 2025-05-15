@@ -31,6 +31,7 @@ import webbrowser
 import sys
 import math
 import datetime
+import canopen_runner
 
 # TODO
 # Add save feature for Puck configuration!!
@@ -610,15 +611,32 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
           can_device = self.choice_port.GetStringSelection()
           node_id = self.choice_id.GetString(self.choice_id.GetSelection())
 
-          # Call canopen_runner.py script with all required parameters
-          print("Writing OD entries")
-          self.network.disconnect()
-          if platform.system() == "Windows":
-              python_name = "python"
+        #   # Call canopen_runner.py script with all required parameters
+        #   print("Writing OD entries")
+        #   self.network.disconnect()
+        #   if platform.system() == "Windows":
+        #       python_name = "python"
+        #   else:
+        #       python_name = "python3"
+        #   l = [python_name, 'canopen_runner.py', can_device, node_id, 'puck4.eds', pathname]
+        #   subprocess.call(l) # Note: this waits until the subprocess exits
+
+          # attempt to use imported canopen runner to catch errors
+          #canopen_runner.main('can0', node_id, 'puck4.eds', pathname)
+
+          # I think I got it working!!!
+          success = canopen_runner.start(can_device, int(node_id),'puck4.eds', pathname)
+          if success == True:
+            print("Success!")
           else:
-              python_name = "python3"
-          l = [python_name, 'canopen_runner.py', can_device, node_id, 'puck4.eds', pathname]
-          subprocess.call(l) # Note: this waits until the subprocess exits
+            print("Configuration file failed to upload...")
+            msg = "Configuration file failed to upload..." \
+            "\n\nDebug:" \
+            "\n-Verify proper configuration file formatting" \
+            "\n-View terminal log for additional details"
+            dlg = wx.MessageDialog(None,msg)
+            dlg.ShowModal()
+            dlg.Destroy()
 
           print("Establishing a new network...")
           self.network = canopen.Network()
