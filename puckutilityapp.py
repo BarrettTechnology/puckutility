@@ -633,6 +633,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             msg = "Configuration file failed to upload..." \
             "\n\nDebug:" \
             "\n-Verify proper configuration file formatting" \
+            "\n-Verify correct version of config file" \
             "\n-View terminal log for additional details"
             dlg = wx.MessageDialog(None,msg)
             dlg.ShowModal()

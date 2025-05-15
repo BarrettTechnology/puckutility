@@ -113,6 +113,11 @@ def parse_error_code(code):
     Returns a string description of the provided error code
     Descriptions are specified for the runner command
     """
+    global errors 
+
+    if code != 0:
+        errors = errors + 1
+
     if code == 0:
         return "No Error"
     elif code == 1:
@@ -273,7 +278,7 @@ def canopen_runner(csvfile, replace_id, start_id, edsfile, v, force,
         display_line = ("Error (line " + str(line[0]) + "): " +
                         parse_error_code(line[1]))
         printout(display_line, True)
-        errors = errors + 1
+        # errors = errors + 1
 
     #if there are invalid lines & user has elected not to force continue, quit
     if len(invalid_lines) and not force:
@@ -428,6 +433,7 @@ def execute_canopen_runner(csvfile, replace_id, start_id):
     sdo_retries = 1 #pulled from canopen.sdo
     sdo_b2b = 1 #set to 0 as default
     global node
+    global errors
     
     linenum = 0
     for row in csvfile:
@@ -499,14 +505,17 @@ def execute_canopen_runner(csvfile, replace_id, start_id):
                 time.sleep(sdo_b2b/1000.0)
             except ConnectionError:
                 printout("ERROR: Could not connect to CAN device", True)
+                errors = errors + 1
             except SdoCommunicationError:
                 if (index == 0x21B0 and subindex == 0): # 0x21B0 = device ID
                     continue #suppress error b/c id inside device changed
                 printout("ERROR: SDO Communication Error on line " +
                          str(linenum) + ".", True)
+                errors = errors + 1
             except SdoAbortedError as e:
                 printout("ERROR: SDO Aborted Error on line " + str(linenum) +
                          ". Error code " + str(e.code), True)
+                errors = errors + 1
     #click.secho("Done", fg="green")
     print("Done")
 
@@ -545,6 +554,9 @@ def run_main():
 
 def start(can_device, can_id, edsfile, csvfile):
   global node
+  global errors
+
+  errors = 0
 #   can_device = sys.argv[1]
 #   can_id = int(sys.argv[2])
 #   edsfile = sys.argv[3]
@@ -572,8 +584,9 @@ def start(can_device, can_id, edsfile, csvfile):
     # canopen_runner(csvfile, replace_id, start_id, edsfile, v, force, no_warnings):
 
   myfile = open(csvfile, 'r')
-  errors = canopen_runner(myfile, can_id, can_id, None, False, False, False)
-#   print("num errors {}".format(errors))
+  #errors = canopen_runner(myfile, can_id, can_id, None, False, False, False)
+  canopen_runner(myfile, can_id, can_id, None, False, False, False)
+  print("Number of errors: {}".format(errors))
   if errors == 0:
     return True
   else:
