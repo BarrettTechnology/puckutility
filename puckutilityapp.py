@@ -625,7 +625,11 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
           #canopen_runner.main('can0', node_id, 'puck4.eds', pathname)
 
           # I think I got it working!!!
+          print("Writing OD entries")
+          self.network.disconnect()
+          
           success = canopen_runner.start(can_device, int(node_id),'puck4.eds', pathname)
+          
           if success == True:
             print("Success!")
           else:

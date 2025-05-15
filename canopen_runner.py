@@ -587,6 +587,7 @@ def start(can_device, can_id, edsfile, csvfile):
   #errors = canopen_runner(myfile, can_id, can_id, None, False, False, False)
   canopen_runner(myfile, can_id, can_id, None, False, False, False)
   print("Number of errors: {}".format(errors))
+  network.disconnect()
   if errors == 0:
     return True
   else:
