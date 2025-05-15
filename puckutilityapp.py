@@ -147,6 +147,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.node.tpdo[i].clear()
             self.node.rpdo[i].clear()
 
+
         # 8-bytes (64 bits) per PDO - make sure there is space for each data type || split PDOs to fit (can change sync timing per PDO as well)
         print("Configuring TPDO3 and TPDO4 for ADC Monitor...") 
         self.node.tpdo[3].add_variable('Amplifier','BusVoltage') # (0x3000,1) Bus Voltage - "BusVoltage" (16 bit)
@@ -193,8 +194,19 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
     def can_port(self,event):
         #print("Event handler 'can_port'")
-        #self.on_off_adc(self)
-        #print(self.adcWasON)
+        pass
+
+    def scan_pucks(self, event):  # wxGlade: wxp3_frame.<event_handler>
+        #print("Event handler 'scan_pucks'")
+        #print(str(datetime.datetime.now()) + " Event handler 'scan_pucks'")
+        # Set Mode to IDLE in case test is active
+        if self.lastMode != 0:
+            self.lastMode = 0 # Reset lastMode
+            self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
+            self.button_6.SetBackgroundColour((66,255,0))
+            self.button_6.SetLabel("Go")
+            print("Idling...")
+
         if(self.ADC_ON == True):
             self.on_off_adc(self) # Turn off adc 
         try:
@@ -207,17 +219,11 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         can_device = self.choice_port.GetStringSelection()
 
         try:
-          if platform.system() == "Windows":
+          if platform.system() == "Windows" or platform.system() == "Darwin":
             self.network.connect(bustype='pcan', channel='PCAN_USBBUS'+str(int(can_device[-1:])+1), bitrate=1000000)
           elif platform.system() == "Linux":
-            self.network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)    
-          elif platform.system() == "Darwin":
-            self.network.connect(bustype='pcan', channel='PCAN_USBBUS1',bitrate=1000000) 
-          # This will attempt to read an SDO from nodes 1 - 127
-          self.network.scanner.reset()
-          #print('network reset')
-          self.network.scanner.search()
-          #print('search completed')
+            self.network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)  
+
         except Exception as e: 
             print(e)
             print('No CAN driver found!')
@@ -231,22 +237,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
             dlg.Destroy()
             return
-        # We may need to wait a short while here to allow all nodes to respond
-        time.sleep(0.05)
-        #self.scan_pucks(None)
 
-
-    def scan_pucks(self, event):  # wxGlade: wxp3_frame.<event_handler>
-        #print("Event handler 'scan_pucks'")
-        #print(str(datetime.datetime.now()) + " Event handler 'scan_pucks'")
-        # Set Mode to IDLE in case test is active
-        if self.lastMode != 0:
-            self.lastMode = 0 # Reset lastMode
-            self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
-            self.button_6.SetBackgroundColour((66,255,0))
-            self.button_6.SetLabel("Go")
-            print("Idling...")
-        
         try:
             # Think we need these  for scan to work...
             # This will attempt to read an SDO from nodes 1 - 127
@@ -1032,33 +1023,34 @@ class MyApp(wx.App):
 
         self.frame = MyFrame(None, wx.ID_ANY, "")
         self.frame.Show()
-        self.frame.can_port(None)
-        # Maybe set this ^ on a while loop for when no bus is active
-        # Transmit an NMT reboot command to this node
-        print("Booting...")
-        self.frame.network.send_message(0x0, [0x81, 0])
-        time.sleep(0.5) # wait for puck to reboot (avoids loss of communication)
-        #self.frame.network = self.network
-        self.frame.scan_pucks(self)
-        self.initialize = self.frame.network.scanner.nodes
-        # Placement causes node not to get added!!
-        if len(self.getNodes()) == 0:
-            print('No Pucks active')
-            return True
-
-        while len(self.frame.network.scanner.nodes) == 0:
-            try:
-                time.sleep(1)
-                first = min(self.getNodes())
-                self.frame.setID(first)
-                wx.CallAfter(self.frame.scan_pucks(self))
-            except:
-                pass
-        self.addPucks(self.frame.getID())
-        i = len(self.getNodes())
-        if i == 0:
-            return
-        return True # Added for Windows DEMO - windows can't handle multi bus currently
+        #self.frame.can_port(None)
+        ## Maybe set this ^ on a while loop for when no bus is active
+        ## Transmit an NMT reboot command to this node
+        #print("Booting...")
+        #self.frame.network.send_message(0x0, [0x81, 0])
+        #time.sleep(0.5) # wait for puck to reboot (avoids loss of communication)
+        ##self.frame.network = self.network
+        #self.frame.scan_pucks(self)
+        #self.initialize = self.frame.network.scanner.nodes
+        ## Placement causes node not to get added!!
+        #if len(self.getNodes()) == 0:
+        #    print('No Pucks active')
+        #    return True
+#
+        #while len(self.frame.network.scanner.nodes) == 0:
+        #    try:
+        #        time.sleep(1)
+        #        first = min(self.getNodes())
+        #        self.frame.setID(first)
+        #        wx.CallAfter(self.frame.scan_pucks(self))
+        #    except:
+        #        pass
+        #self.addPucks(self.frame.getID())
+        #i = len(self.getNodes())
+        #if i == 0:
+        #    return
+        #return True # Added for Windows DEMO - windows can't handle multi bus currently
+        return True
 
     def addPucks(self,i): # Adds Puck ID to list of Active Frames
         wx.App.ActiveID.append(i)
