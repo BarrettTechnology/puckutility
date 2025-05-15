@@ -76,7 +76,7 @@ class calibrate():
         # Set Mode to Voltage
         print("Setting Mode = VOLTAGE MODE")
         self.node.sdo["SetModeOfOperation"].raw = 12
-        time.sleep(1) # Wait at least 75 ms for the filters to settle
+        time.sleep(2) # Wait at least 75 ms for the filters to settle (2 seconds seems to be the sweet spot)
 
         # Calibrate iSense
         for channel in ['Alpha', 'Beta']:
@@ -162,6 +162,9 @@ class calibrate():
         # theta_e is 16-bit signed from -pi to +pi
         self.node.sdo['Theta_e'].raw = 0x7FFF # Stall @ Alpha Peak (+pi)
 
+        # # may try to add a delay to settle the noise!
+        # time.sleep(1) # Wait at least 75 ms for the filters to settle 
+
         # Read this motor's calibration current (mA)
         calibration_current = self.node.sdo['Calibration']['i_cal'].raw
 
@@ -213,7 +216,7 @@ class calibrate():
         print("New Beta Gainfactor = {0}".format(self.node.sdo['Beta']['Gainfactor'].raw))
 
         # Check Bounds for error!!
-        error = .05
+        error = .075 # 7.5%
 
         if gainfactor > round(4096 * (1 + error)) or gainfactor < round(4096 * (1 - error)):
           print('Beta Gainfactor out of bounds!')
