@@ -534,8 +534,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
           self.network.disconnect()
 
-          self.can_port(None)
-          self.scan_pucks(None)
+        #   self.can_port(None)
+        #   self.scan_pucks(None)
 
           if semver.match(version, '==1.0.0'):
               l = ['blhost', '-p', can_device + "," + node_id, 'flash-erase-all']
@@ -557,6 +557,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
               subprocess.call(l) # Note: this waits until the subprocess exits
 
           # Re-scan
+          self.can_port(None)
           self.scan_pucks(None)
           
           #print("Establishing a new network...")
