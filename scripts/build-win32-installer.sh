@@ -5,9 +5,9 @@ cp -r images build/win/PuckUtilityApp/
 cp -r config build/win/PuckUtilityApp/
 cp puck4.eds build/win/PuckUtilityApp/
 cp flashp4.py build/win/PuckUtilityApp/
-cp canopen_runner.py PuckUtilityApp/
-cp flashloader.eds PuckUtilityApp/
-cp -r firmware PuckUtilityApp/
+cp canopen_runner.py build/win/PuckUtilityApp/
+cp flashloader.eds build/win/PuckUtilityApp/
+cp -r firmware build/win/PuckUtilityApp/
 curl https://web.barrett.com/support/Puck_ControlLibrary/PeakOemDrv.exe -o PeakOemDrv.exe
 mv PeakOemDrv.exe build/win/PuckUtilityApp/
 cd build/win
