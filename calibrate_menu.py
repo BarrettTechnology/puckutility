@@ -499,6 +499,11 @@ class calibrate():
 
     def test_encoder(self,event,calAll=False):
         print("Testing magnetic encoder...")
+
+        self.frame_statusbar.SetStatusText("Testing magnetic encoder...", 1)
+        self.frame_statusbar.Update()
+        wx.Yield()
+
         # Set Mode to Idle (0)
         print("Setting Mode = IDLE")
         self.node.sdo["SetModeOfOperation"].raw = 0
@@ -531,6 +536,8 @@ class calibrate():
              return True
           if answer == wx.ID_NO:
              return False
+          
+          self.frame_statusbar.SetStatusText("Ready", 1)
 
     def set_user_dir(self, event):  # wxGlade: wxp3_frame.<event_handler>
         print("Event handler 'set_user_dir'")
