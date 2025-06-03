@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 '''
     onoffbutton.py
 
@@ -309,9 +310,9 @@ class OnOffButton(wx.Control):
         self.rrinnerposy = self.rrouterposy + 2
         self.rrinnerradius = self.rrinnerh/2
         # Circle position and size
-        self.circradius = self.rrinnerradius - 1
-        self.circoffpos = (int(self.rrinnerradius+self.rrinnerposx), self.rrinnerposy + self.rrinnerradius)
-        self.circonpos = (int(self.rrinnerw - (self.rrinnerradius-3)), self.rrinnerposy + self.rrinnerradius)
+        self.circradius = int(self.rrinnerradius - 1)
+        self.circoffpos = (int(self.rrinnerradius+self.rrinnerposx), int(self.rrinnerposy + self.rrinnerradius))
+        self.circonpos = (int(self.rrinnerw - (self.rrinnerradius-3)), int(self.rrinnerposy + self.rrinnerradius))
 
     def SetValue(self, value):
         if value > 1:
@@ -503,8 +504,7 @@ if __name__ == '__main__':
             panel.SetBackgroundColour("lightgreen")
 
             self.onoff = OnOffButton(panel, -1, label=" 80 X 48", pos=(10, 50), size=(160, 96), initial=1)
-            self.onoff1 = OnOffButton(panel, -1, " 60 X 36 line 1\n line2\n line3", pos=(10, 200),\
-                                      size=(60, 36), initial=0, border=False)
+            self.onoff1 = OnOffButton(panel, -1, " 48 X 30", pos=(10, 200), size=(48, 30), initial=0, border=False)
             self.onoff2 = OnOffButton(panel, -1, " 40 x 24 Rectangle, Right && spacing", pos=(10, 250),\
                                       size=(40, 24), initial=1, circle=False, style=wx.BORDER_NONE | wx.ALIGN_RIGHT)
             self.onoff3 = OnOffButton(panel, -1, " 30 x 20 Mono Rectangle", pos=(10, 300),\
@@ -522,9 +522,9 @@ if __name__ == '__main__':
             self.Bind(EVT_ON, self.SwOn)
             self.Bind(EVT_OFF, self.SwOff)
             self.onoff1.Bind(EVT_ON_OFF, self.OnOff1)
-            self.onoff1.SetOnColour("white")
-            self.onoff1.SetOnForegroundColour("blue")
-            self.onoff1.SetOffColour("grey")
+            #self.onoff1.SetOnColour("white")
+            #self.onoff1.SetOnForegroundColour("blue")
+            #self.onoff1.SetOffColour("grey")
             # self.onoff1.SetOffForegroundColour("red")
             self.onoff2.SetOnColour("olivedrab")
             self.onoff2.SetOnForegroundColour("darkgreen")

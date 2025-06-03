@@ -14,6 +14,16 @@ import math
 import platform
 import time
 
+import socket
+
+teleplotAddr = ("127.0.0.1",47269)
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+def sendTelemetry(name, value):
+    now = time.time() * 1000
+    msg = name+":"+str(now)+":"+str(value)+"|g"
+    sock.sendto(msg.encode(), teleplotAddr)
+
 import canopen
 from timeit import default_timer as timer
 
@@ -42,6 +52,8 @@ def tpdo1_callback(msg):
     mode = node.tpdo[1]['ReadModeOfOperation'].raw
     pos = node.tpdo[1]['PositionFeedback'].raw
 
+    sendTelemetry("pos", pos)
+
 def tpdo2_callback(msg):
     global node
     global start
@@ -54,6 +66,9 @@ def tpdo2_callback(msg):
     # Store data
     vel = node.tpdo[2]['VelocityFeedback'].raw
     current = node.tpdo[2]['CurrentFeedback'].raw
+
+    sendTelemetry("vel", vel)
+    sendTelemetry("cur", current)
 
     sin = math.sin(2*math.pi/period * (timer() - start))
 
@@ -69,7 +84,6 @@ def tpdo2_callback(msg):
     node.rpdo[1]['TargetTorque'].raw = sin * maxtrq
     node.rpdo[2]['TargetVelocity'].raw = sin * maxvel
     node.rpdo[2]['TargetPosition'].raw = sin * maxpos
-
 
 def OpEnable():
     # Clear faults, RTSO, OpEnabled
