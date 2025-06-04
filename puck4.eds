@@ -972,6 +972,27 @@ AccessType = rw
 ObjectType = 0x07
 DefaultValue = 0
 
+[2383]
+DataType = 0x05
+ParameterName = ImpCtrl
+DefaultValue = 2
+AccessType = RO
+ObjectType = 0x08
+
+[2383sub1]
+DataType = 0x07
+ParameterName = Stiffness
+DefaultValue = 0
+AccessType = RW
+ObjectType = 0x07
+
+[2383sub2]
+DataType = 0x07
+ParameterName = Damping
+DefaultValue = 0
+AccessType = RW
+ObjectType = 0x07
+
 [2385]
 DataType = 0x05
 ParameterName = Execute

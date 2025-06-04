@@ -7,6 +7,7 @@ import canopen
 import socket
 from timeit import default_timer as timer
 import wx
+import struct
 from onoffbutton import OnOffButton, EVT_ON_OFF  # Import the custom OnOffButton control
 
 # Teleplot configuration
@@ -15,11 +16,11 @@ sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
 # Global variables for impedance parameters
 target_position = 0
-stiffness = 1000
+stiffness = 100
 target_velocity = 0
-damping = 100
+damping = 10
 target_torque = 0
-command_type = "sinusoidal"  # Default command type
+command_type = "None"  # Default command type
 play = False  # Play/Pause state
 amplitude = 4096  # Default amplitude
 period = 5  # Default period
@@ -45,6 +46,20 @@ def home():
         time.sleep(0.1)
     node.sdo["ControlWord"].raw = 0x0F # Clear homing flag
 
+def FloatToU32(f):
+    """
+    Convert a float to a 32-bit unsigned integer.
+    This is used for SDO downloads of floating-point values.
+    """
+    return struct.unpack('I', struct.pack('f', f))[0]
+
+def U32ToFloat(u):
+    """
+    Convert a 32-bit unsigned integer to a float.
+    This is used for SDO uploads of floating-point values.
+    """
+    return struct.unpack('f', struct.pack('I', u))[0]
+
 def configure_impedance_mode():
     global node
     rate = 100  # Hz
@@ -59,6 +74,9 @@ def configure_impedance_mode():
     node.rpdo[2]["TargetVelocity"].raw = target_velocity
     #node.rpdo[1]["Damping"].raw = damping
     node.rpdo[1]["TargetTorque"].raw = target_torque
+
+    node.sdo["ImpCtrl"]["Stiffness"].raw = FloatToU32(stiffness)
+    node.sdo["ImpCtrl"]["Damping"].raw = FloatToU32(damping)
     
     # Each time we receive this PDO from the puck, execute a callback
     node.tpdo[1].add_callback(tpdo1_callback)
@@ -70,11 +88,6 @@ def configure_impedance_mode():
     # Set up the Cyclic Sync timing (only used in Cyclic Sync modes)
     node.sdo["Cyclic"]["InterpolationPeriod"].raw = 1000 / rate # milliseconds
     node.sdo["Cyclic"]["InterpolationScale"].raw = -3 # milliseconds
-
-    # Set the initial targets
-    node.rpdo[1]['TargetTorque'].raw = 0
-    node.rpdo[2]['TargetVelocity'].raw = 0
-    node.rpdo[2]['TargetPosition'].raw = 0
 
     OpEnable()
 
@@ -88,23 +101,25 @@ def generate_command(elapsed, period, amplitude):
     """
     Generate commanded position and velocity based on the selected command type.
     """
-    if command_type == "sinusoidal":
+    global target_position, target_velocity
+
+    if command_type == "Sinusoidal":
         position = amplitude * math.sin(2 * math.pi * elapsed / period)
         velocity = (2 * math.pi * amplitude / period) * math.cos(2 * math.pi * elapsed / period)
-    elif command_type == "square":
+    elif command_type == "Square":
         position = amplitude if (elapsed % period) < (period / 2) else -amplitude
         velocity = 0  # Square wave has instantaneous velocity changes
-    elif command_type == "triangular":
+    elif command_type == "Triangular":
         phase = (elapsed % period) / period
         if phase < 0.5:
-            position = amplitude * (4 * phase - 2)
+            position = amplitude * (4 * phase - 1)
             velocity = 4 * amplitude / period
         else:
-            position = amplitude * (2 - 4 * phase)
+            position = amplitude * (3 - 4 * phase)
             velocity = -4 * amplitude / period
     else:
-        position = 0
-        velocity = 0
+        position = target_position
+        velocity = target_velocity
 
     return position, velocity
 
@@ -122,6 +137,7 @@ def tpdo2_callback(msg):
     global node
     global start
     global period
+    global target_torque
 
     maxtrq = 1000     # /1000 of rated torque
     maxvel = 20000    # cts/sec
@@ -144,7 +160,6 @@ def tpdo2_callback(msg):
 
     sendTelemetry("TargetPosition", position)
     sendTelemetry("TargetVelocity", velocity)
-    #sendTelemetry("TargetTorque", target_torque)
 
 def toggle_sync():
     global play
@@ -162,7 +177,8 @@ def toggle_sync():
 
         # Start SYNC thread
         network.sync.start(1/rate)
-    else:  # Stop sending RPDOs
+    else:  
+        # Stop sending RPDOs
         node.rpdo[1].stop()
         node.rpdo[2].stop()
 
@@ -197,13 +213,13 @@ class ImpedanceControlApp(wx.Frame):
         self.entry_position = wx.TextCtrl(panel, value="0", pos=(150, 10))
 
         wx.StaticText(panel, label="Stiffness:", pos=(290, 10))
-        self.entry_stiffness = wx.TextCtrl(panel, value="1000", pos=(400, 10))
+        self.entry_stiffness = wx.TextCtrl(panel, value=f"{stiffness:.4f}", pos=(400, 10))
 
         wx.StaticText(panel, label="Target Velocity (cts/s):", pos=(10, 50))
         self.entry_velocity = wx.TextCtrl(panel, value="0", pos=(150, 50))
 
         wx.StaticText(panel, label="Damping:", pos=(290, 50))
-        self.entry_damping = wx.TextCtrl(panel, value="100", pos=(400, 50))
+        self.entry_damping = wx.TextCtrl(panel, value=f"{damping:.4f}", pos=(400, 50))
 
         wx.StaticText(panel, label="Target Torque (mNm):", pos=(10, 90))
         self.entry_torque = wx.TextCtrl(panel, value="0", pos=(150, 90))
@@ -239,27 +255,27 @@ class ImpedanceControlApp(wx.Frame):
         self.Show()
 
     def update_wave_type(self, event):
-        command_type = self.command_var.GetStringSelection().lower()
+        global command_type
+        command_type = self.command_var.GetStringSelection()
         print(f"Command type updated to: {command_type}")
 
     def update_parameters(self, event):
         global target_position, stiffness, target_velocity, damping, target_torque, amplitude, period, command_type
         try:
             target_position = int(self.entry_position.GetValue())
-            stiffness = int(self.entry_stiffness.GetValue())
+            stiffness = float(self.entry_stiffness.GetValue())
             target_velocity = int(self.entry_velocity.GetValue())
-            damping = int(self.entry_damping.GetValue())
+            damping = float(self.entry_damping.GetValue())
             target_torque = int(self.entry_torque.GetValue())
-            amplitude = int(self.entry_amplitude.GetValue())
-            period = float(self.entry_period.GetValue())
-            #command_type = self.command_var.GetStringSelection().lower()
+            
             configure_impedance_mode()
-            #wx.MessageBox("Parameters updated successfully!", "Success", wx.OK | wx.ICON_INFORMATION)
         except ValueError:
             wx.MessageBox("Invalid parameter values!", "Error", wx.OK | wx.ICON_ERROR)
 
     def toggle_play_pause(self, event):
-        #print("Toggling SYNC state")
+        global amplitude, period
+        amplitude = int(self.entry_amplitude.GetValue())
+        period = float(self.entry_period.GetValue())
         toggle_sync()
     
     def on_exit(self, event):
@@ -288,10 +304,20 @@ if __name__ == "__main__":
     network.connect(bustype='socketcan', channel='can2', bitrate=1000000)
     node = network.add_node(5, '../puck4.eds')  # Replace with your node ID and EDS file
 
+    stiffness = U32ToFloat(node.sdo["ImpCtrl"]["Stiffness"].raw)
+    damping = U32ToFloat(node.sdo["ImpCtrl"]["Damping"].raw)
+
     configure_impedance_mode()
 
     app = wx.App(False)
     imp = ImpedanceControlApp(None, "Impedance Control GUI")
     app.MainLoop()
+
+    # Stop SYNC and RPDOs if they were running
+    if play:
+        toggle_sync()
+
+    # Idle
+    node.sdo["SetModeOfOperation"].raw = 0
 
     network.disconnect()
