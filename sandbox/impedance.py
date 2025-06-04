@@ -24,10 +24,7 @@ play = False  # Play/Pause state
 amplitude = 4096  # Default amplitude
 period = 5  # Default period
 
-def sendTelemetry(name, value):
-    now = time.time() * 1000
-    msg = f"{name}:{now}:{value}|g"
-    sock.sendto(msg.encode(), teleplotAddr)
+
 
 def OpEnable():
     # Clear faults, RTSO, OpEnabled
@@ -36,8 +33,21 @@ def OpEnable():
     node.sdo["ControlWord"].raw = 0x06
     node.sdo["ControlWord"].raw = 0x0F
 
+def home():
+    global node
+    print("Setting Mode = Homing")
+    node.sdo["ControlWord"].raw = 0x0F # Clear any mode-specific bits
+    node.sdo["SetModeOfOperation"].raw = 6
+    node.sdo["HomingOffset"].raw = 0 # Initialize position to zero
+    node.sdo["HomingMethod"].raw = 37 # Home immediate, no limit switch
+    node.sdo["ControlWord"].raw = 0x1F # Start homing
+    while not (node.sdo["StatusWord"].raw & 0x1000): # Wait for homing complete
+        time.sleep(0.1)
+    node.sdo["ControlWord"].raw = 0x0F # Clear homing flag
+
 def configure_impedance_mode():
     global node
+    rate = 100  # Hz
 
     # Read PDO configuration from the actuator
     node.tpdo.read()
@@ -56,6 +66,15 @@ def configure_impedance_mode():
 
     # Disable Heartbeats
     node.sdo["HeartbeatPeriod"].raw = 0
+
+    # Set up the Cyclic Sync timing (only used in Cyclic Sync modes)
+    node.sdo["Cyclic"]["InterpolationPeriod"].raw = 1000 / rate # milliseconds
+    node.sdo["Cyclic"]["InterpolationScale"].raw = -3 # milliseconds
+
+    # Set the initial targets
+    node.rpdo[1]['TargetTorque'].raw = 0
+    node.rpdo[2]['TargetVelocity'].raw = 0
+    node.rpdo[2]['TargetPosition'].raw = 0
 
     OpEnable()
 
@@ -125,7 +144,7 @@ def tpdo2_callback(msg):
 
     sendTelemetry("TargetPosition", position)
     sendTelemetry("TargetVelocity", velocity)
-    sendTelemetry("TargetTorque", target_torque)
+    #sendTelemetry("TargetTorque", target_torque)
 
 def toggle_sync():
     global play
@@ -134,6 +153,7 @@ def toggle_sync():
 
     play = not play
     if play: 
+        home()
         start = timer()
 
         # Start sending RPDOs
@@ -208,6 +228,14 @@ class ImpedanceControlApp(wx.Frame):
         self.play_pause_button = OnOffButton(panel, -1, "", pos=(150, 310), size=(48, 30), initial=0, border=False)
         self.play_pause_button.Bind(EVT_ON_OFF, self.toggle_play_pause)
 
+        # Add checkboxes for telemetry selection
+        wx.StaticText(panel, label="Telemetry Selection:", pos=(10, 360))
+        self.checkbox_target_position = wx.CheckBox(panel, label="TargetPosition", pos=(150, 360))
+        self.checkbox_target_velocity = wx.CheckBox(panel, label="TargetVelocity", pos=(150, 380))
+        self.checkbox_position_feedback = wx.CheckBox(panel, label="PositionFeedback", pos=(150, 400))
+        self.checkbox_velocity_feedback = wx.CheckBox(panel, label="VelocityFeedback", pos=(150, 420))
+        self.checkbox_current_feedback = wx.CheckBox(panel, label="CurrentFeedback", pos=(150, 440))
+
         self.Show()
 
     def update_wave_type(self, event):
@@ -237,9 +265,24 @@ class ImpedanceControlApp(wx.Frame):
     def on_exit(self, event):
         """Quit the application gracefully."""
         self.Close()
-    
+
+def sendTelemetry(name, value):
+    """Send telemetry data only if the corresponding checkbox is selected."""
+    telemetry_map = {
+        "TargetPosition": imp.checkbox_target_position.GetValue(),
+        "TargetVelocity": imp.checkbox_target_velocity.GetValue(),
+        "PositionFeedback": imp.checkbox_position_feedback.GetValue(),
+        "VelocityFeedback": imp.checkbox_velocity_feedback.GetValue(),
+        "CurrentFeedback": imp.checkbox_current_feedback.GetValue(),
+    }
+
+    if telemetry_map.get(name, False):
+        now = time.time() * 1000
+        msg = f"{name}:{now}:{value}|g"
+        sock.sendto(msg.encode(), teleplotAddr)
+
 if __name__ == "__main__":
-    global node
+    global node, imp
     # Initialize CANopen network
     network = canopen.Network()
     network.connect(bustype='socketcan', channel='can2', bitrate=1000000)
@@ -248,7 +291,7 @@ if __name__ == "__main__":
     configure_impedance_mode()
 
     app = wx.App(False)
-    ImpedanceControlApp(None, "Impedance Control GUI")
+    imp = ImpedanceControlApp(None, "Impedance Control GUI")
     app.MainLoop()
 
     network.disconnect()
