@@ -8,6 +8,7 @@ import socket
 from timeit import default_timer as timer
 import wx
 import struct
+import platform
 from onoffbutton import OnOffButton, EVT_ON_OFF  # Import the custom OnOffButton control
 
 # Teleplot configuration
@@ -24,6 +25,7 @@ command_type = "None"  # Default command type
 play = False  # Play/Pause state
 amplitude = 4096  # Default amplitude
 period = 5  # Default period
+lastUpdate = 0
 
 
 
@@ -70,9 +72,7 @@ def configure_impedance_mode():
 
     # Initialize impedance parameters
     node.rpdo[2]["TargetPosition"].raw = target_position
-    #node.rpdo[1]["Stiffness"].raw = stiffness
     node.rpdo[2]["TargetVelocity"].raw = target_velocity
-    #node.rpdo[1]["Damping"].raw = damping
     node.rpdo[1]["TargetTorque"].raw = target_torque
 
     node.sdo["ImpCtrl"]["Stiffness"].raw = FloatToU32(stiffness)
@@ -94,8 +94,8 @@ def configure_impedance_mode():
     # Set RPDO ControlWord to 0x0F (active)
     node.rpdo[1]["ControlWord"].raw = 0x0F
 
-    print("Setting Mode = Impedance Control")
-    node.rpdo[1]["SetModeOfOperation"].raw = 13  # DS402 Impedance Control Mode
+    #print("Setting Mode = Impedance Control")
+    #node.rpdo[1]["SetModeOfOperation"].raw = 13  # Impedance Control Mode
 
 def generate_command(elapsed, period, amplitude):
     """
@@ -104,19 +104,19 @@ def generate_command(elapsed, period, amplitude):
     global target_position, target_velocity
 
     if command_type == "Sinusoidal":
-        position = amplitude * math.sin(2 * math.pi * elapsed / period)
-        velocity = (2 * math.pi * amplitude / period) * math.cos(2 * math.pi * elapsed / period)
+        position = int(amplitude * math.sin(2 * math.pi * elapsed / period))
+        velocity = int((2 * math.pi * amplitude / period) * math.cos(2 * math.pi * elapsed / period))
     elif command_type == "Square":
-        position = amplitude if (elapsed % period) < (period / 2) else -amplitude
+        position = int(amplitude if (elapsed % period) < (period / 2) else -amplitude)
         velocity = 0  # Square wave has instantaneous velocity changes
     elif command_type == "Triangular":
         phase = (elapsed % period) / period
         if phase < 0.5:
-            position = amplitude * (4 * phase - 1)
-            velocity = 4 * amplitude / period
+            position = int(amplitude * (4 * phase - 1))
+            velocity = int(4 * amplitude / period)
         else:
-            position = amplitude * (3 - 4 * phase)
-            velocity = -4 * amplitude / period
+            position = int(amplitude * (3 - 4 * phase))
+            velocity = int(-4 * amplitude / period)
     else:
         position = target_position
         velocity = target_velocity
@@ -136,8 +136,9 @@ def tpdo1_callback(msg):
 def tpdo2_callback(msg):
     global node
     global start
-    global period
     global target_torque
+    global imp
+    global lastUpdate
 
     maxtrq = 1000     # /1000 of rated torque
     maxvel = 20000    # cts/sec
@@ -152,11 +153,18 @@ def tpdo2_callback(msg):
 
     # Calculate new pos/vel commands based on wave type
     global amplitude, period
+    
     elapsed = timer() - start
     position, velocity = generate_command(elapsed, period, amplitude)
     node.rpdo[2]["TargetPosition"].raw = position
     node.rpdo[2]["TargetVelocity"].raw = velocity
     node.rpdo[1]["TargetTorque"].raw = target_torque
+
+    if int(elapsed * 10) % 10 != int(lastUpdate * 10) % 10:
+        imp.entry_position.SetValue(f"{position}")
+        imp.entry_velocity.SetValue(f"{velocity}")
+    
+    lastUpdate = elapsed
 
     sendTelemetry("TargetPosition", position)
     sendTelemetry("TargetVelocity", velocity)
@@ -170,6 +178,7 @@ def toggle_sync():
     if play: 
         home()
         start = timer()
+        node.rpdo[1]["SetModeOfOperation"].raw = 13  # Impedance Control Mode
 
         # Start sending RPDOs
         node.rpdo[1].start(1/rate)
@@ -184,13 +193,14 @@ def toggle_sync():
 
         # Stop SYNC thread
         network.sync.stop()
+        node.sdo["SetModeOfOperation"].raw = 0  # Idle Control Mode
 
     # Print play/pause state
     print("Play" if play else "Pause")
 
 class ImpedanceControlApp(wx.Frame):
     def __init__(self, parent, title):
-        super().__init__(parent, title=title, size=(400, 500))
+        super().__init__(parent, title=title, size=(570, 500))
 
         panel = wx.Panel(self)
 
@@ -199,7 +209,7 @@ class ImpedanceControlApp(wx.Frame):
 
         # Create a File menu
         file_menu = wx.Menu()
-        exit_menu_item = file_menu.Append(wx.ID_EXIT, "Exit\tCtrl+Q", "Quit the application")
+        exit_menu_item = file_menu.Append(wx.ID_EXIT, "Quit\tCtrl+Q", "Quit the application")
         menu_bar.Append(file_menu, "&File")
 
         # Bind the Exit menu item to the quit function
@@ -208,56 +218,105 @@ class ImpedanceControlApp(wx.Frame):
         # Set the menu bar
         self.SetMenuBar(menu_bar)
 
+        row = 0
+        rowheight = 40
+        rowoffset = 10
+        colwidth = 140
+        coloffset = 10
+
+        wx.StaticText(panel, label="CAN Port:", pos=(0*colwidth+coloffset, row*rowheight+rowoffset))
+        self.choice_port = wx.Choice(panel, choices=["can0", "can1", "can2", "can3"], pos=(1*colwidth+coloffset, row*rowheight+rowoffset))
+        self.choice_port.SetSelection(0)
+        wx.Button(panel, label="Scan Pucks", pos=(2*colwidth+coloffset, row*rowheight+rowoffset)).Bind(wx.EVT_BUTTON, self.scan_pucks)
+
+        row = row + 1
+        wx.StaticText(panel, label="Select ID:", pos=(0*colwidth+coloffset, row*rowheight+rowoffset))
+        self.choice_id = wx.Choice(panel, choices=["None"], pos=(1*colwidth+coloffset, row*rowheight+rowoffset))
+        self.choice_id.SetSelection(0)
+        self.choice_id.Bind(wx.EVT_CHOICE, self.select_id)
+
         # Create input fields
-        wx.StaticText(panel, label="Target Position (cts):", pos=(10, 10))
-        self.entry_position = wx.TextCtrl(panel, value="0", pos=(150, 10))
+        row = row + 2
+        wx.StaticText(panel, label="Target Position (cts):", pos=(0*colwidth+coloffset, row*rowheight+rowoffset))
+        self.entry_position = wx.TextCtrl(panel, value="0", pos=(1*colwidth+coloffset, row*rowheight+rowoffset))
 
-        wx.StaticText(panel, label="Stiffness:", pos=(290, 10))
-        self.entry_stiffness = wx.TextCtrl(panel, value=f"{stiffness:.4f}", pos=(400, 10))
+        wx.StaticText(panel, label="Stiffness:", pos=(2*colwidth+coloffset, row*rowheight+rowoffset))
+        self.entry_stiffness = wx.TextCtrl(panel, value=f"{stiffness:.4f}", pos=(3*colwidth+coloffset, row*rowheight+rowoffset))
+        #self.entry_stiffness.Bind(wx.EVT_MOUSEWHEEL, self.stiffwheel)
 
-        wx.StaticText(panel, label="Target Velocity (cts/s):", pos=(10, 50))
-        self.entry_velocity = wx.TextCtrl(panel, value="0", pos=(150, 50))
+        row = row + 1
+        wx.StaticText(panel, label="Target Velocity (cts/s):", pos=(0*colwidth+coloffset, row*rowheight+rowoffset))
+        self.entry_velocity = wx.TextCtrl(panel, value="0", pos=(1*colwidth+coloffset, row*rowheight+rowoffset))
 
-        wx.StaticText(panel, label="Damping:", pos=(290, 50))
-        self.entry_damping = wx.TextCtrl(panel, value=f"{damping:.4f}", pos=(400, 50))
+        wx.StaticText(panel, label="Damping:", pos=(2*colwidth+coloffset, row*rowheight+rowoffset))
+        self.entry_damping = wx.TextCtrl(panel, value=f"{damping:.4f}", pos=(3*colwidth+coloffset, row*rowheight+rowoffset))
 
-        wx.StaticText(panel, label="Target Torque (mNm):", pos=(10, 90))
-        self.entry_torque = wx.TextCtrl(panel, value="0", pos=(150, 90))
+        row = row + 1
+        wx.StaticText(panel, label="Target Torque (mNm):", pos=(0*colwidth+coloffset, row*rowheight+rowoffset))
+        self.entry_torque = wx.TextCtrl(panel, value="0", pos=(1*colwidth+coloffset, row*rowheight+rowoffset))
 
         # Buttons
-        wx.Button(panel, label="Update Parameters", pos=(220, 130)).Bind(wx.EVT_BUTTON, self.update_parameters)
+        row = row + 1
+        wx.Button(panel, label="Update Parameters", pos=(int(1.5*colwidth)+coloffset, row*rowheight+rowoffset)).Bind(wx.EVT_BUTTON, self.update_parameters)
 
         # Command type selection
-        wx.StaticText(panel, label="Wave Type:", pos=(10, 220))
-        self.command_var = wx.RadioBox(panel, choices=["None", "Sinusoidal", "Square", "Triangular"], pos=(150, 210))
+        row = row + 2
+        wx.StaticText(panel, label="Wave Type:", pos=(0*colwidth+coloffset, row*rowheight+rowoffset))
+        self.command_var = wx.RadioBox(panel, choices=["None", "Sinusoidal", "Square", "Triangular"], pos=(1*colwidth+coloffset, row*rowheight+rowoffset-20))
         self.command_var.SetSelection(0)
         self.command_var.Bind(wx.EVT_RADIOBOX, self.update_wave_type)
 
-        wx.StaticText(panel, label="Amplitude (cts):", pos=(10, 270))
-        self.entry_amplitude = wx.TextCtrl(panel, value="4096", pos=(150, 270))
+        row = row + 1
+        wx.StaticText(panel, label="Amplitude (cts):", pos=(0*colwidth+coloffset, row*rowheight+rowoffset))
+        self.entry_amplitude = wx.TextCtrl(panel, value="4096", pos=(1*colwidth+coloffset, row*rowheight+rowoffset))
 
-        wx.StaticText(panel, label="Period (s):", pos=(290, 270))
-        self.entry_period = wx.TextCtrl(panel, value="5", pos=(400, 270))
+        wx.StaticText(panel, label="Period (s):", pos=(2*colwidth+coloffset, row*rowheight+rowoffset))
+        self.entry_period = wx.TextCtrl(panel, value="5", pos=(3*colwidth+coloffset, row*rowheight+rowoffset))
 
-        # Replace Play/Pause button with OnOffButton
-        wx.StaticText(panel, label="SYNC Off/On:", pos=(10, 310))
-        self.play_pause_button = OnOffButton(panel, -1, "", pos=(150, 310), size=(48, 30), initial=0, border=False)
+        # Sync control
+        row = row + 1
+        wx.StaticText(panel, label="Control Off/On:", pos=(0*colwidth+coloffset, row*rowheight+rowoffset))
+        self.play_pause_button = OnOffButton(panel, -1, "", pos=(1*colwidth+coloffset, row*rowheight+rowoffset), size=(48, 30), initial=0, border=False)
         self.play_pause_button.Bind(EVT_ON_OFF, self.toggle_play_pause)
 
         # Add checkboxes for telemetry selection
-        wx.StaticText(panel, label="Telemetry Selection:", pos=(10, 360))
-        self.checkbox_target_position = wx.CheckBox(panel, label="TargetPosition", pos=(150, 360))
-        self.checkbox_target_velocity = wx.CheckBox(panel, label="TargetVelocity", pos=(150, 380))
-        self.checkbox_position_feedback = wx.CheckBox(panel, label="PositionFeedback", pos=(150, 400))
-        self.checkbox_velocity_feedback = wx.CheckBox(panel, label="VelocityFeedback", pos=(150, 420))
-        self.checkbox_current_feedback = wx.CheckBox(panel, label="CurrentFeedback", pos=(150, 440))
+        row = row + 1
+        wx.StaticText(panel, label="Telemetry Selection:", pos=(0*colwidth+coloffset, row*rowheight+rowoffset))
+        self.checkbox_target_position = wx.CheckBox(panel, label="TargetPosition", pos=(1*colwidth+coloffset, row*rowheight+rowoffset))
+        self.checkbox_target_velocity = wx.CheckBox(panel, label="TargetVelocity", pos=(2*colwidth+coloffset, row*rowheight+rowoffset))
+        row = row + 1
+        self.checkbox_position_feedback = wx.CheckBox(panel, label="PositionFeedback", pos=(1*colwidth+coloffset, row*rowheight+rowoffset))
+        self.checkbox_velocity_feedback = wx.CheckBox(panel, label="VelocityFeedback", pos=(2*colwidth+coloffset, row*rowheight+rowoffset))
+        self.checkbox_current_feedback = wx.CheckBox(panel, label="CurrentFeedback", pos=(3*colwidth+coloffset, row*rowheight+rowoffset))
 
         self.Show()
 
+    def stiffwheel(self, event):
+        global stiffness
+        rotation = event.GetWheelRotation()  # Get the wheel rotation
+        delta = 10  # Define the increment/decrement value for stiffness
+
+        if rotation > 0:
+            stiffness += delta  # Increase stiffness
+        elif rotation < 0:
+            stiffness -= delta  # Decrease stiffness
+
+        # Update the text box with the new stiffness value
+        self.entry_stiffness.SetValue(f"{stiffness:.4f}")
+        print(f"Stiffness updated to: {stiffness}")
+        
     def update_wave_type(self, event):
         global command_type
         command_type = self.command_var.GetStringSelection()
         print(f"Command type updated to: {command_type}")
+        if command_type == "None":
+            self.entry_position.Enable(True)
+            self.entry_velocity.Enable(True)
+        else:
+            self.entry_position.Enable(False)
+            self.entry_velocity.Enable(False)
+
+        
 
     def update_parameters(self, event):
         global target_position, stiffness, target_velocity, damping, target_torque, amplitude, period, command_type
@@ -281,6 +340,76 @@ class ImpedanceControlApp(wx.Frame):
     def on_exit(self, event):
         """Quit the application gracefully."""
         self.Close()
+
+    def scan_pucks(self, event):  
+        """Scan for Pucks on the CAN bus."""
+        try:
+            self.network.disconnect() # Close any open networks
+        except:
+          pass
+
+        print("Establishing a new network...")
+        self.network = canopen.Network()
+        can_device = self.choice_port.GetStringSelection()
+
+        try:
+          if platform.system() == "Windows" or platform.system() == "Darwin":
+            self.network.connect(bustype='pcan', channel='PCAN_USBBUS'+str(int(can_device[-1:])+1), bitrate=1000000)
+          elif platform.system() == "Linux":
+            self.network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)  
+
+        except Exception as e: 
+            print(e)
+            print('No CAN driver found!')
+            msg = 'No CAN bus found! \nCheck connection and try again'
+            dlg = wx.MessageDialog(None,msg)
+            dlg.ShowModal()
+            # Try to clear out selection of select ID and set ID
+            n = ''
+            self.choice_id.SetItems([n])
+            self.text_id.ChangeValue(str(n))
+
+            dlg.Destroy()
+            return
+
+        try:
+            # Think we need these  for scan to work...
+            # This will attempt to read an SDO from nodes 1 - 127
+            self.network.scanner.reset()
+            self.network.scanner.search()
+            time.sleep(0.5)
+
+            for node_id in self.network.scanner.nodes:
+                print("Found node %d!" % node_id) 
+
+            # Populate the node choice list
+            self.choice_id.SetItems([str(i) for i in self.network.scanner.nodes])
+
+            # If we found at least one, select the first
+            if len(self.network.scanner.nodes) > 0:
+                self.choice_id.SetSelection(0)
+                self.select_id(None)
+
+        except:
+            print('No CAN driver found!')
+            msg = 'No CAN bus found! \nCheck connection and try again'
+            dlg = wx.MessageDialog(None,msg)
+            dlg.ShowModal()
+            dlg.Destroy()
+            return
+
+    def select_id(self, event):  
+        node_id = int(self.choice_id.GetString(self.choice_id.GetSelection()))
+        print("Selected node = {0}".format(node_id))
+        if node_id not in self.network:
+          # Add our canopen node along with its object dictionary (for parsing)
+          print("Adding new node: {0}".format(node_id))
+          self.node = self.network.add_node(node_id, '../puck4.eds')
+        else:  
+          self.node = self.network[node_id]
+
+        configure_impedance_mode()
+
 
 def sendTelemetry(name, value):
     """Send telemetry data only if the corresponding checkbox is selected."""
