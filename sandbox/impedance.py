@@ -10,6 +10,7 @@ import wx
 import struct
 import platform
 from onoffbutton import OnOffButton, EVT_ON_OFF  # Import the custom OnOffButton control
+from pubsub import pub
 
 # Teleplot configuration
 teleplotAddr = ("127.0.0.1", 47269)
@@ -85,6 +86,9 @@ class ImpedanceControlApp(wx.Frame):
 
         # Set the menu bar
         self.SetMenuBar(menu_bar)
+
+        # create a pubsub receiver
+        pub.subscribe(self.updateDisplay, 'update')
 
         row = 0
         rowheight = 40
@@ -389,14 +393,21 @@ class ImpedanceControlApp(wx.Frame):
         self.node.rpdo[2]["TargetVelocity"].raw = velocity
         self.node.rpdo[1]["TargetTorque"].raw = target_torque
 
-        # Limit the wx textctrl update to 10Hz, else pango will crash
+        # Limit the wx textctrl update to 10Hz
         if elapsed > self.lastUpdate + 0.1 and command_type != "None":
             self.lastUpdate = elapsed
-            self.entry_position.SetValue(f"{position}")
-            self.entry_velocity.SetValue(f"{velocity}")
+            # We can't update the GUI in this thread safely, so use CallAfter and pubsub
+            wx.CallAfter(self.publishData, position, velocity)
         
         self.sendTelemetry("TargetPosition", position)
         self.sendTelemetry("TargetVelocity", velocity)
+
+    def publishData(self, pos, vel):
+        pub.sendMessage('update', arg={'pos': pos, 'vel': vel})
+    
+    def updateDisplay(self, arg):
+        self.entry_position.SetValue(f"{arg['pos']}")
+        self.entry_velocity.SetValue(f"{arg['vel']}")
 
     def sendTelemetry(self, name, value):
         """Send telemetry data only if the corresponding checkbox is selected."""

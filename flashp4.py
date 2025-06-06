@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 # Flashloader v2
 import sys       # Python Standard Library
 import platform  # Python Standard Library

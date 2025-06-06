@@ -1,9 +1,11 @@
 altgraph==0.17.4
 canopen==2.3.0
 msgpack==1.1.0
+numpy==2.2.5
 packaging==24.2
 pyinstaller==6.11.1
 pyinstaller-hooks-contrib==2024.11
+Pypubsub==4.0.3
 python-can==4.5.0
 python-config==0.1.2
 semver==3.0.2
