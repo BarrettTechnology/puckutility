@@ -304,11 +304,6 @@ class ImpedanceControlApp(wx.Frame):
             # Populate the node choice list
             self.choice_id.SetItems([str(i) for i in self.network.scanner.nodes])
 
-            # If we found at least one, select the first
-            if len(self.network.scanner.nodes) > 0:
-                self.choice_id.SetSelection(0)
-                self.select_id(None)
-
         except:
             print('No CAN driver found!')
             msg = 'No CAN bus found! \nCheck connection and try again'
@@ -316,6 +311,11 @@ class ImpedanceControlApp(wx.Frame):
             dlg.ShowModal()
             dlg.Destroy()
             return
+
+        # If we found at least one, select the first
+        if len(self.network.scanner.nodes) > 0:
+            self.choice_id.SetSelection(0)
+            self.select_id(None)
 
     def select_id(self, event): 
         global stiffness, damping
