@@ -68,7 +68,7 @@ def generate_command(elapsed, period, amplitude):
 
 class ImpedanceControlApp(wx.Frame):
     def __init__(self, parent, title):
-        super().__init__(parent, title=title, size=(570, 500))
+        super().__init__(parent, title=title, size=(600, 600))
 
         panel = wx.Panel(self)
 
