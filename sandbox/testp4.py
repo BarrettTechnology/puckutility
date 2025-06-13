@@ -27,7 +27,7 @@ def sendTelemetry(name, value):
 import canopen
 from timeit import default_timer as timer
 
-period = 5 # seconds, for cyclic sync sinusoids
+period = 2 # seconds, for cyclic sync sinusoids
 
 def configure_puck():
     global node
@@ -37,9 +37,23 @@ def configure_puck():
     node.tpdo.read()
     node.rpdo.read()
 
+    node.tpdo[4].clear()
+
+    # Configure TPDO4 to return PositionDemand
+    node.tpdo[4].add_variable('PositionDemand')  # 32 bits
+
+    # Set the tpdo header
+    node.tpdo[4].cob_id = 0x480 + node.id  # Set TPDO1 COB-ID to 0x180 + node ID
+    node.tpdo[4].trans_type = 0  # TX on every SYNC
+    node.tpdo[4].enabled = True
+
+    # Save the TPDO configuration to the node
+    node.tpdo.save()
+
     # Each time we receive this PDO from the puck, execute a callback
     node.tpdo[1].add_callback(tpdo1_callback)
     node.tpdo[2].add_callback(tpdo2_callback)
+    node.tpdo[4].add_callback(tpdo4_callback)
 
     # Disable Heartbeats
     node.sdo["HeartbeatPeriod"].raw = 0
@@ -60,8 +74,8 @@ def tpdo2_callback(msg):
     global period
 
     maxtrq = 1000     # /1000 of rated torque
-    maxvel = 20000    # cts/sec
-    maxpos = 5 * 4096 # 5 revolutions
+    maxvel = 200000    # cts/sec
+    maxpos = 18 * 4096 # 18 revolutions
     
     # Store data
     vel = node.tpdo[2]['VelocityFeedback'].raw
@@ -84,6 +98,14 @@ def tpdo2_callback(msg):
     node.rpdo[1]['TargetTorque'].raw = sin * maxtrq
     node.rpdo[2]['TargetVelocity'].raw = sin * maxvel
     node.rpdo[2]['TargetPosition'].raw = sin * maxpos
+
+def tpdo4_callback(msg):
+    global node
+    
+    # Store data
+    posdmd = node.tpdo[4]['PositionDemand'].raw
+
+    sendTelemetry("posdmd", posdmd)
 
 def OpEnable():
     # Clear faults, RTSO, OpEnabled

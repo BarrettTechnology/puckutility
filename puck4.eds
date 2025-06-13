@@ -1492,6 +1492,13 @@ DefaultValue =  0
 AccessType = RW
 ObjectType = 0x07
 
+[6062]
+DataType = 0x04
+ParameterName = PositionDemand
+DefaultValue =  0
+AccessType = RO
+ObjectType = 0x07
+
 [6064]
 DataType = 0x04
 ParameterName = PositionFeedback
