@@ -196,7 +196,8 @@ def parse_data(datatype, data, can_id=-1):
             byte_array = data.to_bytes(4, 'little', signed=False)
         elif datatype == DATATYPE.REAL32.value:
             #print("REAL32")
-            byte_array = bytes(pack("<f", float(data)))
+            byte_array = pack("<f", float(data))
+            data = unpack('I', pack('f', float(data)))[0]
         else:
             #print("before data.to_bytes")
             byte_array = data.to_bytes(int(int(datatype[8:10]) / 8), 'little')
