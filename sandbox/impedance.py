@@ -11,6 +11,7 @@ import struct
 import platform
 from onoffbutton import OnOffButton, EVT_ON_OFF  # Import the custom OnOffButton control
 from pubsub import pub
+from odometer import Odometer  # Import the Odometer control
 
 # Teleplot configuration
 teleplotAddr = ("127.0.0.1", 47269)
@@ -113,15 +114,14 @@ class ImpedanceControlApp(wx.Frame):
         self.entry_position = wx.TextCtrl(panel, value="0", pos=(1*colwidth+coloffset, row*rowheight+rowoffset))
 
         wx.StaticText(panel, label="Stiffness:", pos=(2*colwidth+coloffset, row*rowheight+rowoffset))
-        self.entry_stiffness = wx.TextCtrl(panel, value=f"{stiffness:.4f}", pos=(3*colwidth+coloffset, row*rowheight+rowoffset))
-        #self.entry_stiffness.Bind(wx.EVT_MOUSEWHEEL, self.stiffwheel)
+        self.odometer_stiffness = Odometer(panel, pos=(3*colwidth+coloffset, row*rowheight+rowoffset), size=(120, 40), format="###.####", initial=stiffness)
 
         row = row + 1
         wx.StaticText(panel, label="Target Velocity (cts/s):", pos=(0*colwidth+coloffset, row*rowheight+rowoffset))
         self.entry_velocity = wx.TextCtrl(panel, value="0", pos=(1*colwidth+coloffset, row*rowheight+rowoffset))
 
         wx.StaticText(panel, label="Damping:", pos=(2*colwidth+coloffset, row*rowheight+rowoffset))
-        self.entry_damping = wx.TextCtrl(panel, value=f"{damping:.4f}", pos=(3*colwidth+coloffset, row*rowheight+rowoffset))
+        self.odometer_damping = Odometer(panel, pos=(3*colwidth+coloffset, row*rowheight+rowoffset), size=(120, 40), format="###.####", initial=damping)
 
         row = row + 1
         wx.StaticText(panel, label="Target Torque (mNm):", pos=(0*colwidth+coloffset, row*rowheight+rowoffset))
@@ -164,19 +164,6 @@ class ImpedanceControlApp(wx.Frame):
 
         self.Show()
 
-    def stiffwheel(self, event):
-        global stiffness
-        rotation = event.GetWheelRotation()  # Get the wheel rotation
-        delta = 10  # Define the increment/decrement value for stiffness
-
-        if rotation > 0:
-            stiffness += delta  # Increase stiffness
-        elif rotation < 0:
-            stiffness -= delta  # Decrease stiffness
-
-        # Update the text box with the new stiffness value
-        self.entry_stiffness.SetValue(f"{stiffness:.4f}")
-        print(f"Stiffness updated to: {stiffness}")
         
     def update_wave_type(self, event):
         global command_type
@@ -203,9 +190,9 @@ class ImpedanceControlApp(wx.Frame):
         global target_position, stiffness, target_velocity, damping, target_torque, amplitude, period, command_type
         try:
             target_position = int(self.entry_position.GetValue())
-            stiffness = float(self.entry_stiffness.GetValue())
+            stiffness = self.odometer_stiffness.GetValue()  # Get stiffness from odometer
             target_velocity = int(self.entry_velocity.GetValue())
-            damping = float(self.entry_damping.GetValue())
+            damping = self.odometer_damping.GetValue()  # Get damping from odometer
             target_torque = int(self.entry_torque.GetValue())
             
             # Update impedance parameters
@@ -258,9 +245,11 @@ class ImpedanceControlApp(wx.Frame):
             self.toggle_play_pause(None)
 
         # Idle
-        self.node.sdo["SetModeOfOperation"].raw = 0
-
-        self.network.disconnect()
+        try:
+            self.node.sdo["SetModeOfOperation"].raw = 0
+            self.network.disconnect()
+        except:
+            pass
 
         self.Close()
 
@@ -334,9 +323,9 @@ class ImpedanceControlApp(wx.Frame):
           self.node = self.network[node_id]
 
         stiffness = U32ToFloat(self.node.sdo["ImpCtrl"]["Stiffness"].raw)
-        self.entry_stiffness.SetValue(f"{stiffness:.4f}")
+        self.odometer_stiffness.SetValue(stiffness)  # Update odometer with stiffness
         damping = U32ToFloat(self.node.sdo["ImpCtrl"]["Damping"].raw)
-        self.entry_damping.SetValue(f"{damping:.4f}")
+        self.odometer_damping.SetValue(damping)  # Update odometer with damping
 
         self.configure_impedance_mode()
 
