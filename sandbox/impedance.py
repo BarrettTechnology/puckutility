@@ -114,14 +114,14 @@ class ImpedanceControlApp(wx.Frame):
         self.entry_position = wx.TextCtrl(panel, value="0", pos=(1*colwidth+coloffset, row*rowheight+rowoffset))
 
         wx.StaticText(panel, label="Stiffness:", pos=(2*colwidth+coloffset, row*rowheight+rowoffset))
-        self.odometer_stiffness = Odometer(panel, pos=(3*colwidth+coloffset, row*rowheight+rowoffset), size=(120, 40), format="###.####", initial=stiffness)
+        self.odometer_stiffness = Odometer(panel, pos=(3*colwidth+coloffset, row*rowheight+rowoffset), size=(120, 30), format="###.####", initial=stiffness)
 
         row = row + 1
         wx.StaticText(panel, label="Target Velocity (cts/s):", pos=(0*colwidth+coloffset, row*rowheight+rowoffset))
         self.entry_velocity = wx.TextCtrl(panel, value="0", pos=(1*colwidth+coloffset, row*rowheight+rowoffset))
 
         wx.StaticText(panel, label="Damping:", pos=(2*colwidth+coloffset, row*rowheight+rowoffset))
-        self.odometer_damping = Odometer(panel, pos=(3*colwidth+coloffset, row*rowheight+rowoffset), size=(120, 40), format="###.####", initial=damping)
+        self.odometer_damping = Odometer(panel, pos=(3*colwidth+coloffset, row*rowheight+rowoffset), size=(120, 30), format="###.####", initial=damping)
 
         row = row + 1
         wx.StaticText(panel, label="Target Torque (mNm):", pos=(0*colwidth+coloffset, row*rowheight+rowoffset))
