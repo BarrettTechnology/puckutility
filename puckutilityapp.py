@@ -39,9 +39,9 @@ import canopen_runner
 # ADD a wxpython based frame for custom motor tuning (gains configuration)
 # Maybe add escape feature to close app?
 # Add reboot to startup, and closing to idle pucks
-# Add a failed message for failed config file uploads
 # Look into direction reversing at high velocities!
-# Look into possible issues with Pucks responding to sync messages when not in focus
+# Look into possible issues with Pucks responding to sync messages when not in focus (this appears to be caused by COB ID only being updated when configuration is set)
+# Add a read in for new gear ratio numerator and denominator to automatically set gear ratio!
 
 def get_version(vers): # Convert uint32_t to semantic version: Major.Minor.Patch
     return "{0}.{1}.{2}".format(
@@ -81,9 +81,9 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         USE_BUFFERED_DC = True
 
         # Initialize self variables
-        self.gearRatio = 3249 / 169 # Default for ec max 16mm dev kit
+        # self.gearRatio = 3249 / 169 # Default for ec max 16mm dev kit
         #self.gearRatio = 225 / 16
-        #self.gearRatio = 1
+        self.gearRatio = 1
         #self.gearRatio = 10
         self.encoderResolution = 4096 # cts / revolution
         self.adcWasON = False
@@ -134,7 +134,18 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         return self.ID
     
     def configure_Puck(self):
-        
+
+        # Read and set gear ratio from object dictionary
+        motor_rev = self.node.sdo.upload(0x6091,1)
+        motor_rev = int.from_bytes(motor_rev, byteorder='little',signed=False)
+        shaft_rev = self.node.sdo.upload(0x6091,2)
+        shaft_rev = int.from_bytes(shaft_rev, byteorder='little',signed=False)
+        print('Numerator: {}'.format(motor_rev))
+        print('Denominator: {}'.format(shaft_rev))
+        self.gearRatio = motor_rev / shaft_rev
+
+        print('Gear Ratio determined: {}'.format(self.gearRatio))
+
         print("Reading PDOs...")
         try:
             self.node.tpdo.read()
@@ -668,94 +679,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
           self.frame_statusbar.SetStatusText("Ready", 1)
           if self.adcWasON == True:
               self.on_off_adc(self)
-
-
-    # def file_to_p3(self, event):  # wxGlade: wxp3_frame.<event_handler>
-    #     #print("Event handler 'file_to_p3'")
-    #     # If motor is not idled, idle
-    #     quick_test = self.choice_test.GetSelection()
-    #     if quick_test != 0:
-    #         self.lastMode = 0 # Reset lastMode
-    #         print("Setting Mode = IDLE")
-    #         self.choice_test.SetSelection(0)
-    #         self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
-
-    #     if self.ADC_ON == True:
-    #         self.on_off_adc(self)
-    #         self.adcWasON = True
-    #     # File browser
-    #     if platform.system() == "Windows":
-    #         directory = '../config'
-    #     else:
-    #         directory = 'config/'
-
-    #     with wx.FileDialog(self, "Open CANopen CSV file", directory, wildcard="CSV files (*.csv)|*.csv",
-    #                    style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST) as fileDialog:
-
-    #         if fileDialog.ShowModal() == wx.ID_CANCEL:
-    #             if self.adcWasON == True:
-    #                 self.on_off_adc(self)
-    #             return     # the user changed their mind
-
-    #         self.frame_statusbar.SetStatusText("Updating configuration...", 1)
-    #         self.frame_statusbar.Update()
-    #         wx.Yield()
-
-    #         # Proceed loading the file chosen by the user
-    #         pathname = fileDialog.GetPath()
-
-    #         can_device = self.choice_port.GetStringSelection()
-    #         node_id = self.choice_id.GetString(self.choice_id.GetSelection())
-
-    #         # Call canopen_runner.py script with all required parameters
-    #         print("Writing OD entries")
-    #         self.network.disconnect()
-    #         if platform.system() == "Windows":
-    #             python_name = "python"
-    #         else:
-    #             python_name = "python3"
-    #         l = [python_name, 'canopen_runner.py', can_device, node_id, 'puck4.eds', pathname]
-    #         subprocess.call(l)
-    #         # # TRY TO CATCH ANY ERROR
-            
-    #         # try:
-    #         #     subprocess.call(l)
-    #         # except:
-    #         #     print('Upload Failed!')
-    #         #     msg = "Upload Failed!" \
-    #         #     "\n\nDebug:" \
-    #         #     "\n- Verify csv file is correctly formatted" \
-    #         #     "\n- Ensure proper installation of all required libraries"
-    #         #     dlg = wx.MessageDialog(None,msg)
-    #         #     dlg.ShowModal()
-    #         #     dlg.Destroy()         
-
-    #         # # THIS IS NOT WORKING TO CATCH FAILED CSV UPLOADS
-
-    #         print("Establishing a new network...")
-    #         self.network = canopen.Network()
-
-    #         if platform.system() == "Windows":
-    #             self.network.connect(bustype='pcan', channel='PCAN_USBBUS'+str(int(can_device[-1:])+1), bitrate=1000000)
-    #         elif platform.system() == "Linux":
-    #             self.network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)
-    #             self.node = self.network.add_node(int(node_id), 'puck4.eds')
-            
-    #         # Save all OD entries to EEPROM (takes about 0.55 sec)
-    #         print("Saving OD entries")
-    #         default_timeout = canopen.sdo.SdoClient.RESPONSE_TIMEOUT
-    #         canopen.sdo.SdoClient.RESPONSE_TIMEOUT = 1.0
-    #         self.node.sdo['Save']['All'].raw = 0x65766173 # Key = 'SAVE'
-    #         canopen.sdo.SdoClient.RESPONSE_TIMEOUT = default_timeout
-
-    #         # Transmit an NMT reboot command to this node
-    #         print("Rebooting puck")
-    #         self.network.send_message(0x0, [0x81, int(node_id)])
-    #         time.sleep(0.5) # wait for puck to reboot (avoids loss of communication)
-    #         self.configure_Puck()
-    #         self.frame_statusbar.SetStatusText("Ready", 1)
-    #         if self.adcWasON == True:
-    #             self.on_off_adc(self)
     
     def select_test(self, event):  # wxGlade: wxp3_frame.<event_handler>
         #print("Event handler 'select_test'")
@@ -846,7 +769,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             
             # Needs scaling for accurate gear ratio based torque!!!
             print("Set TargetTorque = {0}".format(cmd_value) + " mNm ({0}".format(round(trq_value/10,2)) + "% max)") # show mNm & percent max
-            
+            print("Command CAN value - {}".format(trq_value))
             self.node.sdo["TargetTorque"].raw = trq_value # Send
 
         elif quick_test == 2: # Velocity
@@ -1129,6 +1052,7 @@ class MyApp(wx.App):
 
         self.frame = MyFrame(None, wx.ID_ANY, "")
         self.frame.Show()
+        # can make this into a try, and set to reconnect on state button?
         self.frame.can_port(None)
         # Maybe set this ^ on a while loop for when no bus is active
         # Transmit an NMT reboot command to this node
