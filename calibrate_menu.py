@@ -11,9 +11,6 @@ class calibrate():
         print(self.network.scanner.nodes)
         starting_id = self.getID()
         for i in self.network.scanner.nodes:
-            #if(i == 1):
-            #    print('skipping...')
-            #    continue
             print(i)
             indexID = self.network.scanner.nodes.index(i)
             self.choice_id.SetSelection(indexID) # Move to next ID for calibration
@@ -83,8 +80,6 @@ class calibrate():
           print("Previous {0} iSense bias = {1}".format(channel, self.node.sdo[channel]['Bias'].raw))
           filt = self.node.sdo[channel]['Filtered'].raw # Q12.4
           filt = (filt >> 4) + ((filt & 0x0008) >> 3) # Round Q12.4 to Q12.0
-          #self.node.sdo['Alpha']['Bias'].raw = 2050 # Alpha
-          #self.node.sdo['Beta']['Bias'].raw = 2075 # Beta
           self.node.sdo[channel]['Bias'].raw = filt
           print("New {0} iSense bias = {1}".format(channel, filt))
 
@@ -92,7 +87,7 @@ class calibrate():
         self.node.sdo['Save']['Single'].raw = ((0x3009 << 8) | 0x03) # Save Beta iSense cal to EE
 
         # Check Bounds for error!!
-        error = .02 # 2% error
+        error = .03 # 3% error
 
         a_bias = self.node.sdo['Alpha']['Bias'].raw
         b_bias = self.node.sdo['Alpha']['Bias'].raw

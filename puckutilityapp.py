@@ -34,14 +34,13 @@ import datetime
 import canopen_runner
 
 # TODO
-# Add save feature for Puck configuration!!
+# Add save feature for Puck configuration!! - (puck tuner?)
 # Possibly add a way to update all puck firmware??
-# ADD a wxpython based frame for custom motor tuning (gains configuration)
+# ADD a wxpython based frame for custom motor tuning (gains configuration) - (puck tuner?)
 # Maybe add escape feature to close app?
-# Add reboot to startup, and closing to idle pucks
+# Add reboot to startup, and closing to idle pucks (all pucks not just active)
 # Look into direction reversing at high velocities!
 # Look into possible issues with Pucks responding to sync messages when not in focus (this appears to be caused by COB ID only being updated when configuration is set)
-# Add a read in for new gear ratio numerator and denominator to automatically set gear ratio!
 
 def get_version(vers): # Convert uint32_t to semantic version: Major.Minor.Patch
     return "{0}.{1}.{2}".format(
@@ -81,10 +80,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         USE_BUFFERED_DC = True
 
         # Initialize self variables
-        # self.gearRatio = 3249 / 169 # Default for ec max 16mm dev kit
-        #self.gearRatio = 225 / 16
         self.gearRatio = 1
-        #self.gearRatio = 10
         self.encoderResolution = 4096 # cts / revolution
         self.adcWasON = False
         self.lastMode = 0 
