@@ -1010,41 +1010,9 @@ class MyApp(wx.App):
 
         # Setup CAN network
         # TODO BUG Now you can't switch CAN ports!!! need this as a function that can be called?
-        """
-        try:
-          self.network.disconnect() # Close any open networks
-        except:
-          pass
+        # Is this still true?
 
-        print("Establishing a new network...")
-        self.network = canopen.Network()
-        #can_device = self.choice_port.GetStringSelection()
-        can_device = "can0"
-
-        try:
-          if platform.system() == "Windows":
-            self.network.connect(bustype='pcan', channel='PCAN_USBBUS'+str(int(can_device[-1:])+1), bitrate=1000000)
-          elif platform.system() == "Linux":
-            self.network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)    
-          elif platform.system() == "Darwin":
-            self.network.connect(bustype='pcan', channel='PCAN_USBBUS1',bitrate=1000000) 
-          # This will attempt to read an SDO from nodes 1 - 127
-          self.network.scanner.reset()
-          #print('network reset')
-          self.network.scanner.search()
-          #print('search completed')
-        except Exception as e: 
-            print(e)
-            print('No CAN driver found!')
-            msg = 'No CAN bus found! \nCheck connection and try again'
-            dlg = wx.MessageDialog(None,msg)
-            dlg.ShowModal()
-            dlg.Destroy()
-            return
-        # We may need to wait a short while here to allow all nodes to respond
-        time.sleep(0.05)
-
-        """
+        # With new firmware and no configuration, adc bugs out big time if it tries to turn on
 
         self.frame = MyFrame(None, wx.ID_ANY, "")
         self.frame.Show()
@@ -1063,14 +1031,6 @@ class MyApp(wx.App):
             print('No Pucks active')
             return True
 
-        while len(self.frame.network.scanner.nodes) == 0:
-            try:
-                time.sleep(1)
-                first = min(self.getNodes())
-                self.frame.setID(first)
-                wx.CallAfter(self.frame.scan_pucks(self))
-            except:
-                pass
         self.addPucks(self.frame.getID())
         i = len(self.getNodes())
         if i == 0:
