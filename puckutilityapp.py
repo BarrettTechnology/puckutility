@@ -102,7 +102,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
         # Setup Window + Icon
         self.SetIcon(wx.Icon('images/BarrettIcon.png'))
-        self.SetTitle("Puck Utility App - v1.1.3")
+        self.SetTitle("Puck Utility App - v1.1.4")
         self.button_6.SetBackgroundColour((66,255,0)) # Initialize with green button
         self.Bind(wx.EVT_CLOSE, self.onCloseFrame)
         # Disable the unimplemented menu items
@@ -1027,6 +1027,7 @@ class MyApp(wx.App):
         # With new firmware and no configuration, adc bugs out big time if it tries to turn on
 
         self.frame = MyFrame(None, wx.ID_ANY, "")
+        self.frame.Centre()
         self.frame.Show()
         # can make this into a try, and set to reconnect on state button?
         self.frame.can_port(None)
