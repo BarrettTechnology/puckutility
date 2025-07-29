@@ -80,7 +80,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         USE_BUFFERED_DC = True
 
         # Initialize self variables
-        self.gearRatio = 1
+        # self.gearRatio = 1
         self.encoderResolution = 4096 # cts / revolution
         self.adcWasON = False
         self.lastMode = 0 
@@ -140,6 +140,10 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         print('Denominator: {}'.format(shaft_rev))
         self.gearRatio = motor_rev / shaft_rev
 
+        self.i_peak = self.node.sdo.upload(0x3011,9)
+        self.i_peak = int.from_bytes(self.i_peak, byteorder='little',signed=False)
+        print('I_peak: {}'.format(self.i_peak))
+
         print('Gear Ratio determined: {}'.format(self.gearRatio))
 
         print("Reading PDOs...")
@@ -157,7 +161,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
         # 8-bytes (64 bits) per PDO - make sure there is space for each data type || split PDOs to fit (can change sync timing per PDO as well)
         print("Configuring TPDO3 and TPDO4 for ADC Monitor...") 
-        self.node.tpdo[3].add_variable('Amplifier','BusVoltage') # (0x3000,1) Bus Voltage - "BusVoltage" (16 bit)
+        self.node.tpdo[3].add_variable('CurrentFeedback') # Iq - "CurrentFeedback" (16 bit)
         self.node.tpdo[3].add_variable('Amplifier','Temperature') # (0x3000,2) Puck Temp - "Temperature" (16 bit)
         self.node.tpdo[3].add_variable('Motor','Therm') # (0x3010,3) Motor Temp - "Therm" (16 bit)
         self.node.tpdo[4].add_variable('PositionFeedback') # (0x6064, 0) Position - "PositionFeedback" (32 bit)
@@ -863,16 +867,26 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 print("Puck Overheating - Stopping test...")
 
             # Read ADC for Bus Voltage, format properly, and update Frame
-            #busVoltagebyte = self.node.sdo.upload(0x3000,1)
-            busVoltage = self.node.tpdo[3]['Amplifier.BusVoltage'].raw
-            #busVoltage = int.from_bytes(busVoltagebyte, byteorder='little', signed='signed')
-            busVoltageString = str(busVoltage/10) + "V"
-            if busVoltageString != self.VBus.GetLabel():
-                self.VBus.SetLabel(busVoltageString)
+            #currentbyte = self.node.sdo.upload(0x3000,1)
+            current = self.node.tpdo[3]['CurrentFeedback'].raw
+            current = (current / 1000 * self.i_peak) * 1/math.sqrt(2) / 1000
+            # print(current)
+            # iq = int.from_bytes(node.sdo.upload(0x6078,0),byteorder='little',signed=False)
+            # daxis = int.from_bytes(node.sdo.upload(0x3010,6),byteorder='little',signed=False)
+            # if iq > 32000:
+            # iq = iq - 65536
+            # iq = abs(iq / 1000 * ratedCurrent / 1000)
+            # id = iq * (1/math.sqrt(2))
+            # if daxis > 32000:
+            # daxis = daxis - 65536
+            # daxis = abs(daxis / 1000 * ratedCurrent / 1000)
+            currentString = str(round(current,2)) + "A"
+            if currentString != self.VBus.GetLabel():
+                self.VBus.SetLabel(currentString)
                 #Colour Setting
-                if busVoltage/10 >= 55:
+                if current/10 >= 55:
                     self.VBus.SetForegroundColour(wx.Colour(245,16,0))
-                elif 50 <= busVoltage/10 < 55:
+                elif 50 <= current/10 < 55:
                     self.VBus.SetForegroundColour(wx.Colour(255,132,0))
                 else:
                     self.VBus.SetForegroundColour(wx.Colour(0,0,0))
