@@ -302,7 +302,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 dlg.ShowModal()
                 dlg.Destroy()
                 return
-            #self.configure_Puck()
             #print(str(datetime.datetime.now()) + " Complete!!!")
         except Exception as e: 
             try:
@@ -580,7 +579,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
           #  self.network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)
           #self.node = self.network.add_node(int(node_id), 'puck3.eds')
           time.sleep(0.5) # wait for puck to reboot (avoids loss of communication)
-          self.configure_Puck()
+        #   self.configure_Puck()
           self.frame_statusbar.SetStatusText("Ready", 1)
 
         if self.ADC_ON == False and self.adcWasON == True:
