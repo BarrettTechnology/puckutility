@@ -98,6 +98,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         self.NetworkActive = True
         self.Rescanning = False
 
+        self.outputShaft = True
+
         self.ADC_ON = False
 
         # Setup Window + Icon
@@ -749,7 +751,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             return
         
         quick_test = self.choice_test.GetSelection()
-        cmd_value = int(self.text_testvalue.GetValue())
+        cmd_value = float(self.text_testvalue.GetValue())
 
         if quick_test == 0:
             # Error Message
@@ -764,7 +766,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             if abs(cmd_value / self.gearRatio) > rated_torque:
             # Needs to be based on gear Ratio
                 cmd_value = math.copysign(rated_torque * self.gearRatio, cmd_value) # Saturate
-            trq_value = cmd_value * 1000 / (rated_torque * self.gearRatio) # Scale
+            trq_value = round(cmd_value * 1000 / (rated_torque * self.gearRatio)) # Scale
             
             # Needs scaling for accurate gear ratio based torque!!!
             print("Set TargetTorque = {0}".format(cmd_value) + " mNm ({0}".format(round(trq_value/10,2)) + "% max)") # show mNm & percent max
@@ -772,8 +774,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.node.sdo["TargetTorque"].raw = trq_value # Send
 
         elif quick_test == 2: # Velocity
-            # cmd_value is in RPM = 19.1 gear ratio 4096cts/sec
-            ctspersec = cmd_value * 4096 / 60 * self.gearRatio #* 19.1 # 19.1 for Dev Kit gear ratio
+            ctspersec = cmd_value * 4096 / 60 * self.gearRatio
             print("Set TargetVelocity = {0}".format(cmd_value) + " RPM")
             self.node.sdo["TargetVelocity"].raw = ctspersec # Send
 
