@@ -163,11 +163,14 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
         # 8-bytes (64 bits) per PDO - make sure there is space for each data type || split PDOs to fit (can change sync timing per PDO as well)
         print("Configuring TPDO3 and TPDO4 for ADC Monitor...") 
+        self.node.tpdo[2].add_variable('i2t','Value') # (0x3025,1) i2t Value - "Value" (16 bit)
         self.node.tpdo[3].add_variable('CurrentFeedback') # Iq - "CurrentFeedback" (16 bit)
         self.node.tpdo[3].add_variable('Amplifier','Temperature') # (0x3000,2) Puck Temp - "Temperature" (16 bit)
         self.node.tpdo[3].add_variable('Motor','Therm') # (0x3010,3) Motor Temp - "Therm" (16 bit)
         self.node.tpdo[4].add_variable('PositionFeedback') # (0x6064, 0) Position - "PositionFeedback" (32 bit)
         self.node.tpdo[4].add_variable('VelocityFeedback')# (0x606C,0) Velocity - "VelocityFeedback" (32 bit)
+        self.node.tpdo[2].trans_type = 10 # TX on every 10th sync
+        self.node.tpdo[2].enabled = True
         self.node.tpdo[3].trans_type = 10 # TX on every 10th sync
         self.node.tpdo[3].enabled = True
         self.node.tpdo[4].trans_type = 0 # TX on every sync
@@ -183,10 +186,17 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             pass
 
         # Each time we receive this PDO from the puck, execute a callback
+        self.node.tpdo[2].add_callback(self.tpdo2_callback)
         self.node.tpdo[3].add_callback(self.tpdo3_callback)
         self.node.tpdo[4].add_callback(self.tpdo4_callback)
 
         self.node.sdo["HeartbeatPeriod"].raw = 0
+
+    def tpdo2_callback(self, msg):
+        global node
+
+        # Call function to update ADC Monitor
+        wx.CallAfter(self.getMonitor)
 
     def tpdo3_callback(self, msg):
         global node
@@ -871,13 +881,15 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             current = self.node.tpdo[3]['CurrentFeedback'].raw
             current = (current / 1000 * self.i_peak) * 1/math.sqrt(2) / 1000
             currentString = str(round(current,1)) + "A"
+            # i2t_value = self.node.tpdo[2]['i2t.Value'].raw
+            # print(i2t_value)
             if currentString != self.VBus.GetLabel():
                 self.VBus.SetLabel(currentString)
                 #Colour Setting
-                if -5 <= current >= 5:
+                if -5 <= current >= 5 and -7 < current > 7:
                     self.VBus.SetForegroundColour(wx.Colour(255,132,0)) # Orange
                 elif -7 <= current >= 7:
-                    self.VBus.SetForegroundColour(wx.Colour(255,132,0)) # Orange
+                    self.VBus.SetForegroundColour(wx.Colour(245,16,0)) # Red
                 else:
                     self.VBus.SetForegroundColour(wx.Colour(0,0,0))
             # Read ADC for Motor Temperature, format properly, and update Frame

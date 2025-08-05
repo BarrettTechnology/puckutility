@@ -90,7 +90,7 @@ class calibrate():
         error = .03 # 3% error
 
         a_bias = self.node.sdo['Alpha']['Bias'].raw
-        b_bias = self.node.sdo['Alpha']['Bias'].raw
+        b_bias = self.node.sdo['Beta']['Bias'].raw
 
         if a_bias > 2048 * (1 + error) or a_bias < 2048 * (1 - error) or b_bias > 2048 * (1 + error) or b_bias < 2048 * (1 - error) :
           print('iSense Bias out of bounds!')
