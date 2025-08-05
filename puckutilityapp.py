@@ -845,10 +845,10 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                         print(self.PTemp.GetLabel())
                         self.PTemp.SetForegroundColour(wx.Colour(0,0,0))
                         self.PTemp.SetLabel('N/A')
-                elif 250 >ampTemp >= 90:
+                elif ampTemp >= 75:
                     self.PTemp.SetLabel(ampTempString)
                     self.PTemp.SetForegroundColour(wx.Colour(245,16,0)) # Red
-                elif 50 <= ampTemp < 90:
+                elif 50 <= ampTemp < 75:
                     self.PTemp.SetLabel(ampTempString)
                     self.PTemp.SetForegroundColour(wx.Colour(255,132,0)) # Orange
                 elif ampTemp < 0:
@@ -870,22 +870,14 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             #currentbyte = self.node.sdo.upload(0x3000,1)
             current = self.node.tpdo[3]['CurrentFeedback'].raw
             current = (current / 1000 * self.i_peak) * 1/math.sqrt(2) / 1000
-            # print(current)
-            # iq = int.from_bytes(node.sdo.upload(0x6078,0),byteorder='little',signed=False)
-            # daxis = int.from_bytes(node.sdo.upload(0x3010,6),byteorder='little',signed=False)
-            # if iq > 32000:
-            # iq = iq - 65536
-            # iq = abs(iq / 1000 * ratedCurrent / 1000)
-            # id = iq * (1/math.sqrt(2))
-            # if daxis > 32000:
-            # daxis = daxis - 65536
-            # daxis = abs(daxis / 1000 * ratedCurrent / 1000)
             currentString = str(round(current,1)) + "A"
             if currentString != self.VBus.GetLabel():
                 self.VBus.SetLabel(currentString)
                 #Colour Setting
-                if current >= 5:
-                    self.VBus.SetForegroundColour(wx.Colour(255,132,0)) # Red
+                if -5 <= current >= 5:
+                    self.VBus.SetForegroundColour(wx.Colour(255,132,0)) # Orange
+                elif -7 <= current >= 7:
+                    self.VBus.SetForegroundColour(wx.Colour(255,132,0)) # Orange
                 else:
                     self.VBus.SetForegroundColour(wx.Colour(0,0,0))
             # Read ADC for Motor Temperature, format properly, and update Frame
