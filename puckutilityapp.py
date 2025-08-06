@@ -41,6 +41,8 @@ import canopen_runner
 # Add reboot to startup, and closing to idle pucks (all pucks not just active)
 # Look into direction reversing at high velocities!
 # Look into possible issues with Pucks responding to sync messages when not in focus (this appears to be caused by COB ID only being updated when configuration is set)
+# Current in the negative direction does not get proper color for text
+
 
 def get_version(vers): # Convert uint32_t to semantic version: Major.Minor.Patch
     return "{0}.{1}.{2}".format(
@@ -394,7 +396,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             cmd_value = input * rated_torque * self.gearRatio / 1000 # cmd_value * 1000 / (rated_torque * self.gearRatio) # Scale
             self.text_testvalue.SetValue(str(round(cmd_value)))
         elif(current_mode == 3):
-            # update select test to trq mode and update input to current target torque
+            # update select test to velocity mode and update input to current target torque
             print('updating mode...')
             self.choice_test.SetSelection(2)
             input = self.node.sdo["TargetVelocity"].raw
@@ -888,7 +890,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 #Colour Setting
                 if -5 <= current >= 5 and -7 < current > 7:
                     self.VBus.SetForegroundColour(wx.Colour(255,132,0)) # Orange
-                elif -7 <= current >= 7:
+                elif -7 >= current >= 7:
                     self.VBus.SetForegroundColour(wx.Colour(245,16,0)) # Red
                 else:
                     self.VBus.SetForegroundColour(wx.Colour(0,0,0))
