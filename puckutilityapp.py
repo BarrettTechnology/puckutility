@@ -115,6 +115,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         self.button_6.SetBackgroundColour(self.gray) # Initialize with gray button in idle
         self.Bind(wx.EVT_KEY_DOWN,self.onKeyDown)
         self.Bind(wx.EVT_CLOSE, self.onCloseFrame)
+        # Bind backgound function to assign bitmap
+        self.Bind(wx.EVT_ERASE_BACKGROUND, self.OnEraseBackground)
         # Disable the unimplemented menu items
         menu = "Calibrate"
         for item in [#"Calibrate All", 
@@ -131,6 +133,18 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         # Hide the "Factory" menu if JLink is not detected
         # if not is_jlink_detected():
         self.frame_menubar.Remove(self.frame_menubar.FindMenu("Factory"))
+
+    def OnEraseBackground(self, evt):
+        # yanked from ColourDB.py
+        dc = evt.GetDC()
+
+        if not dc:
+            dc = wx.ClientDC(self)
+            rect = self.GetUpdateRegion().GetBox()
+            dc.SetClippingRect(rect)
+        dc.Clear()
+        bmp = wx.Bitmap("images/Background.png")
+        dc.DrawBitmap(bmp, 0, 0)
 
     def onKeyDown(self,event):
         event.Skip()
