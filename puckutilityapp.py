@@ -34,14 +34,12 @@ import datetime
 import canopen_runner
 
 # TODO
-# Add save feature for Puck configuration!! - (puck tuner?)
 # Possibly add a way to update all puck firmware??
-# ADD a wxpython based frame for custom motor tuning (gains configuration) - (puck tuner?)
 # Maybe add escape feature to close app?
-# Add reboot to startup, and closing to idle pucks (all pucks not just active)
 # Look into direction reversing at high velocities!
 # Look into possible issues with Pucks responding to sync messages when not in focus (this appears to be caused by COB ID only being updated when configuration is set)
-# Current in the negative direction does not get proper color for text
+# If current is less than continuous, black, then orange, then 90% peak is red
+# Grab continuous current when configuring puck (next to gear ratio)
 
 
 def get_version(vers): # Convert uint32_t to semantic version: Major.Minor.Patch
@@ -104,10 +102,17 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
         self.ADC_ON = False
 
+        # Barrett colors
+        self.blue = '#253B92'
+        self.orange = '#FF7C1B'
+        self.gray = '#8C8C8C'
+
+        self.peak_factor = 0.75 # % Peak for Current Colors
+
         # Setup Window + Icon
         self.SetIcon(wx.Icon('images/BarrettIcon.png'))
         self.SetTitle("Puck Utility App - v1.1.4")
-        self.button_6.SetBackgroundColour((66,255,0)) # Initialize with green button
+        self.button_6.SetBackgroundColour(self.gray) # Initialize with gray button in idle
         self.Bind(wx.EVT_CLOSE, self.onCloseFrame)
         # Disable the unimplemented menu items
         menu = "Calibrate"
@@ -116,7 +121,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
           "Tune Gains...", "Save to CSV..."]:
           menu_item = self.frame_menubar.FindMenuItem(menu, item)
           self.frame_menubar.Enable(menu_item, False)
-          #self.frame_menubar.Remove(menu_item) # Attempt at removing greyed out items
 
         menu = "Factory"
         for item in ["Initialize Puck", "Test All", "Test Flash", "Test RAM", "Test EEPROM", "Test Amplifier", "Test Encoder"]:
@@ -144,6 +148,9 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         print('Denominator: {}'.format(shaft_rev))
         self.gearRatio = motor_rev / shaft_rev
 
+        self.i_cont = self.node.sdo.upload(0x3011,8)
+        self.i_cont = int.from_bytes(self.i_cont, byteorder='little',signed=False)
+        print('I_cont: {}'.format(self.i_cont))
         self.i_peak = self.node.sdo.upload(0x3011,9)
         self.i_peak = int.from_bytes(self.i_peak, byteorder='little',signed=False)
         print('I_peak: {}'.format(self.i_peak))
@@ -219,8 +226,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
     def can_port(self,event):
         #print("Event handler 'can_port'")
-        #self.on_off_adc(self)
-        #print(self.adcWasON)
         if(self.ADC_ON == True):
             self.on_off_adc(self) # Turn off adc 
         try:
@@ -269,7 +274,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         if self.lastMode != 0:
             self.lastMode = 0 # Reset lastMode
             self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
-            self.button_6.SetBackgroundColour((66,255,0))
+            self.button_6.SetBackgroundColour(self.orange)
             self.button_6.SetLabel("Go")
             print("Idling...")
         
@@ -343,9 +348,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             else:
                 self.initialize = MyApp.getNodes(self)
                 node_idx = self.initialize.index(self.getID())
-                #base this on getNodes
-                #node_idx = MyApp.getNodes.index(self.getID())
-            #base this on getNodes
             node_id = self.initialize[node_idx]
             self.setID(node_id)
             self.firstRun = False
@@ -417,11 +419,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         # may want to make this more centralized (like for loop to configure all at once)
         self.configure_Puck() # This makes sure all pucks are configured to remove bug with first round adc on turning puck idle
 
-        #self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
-        #self.text_ctrl_6.ChangeValue(str(self.node.sdo['Cal']['iSense1'].raw))
-        #self.text_ctrl_7.ChangeValue(str(self.node.sdo['Calibration']['e_zero'].raw))
-        #self.text_ctrl_9.ChangeValue(str(self.node.sdo['EncoderConfig']['LagFactor'].raw))
-
     def set_id(self, event):  # wxGlade: wxp3_frame.<event_handler>
         if self.ADC_ON == True:
             self.on_off_adc(self)
@@ -432,7 +429,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         if self.lastMode != 0:
             self.lastMode = 0 # Reset lastMode
             self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
-            self.button_6.SetBackgroundColour((66,255,0))
+            self.button_6.SetBackgroundColour(self.orange)
             self.button_6.SetLabel("Go")
             print("Idling...")
 
@@ -557,9 +554,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
           pathname = fileDialog.GetPath()
 
           self.network.disconnect()
-
-        #   self.can_port(None)
-        #   self.scan_pucks(None)
 
           if semver.match(version, '==1.0.0'):
               l = ['blhost', '-p', can_device + "," + node_id, 'flash-erase-all']
@@ -712,6 +706,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.lastMode = 0 # Reset lastMode
             print("Setting Mode = IDLE")
             self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
+            # Set Go Color to Gray
+            self.button_6.SetBackgroundColour(self.gray)
             return
         else:
             # Clear faults, RTSO, OpEnabled
@@ -719,6 +715,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.node.sdo["ControlWord"].raw = 0x80
             self.node.sdo["ControlWord"].raw = 0x06
             self.node.sdo["ControlWord"].raw = 0x0F
+            # Set Go Color to Orange
+            self.button_6.SetBackgroundColour(self.orange)
 
         if quick_test == 1: # Torque
             # Set Mode to Torque (4)
@@ -823,7 +821,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             # stop homing
             self.node.sdo["ControlWord"].raw &= ~0x0010
 
-
         self.lastMode = quick_test
 
     def logo_click(self,event): # wxGlade: wxp3_frame.<event_handler>
@@ -862,19 +859,19 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                     self.PTemp.SetForegroundColour(wx.Colour(245,16,0)) # Red
                 elif 50 <= ampTemp < 75:
                     self.PTemp.SetLabel(ampTempString)
-                    self.PTemp.SetForegroundColour(wx.Colour(255,132,0)) # Orange
+                    self.PTemp.SetForegroundColour(self.orange) # Orange
                 elif ampTemp < 0:
                     self.PTemp.SetLabel(ampTempString)
                     self.PTemp.SetForegroundColour(wx.Colour(115,155,208)) # Icy blue
                 else:    
                     self.PTemp.SetLabel(ampTempString)
-                    self.PTemp.SetForegroundColour(wx.Colour(0,0,0)) # Green
+                    self.PTemp.SetForegroundColour(wx.Colour(0,0,0)) # Black
             if ampTemp > 100:
                 # Turn off test
                 #Set Mode to IDLE
                 self.lastMode = 0 # Reset lastMode
                 self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
-                self.button_6.SetBackgroundColour((66,255,0))
+                self.button_6.SetBackgroundColour(self.orange)
                 self.button_6.SetLabel("Go")
                 print("Puck Overheating - Stopping test...")
 
@@ -888,10 +885,10 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             if currentString != self.VBus.GetLabel():
                 self.VBus.SetLabel(currentString)
                 #Colour Setting
-                if current <= -7 or current >= 7:
+                if (current <= -self.i_peak / math.sqrt(2) / 1000 * self.peak_factor) or (current >= self.i_peak / math.sqrt(2) / 1000 * self.peak_factor):
                     self.VBus.SetForegroundColour(wx.Colour(245,16,0)) # Red
-                elif current <= -5 or current >= 5:
-                    self.VBus.SetForegroundColour(wx.Colour(255,132,0)) # Orange
+                elif (current <= -self.i_cont / math.sqrt(2) / 1000) or (current >= self.i_cont / math.sqrt(2) / 1000):
+                    self.VBus.SetForegroundColour(self.orange) # Orange
                 else:
                     self.VBus.SetForegroundColour(wx.Colour(0,0,0))
             # Read ADC for Motor Temperature, format properly, and update Frame
@@ -914,8 +911,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 self.MTemp.SetLabel('N/A')
                 self.MTemp.SetForegroundColour(wx.Colour(0,0,0))
         except:
-            #self.network.disconnect()
-            #getPosition happens 10 times faster, let it handle this
             pass
 
     def getPosition(self): #Get RPM + Update every 10th cycle for 10Hz
@@ -924,9 +919,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             currentSysTime = time.time() # Get Current System time for accurate calc
             
             encPosRad = encPos * 2.0 * math.pi / self.encoderResolution / self.gearRatio # * 0.0015339 / self.gearRatio # added division by gear ratio 
-        
-            #Modebyte = self.node.sdo.upload(0x6061,0)
-            #Mode = int.from_bytes(Modebyte, byteorder='little', signed='signed')
 
             if self.motorPresent: # and Mode != 0: # Add Mode != 0 to stop updates when in idle (only useful for annoying graphics when no motor attached)
                 if abs(encPosRad - self.lastPosRad) > 0.005: # if encPos has changed - this saves CPU usage and limits screen refreshes
