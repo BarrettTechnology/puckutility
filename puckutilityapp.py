@@ -888,10 +888,10 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             if currentString != self.VBus.GetLabel():
                 self.VBus.SetLabel(currentString)
                 #Colour Setting
-                if -5 <= current >= 5 and -7 < current > 7:
-                    self.VBus.SetForegroundColour(wx.Colour(255,132,0)) # Orange
-                elif -7 >= current >= 7:
+                if current <= -7 or current >= 7:
                     self.VBus.SetForegroundColour(wx.Colour(245,16,0)) # Red
+                elif current <= -5 or current >= 5:
+                    self.VBus.SetForegroundColour(wx.Colour(255,132,0)) # Orange
                 else:
                     self.VBus.SetForegroundColour(wx.Colour(0,0,0))
             # Read ADC for Motor Temperature, format properly, and update Frame
