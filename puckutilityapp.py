@@ -113,6 +113,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         self.SetIcon(wx.Icon('images/BarrettIcon.png'))
         self.SetTitle("Puck Utility App - v1.1.4")
         self.button_6.SetBackgroundColour(self.gray) # Initialize with gray button in idle
+        self.Bind(wx.EVT_KEY_DOWN,self.onKeyDown)
         self.Bind(wx.EVT_CLOSE, self.onCloseFrame)
         # Disable the unimplemented menu items
         menu = "Calibrate"
@@ -131,6 +132,13 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         # if not is_jlink_detected():
         self.frame_menubar.Remove(self.frame_menubar.FindMenu("Factory"))
 
+    def onKeyDown(self,event):
+        event.Skip()
+        # print(event.GetKeyCode())
+        if event.GetKeyCode() == 27: # ESC
+            self.onCloseFrame(None)
+            return
+    
     def setID(self,i):
         self.ID = i
 
@@ -1029,6 +1037,7 @@ class MyApp(wx.App):
         self.frame.Show()
         # can make this into a try, and set to reconnect on state button?
         self.frame.can_port(None)
+        self.Bind(wx.EVT_KEY_DOWN,self.frame.onKeyDown)
         # Maybe set this ^ on a while loop for when no bus is active
         # Transmit an NMT reboot command to this node
         print("Booting...")
