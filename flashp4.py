@@ -6,6 +6,7 @@ import array     # Python Standard Library
 import binascii  # Python Standard Library
 import canopen
 import semver
+import time
 
 # Python3 incantation for enumeration supporting reverse-lookups
 # return_code = enum(Success=0, Lost_Dog=1, Runaway_Pony=2)
@@ -126,7 +127,10 @@ if __name__ == "__main__":
     file_name = sys.argv[3]   # .bin|.ebin file
 
     # Flash the new firmware
+    # timeStart = time.time()
     result = flash(can_device, can_id, file_name)
+    # timeFinish = round(time.time() - timeStart,2)
+    # print('Time elapsed: {}'.format(timeFinish))
 
     if result:
         print("\nFlash failed: " + flash_result.get_string[result])
