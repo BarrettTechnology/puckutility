@@ -39,9 +39,6 @@ import canopen_runner
 # Look into possible issues with Pucks responding to sync messages when not in focus (this appears to be caused by COB ID only being updated when configuration is set)
 
 # WISH LIST:
-# Add on/off slider for adc monitor
-
-
 
 def get_version(vers): # Convert uint32_t to semantic version: Major.Minor.Patch
     return "{0}.{1}.{2}".format(
