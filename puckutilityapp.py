@@ -1654,7 +1654,7 @@ class MyApp(wx.App):
             print('No Pucks active')
             return True
         
-        print(self.frame.GetSize())
+        # print(self.frame.GetSize())
 
         self.addPucks(self.frame.getID())
         i = len(self.getNodes())
