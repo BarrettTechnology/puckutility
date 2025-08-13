@@ -499,6 +499,12 @@ class calibrate():
         self.frame_statusbar.Update()
         wx.Yield()
 
+        if self.ADC_ON == True:
+            self.adcWasON = True
+            self.on_off_adc(self)
+        else:
+            self.adcWasON = False
+
         # Set Mode to Idle (0)
         print("Setting Mode = IDLE")
         self.node.sdo["SetModeOfOperation"].raw = 0
@@ -532,7 +538,10 @@ class calibrate():
           if answer == wx.ID_NO:
              return False
           
-          self.frame_statusbar.SetStatusText("Ready", 1)
+        self.frame_statusbar.SetStatusText("Ready", 1)
+
+        if self.ADC_ON == False and self.adcWasON == True:
+            self.on_off_adc(self)
 
     def set_user_dir(self, event):  # wxGlade: wxp3_frame.<event_handler>
         print("Event handler 'set_user_dir'")

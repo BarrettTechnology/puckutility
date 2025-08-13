@@ -38,6 +38,7 @@ import canopen_runner
 # Look into direction reversing at high velocities!
 # Look into possible issues with Pucks responding to sync messages when not in focus (this appears to be caused by COB ID only being updated when configuration is set)
 
+
 # WISH LIST:
 
 def get_version(vers): # Convert uint32_t to semantic version: Major.Minor.Patch
@@ -691,7 +692,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         self.onoff1.SetOnForegroundColour(self.gray) # Barrett Blue
         self.onoff1.SetOffColour(self.blue) # Barret Gray
         self.onoff1.SetOffForegroundColour(self.gray) # Barrett Blue
-        self.onoff1.SetToolTip("Live Response")
+        self.onoff1.SetToolTip("ADC Monitor ON/OFF")
         sizer.Add(self.onoff1, 0, wx.ALIGN_CENTER)
         self.onoffpanel.SetSizer(sizer)
 
@@ -743,8 +744,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         motor_rev = int.from_bytes(motor_rev, byteorder='little',signed=False)
         shaft_rev = self.node.sdo.upload(0x6091,2)
         shaft_rev = int.from_bytes(shaft_rev, byteorder='little',signed=False)
-        print('Numerator: {}'.format(motor_rev))
-        print('Denominator: {}'.format(shaft_rev))
+        # print('Numerator: {}'.format(motor_rev))
+        # print('Denominator: {}'.format(shaft_rev))
         self.gearRatio = motor_rev / shaft_rev
 
         self.i_cont = self.node.sdo.upload(0x3011,8)
@@ -752,7 +753,14 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         print('I_cont: {}'.format(self.i_cont))
         self.i_peak = self.node.sdo.upload(0x3011,9)
         self.i_peak = int.from_bytes(self.i_peak, byteorder='little',signed=False)
-        print('I_peak: {}'.format(self.i_peak))
+        # print('I_peak: {}'.format(self.i_peak))
+
+        self.temp_limit = self.node.sdo.upload(0x2384,9)
+        self.temp_limit = int.from_bytes(self.temp_limit, byteorder='little',signed=False)
+
+        self.temp_limited_current = self.node.sdo.upload(0x3025,3)
+        self.temp_limited_current = int.from_bytes(self.temp_limited_current, byteorder='little',signed=False)
+        # print('I_temp_limited: {}'.format(self.temp_limited_current))
 
         print('Gear Ratio determined: {}'.format(self.gearRatio))
 
@@ -873,7 +881,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         if self.lastMode != 0:
             self.lastMode = 0 # Reset lastMode
             self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
-            self.button_6.SetBackgroundColour(self.orange)
+            self.button_6.SetBackgroundColour(self.gray)
             self.button_6.SetLabel("Go")
             print("Idling...")
         
@@ -1028,7 +1036,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         if self.lastMode != 0:
             self.lastMode = 0 # Reset lastMode
             self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
-            self.button_6.SetBackgroundColour(self.orange)
+            self.button_6.SetBackgroundColour(self.gray)
             self.button_6.SetLabel("Go")
             print("Idling...")
 
@@ -1078,18 +1086,18 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
     def browse_fw(self, event):  # wxGlade: wxp3_frame.<event_handler>
         #print("Event handler 'browse_fw'")
 
-        if self.ADC_ON == True:
-           self.on_off_adc(self)
-           self.adcWasON = True
-        else:
-           self.adcWasON = False
-
         quick_test = self.choice_test.GetSelection()
         if quick_test != 0:
             self.lastMode = 0 # Reset lastMode
             print("Setting Mode = IDLE")
             self.choice_test.SetSelection(0)
-            self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE   
+            self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
+            # Set Go Color to Gray
+            self.button_6.SetBackgroundColour(self.gray)
+
+        if self.ADC_ON == True:
+            self.on_off_adc(self)
+            self.adcWasON = True
 
         can_device = self.choice_port.GetStringSelection()
         node_id = self.choice_id.GetString(self.choice_id.GetSelection())
@@ -1203,6 +1211,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             print("Setting Mode = IDLE")
             self.choice_test.SetSelection(0)
             self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
+            # Set Go Color to Gray
+            self.button_6.SetBackgroundColour(self.gray)
 
         if self.ADC_ON == True:
             self.on_off_adc(self)
@@ -1455,10 +1465,10 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                         print(self.PTemp.GetLabel())
                         self.PTemp.SetForegroundColour(wx.Colour(0,0,0))
                         self.PTemp.SetLabel('N/A')
-                elif ampTemp >= 75:
+                elif ampTemp >= self.temp_limit:
                     self.PTemp.SetLabel(ampTempString)
                     self.PTemp.SetForegroundColour(wx.Colour(245,16,0)) # Red
-                elif 50 <= ampTemp < 75:
+                elif 50 <= ampTemp < self.temp_limit:
                     self.PTemp.SetLabel(ampTempString)
                     self.PTemp.SetForegroundColour(self.orange) # Orange
                 elif ampTemp < 0:
@@ -1467,7 +1477,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 else:    
                     self.PTemp.SetLabel(ampTempString)
                     self.PTemp.SetForegroundColour(wx.Colour(0,0,0)) # Black
-            if ampTemp > 100:
+            if ampTemp >= 100:
                 # Turn off test
                 #Set Mode to IDLE
                 self.lastMode = 0 # Reset lastMode
