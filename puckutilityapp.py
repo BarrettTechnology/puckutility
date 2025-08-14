@@ -38,7 +38,9 @@ import canopen_runner
 # Possibly add a way to update all puck firmware??
 # Look into direction reversing at high velocities!
 # Look into possible issues with Pucks responding to sync messages when not in focus (this appears to be caused by COB ID only being updated when configuration is set)
-# If connection is lost, something needs to reset the on/off button
+# If connection is lost, something needs to reset the on/off
+# SHOULD use RPDOs to handle control mode in the future and command values! This is the correct way to handle (needs an issue and addition for v1.1.5)
+# Do not clear tpdo 1 and 2, use these in the monitor / position
 
 # WISH LIST:
 
@@ -60,8 +62,6 @@ def is_jlink_detected():
             if line.find( string_to_find ) != -1:
                 return True
     return False
-
-
 
 # wxGlade auto-generates the puckutilityapp_frame's event handler stubs (in wxp3_glade.py).
 # We are overriding these stubs with real event handler code here.
