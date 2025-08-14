@@ -3,6 +3,7 @@ import wx
 import canopen
 import time
 import math
+import webbrowser
 
 # TODO - added calibrate all pucks feature
 
@@ -562,7 +563,9 @@ class calibrate():
           if abs(starting_position - ending_position) > (encoder_resolution / 8):
             done = True
           
-        
+    def open_support_page(self, event):
+      print('Opening support page...')
+      webbrowser.open_new(r'PuckUtilityAppGuide.pdf')
 
     def tune_gains(self, event):  # wxGlade: wxp3_frame.<event_handler>
         print("Event handler 'tune_gains' not implemented!")
