@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import wx
+import math
 
 class Odometer(wx.Control):
     def __init__(self, parent, id=wx.ID_ANY, pos=wx.DefaultPosition, size=wx.DefaultSize, format="###,###.###", initial=0.0, name="Odometer"):
@@ -108,7 +109,7 @@ class Odometer(wx.Control):
         Prevents incrementing beyond 9 if all cylinders to the left are 9.
         """
         # Check if all cylinders to the left are 9
-        if all(self._cylinders[i] == 9 for i in range(index)):
+        if all(self._cylinders[i] == 9 for i in range(index) if self._positions[i] == "digit"):
             if self._cylinders[index] < 9:
                 self._cylinders[index] += 1
             return  # Prevent incrementing beyond 9
@@ -130,7 +131,7 @@ class Odometer(wx.Control):
         Prevents decrementing below 0 if all cylinders to the left are 0.
         """
         # Check if all cylinders to the left are 0
-        if all(self._cylinders[i] == 0 for i in range(index)):
+        if all(self._cylinders[i] == 0 for i in range(index) if self._positions[i] == "digit"):
             if self._cylinders[index] > 0:
                 self._cylinders[index] -= 1
             return  # Prevent decrementing below 0
@@ -155,13 +156,34 @@ class Odometer(wx.Control):
 
     def SetValue(self, value):
         """
-        Sets the current value of the odometer.
+        Sets the current value of the odometer based on the format string.
 
         :param value: Floating-point value to set.
         """
-        self._value = value
-        integer_part, fractional_part = str(value).split(".")
-        self._cylinders = [int(d) for d in integer_part] + [int(d) for d in fractional_part]
+        if math.isnan(value):  # Check if the value is NaN
+            self._cylinders = [0 if f == "#" else f for f in self._format]  # Reset digits to 0, keep commas/decimals
+        else:
+            value = round(value, len(self._positions) - self._positions.index("decimal") - 1)  # Round to the appropriate number of decimal places
+            # Split the value into integer and fractional parts
+            integer_part, fractional_part = str(value).split(".")
+            integer_part = integer_part.zfill(self._positions.index("decimal"))  # Pad integer part with zeros
+            fractional_part = fractional_part.ljust(len(self._positions) - self._positions.index("decimal") - 1, "0")  # Pad fractional part with zeros
+
+            # Map the value to cylinders based on the format
+            self._cylinders = []
+            integer_index = 0
+            fractional_index = 0
+            for position in self._positions:
+                if position == "digit":
+                    if len(self._cylinders) < self._positions.index("decimal"):
+                        self._cylinders.append(int(integer_part[integer_index]))
+                        integer_index += 1
+                    else:
+                        self._cylinders.append(int(fractional_part[fractional_index]))
+                        fractional_index += 1
+                else:
+                    self._cylinders.append(position)  # Keep commas and decimal points as-is
+
         self.Refresh()
 
 class DemoApp(wx.Frame):
