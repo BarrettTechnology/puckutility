@@ -38,9 +38,10 @@ import canopen_runner
 # Possibly add a way to update all puck firmware??
 # Look into direction reversing at high velocities!
 # Look into possible issues with Pucks responding to sync messages when not in focus (this appears to be caused by COB ID only being updated when configuration is set)
-# If connection is lost, something needs to reset the on/off
+# If connection is lost, something needs to reset the on/off *** This is very annoying
 # SHOULD use RPDOs to handle control mode in the future and command values! This is the correct way to handle (needs an issue and addition for v1.1.5)
 # Do not clear tpdo 1 and 2, use these in the monitor / position
+# refresh looks awful on windows
 
 # WISH LIST:
 
