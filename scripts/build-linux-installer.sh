@@ -13,6 +13,6 @@ cp scripts/setup-socketcan.sh build/lin/PuckUtilityApp/
 cp scripts/install-ubuntu.sh build/lin/PuckUtilityApp/
 cp PuckUtilityApp.desktop build/lin/PuckUtilityApp/
 cp PuckUtilityAppGuide.pdf build/lin/PuckUtilityApp/
-cp -r ../firmware/ PuckUtilityApp/ 
+cp -r firmware/ build/lin/PuckUtilityApp/ 
 cd build/lin
 zip -r ../PuckUtilityApp-lin.zip PuckUtilityApp 
