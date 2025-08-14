@@ -521,77 +521,74 @@ def execute_canopen_runner(csvfile, replace_id, start_id):
 
 # $ canopen_runner <can_dev> <can_id> <eds_file> <csv_file>
 def run_main():
-  global node
+    global node
 
-  can_device = sys.argv[1]
-  can_id = int(sys.argv[2])
-  edsfile = sys.argv[3]
-  csvfile = sys.argv[4]
-  print("can_device={0}".format(can_device))
-  print("can_id={0}".format(can_id))
-  print("edsfile={0}".format(edsfile))
-  print("csvfile={0}".format(csvfile))
+    can_device = sys.argv[1]
+    can_id = int(sys.argv[2])
+    edsfile = sys.argv[3]
+    csvfile = sys.argv[4]
+    print("can_device={0}".format(can_device))
+    print("can_id={0}".format(can_id))
+    print("edsfile={0}".format(edsfile))
+    print("csvfile={0}".format(csvfile))
 
-  # Open the CAN device
-  print("Establishing a new network...")
-  network = canopen.Network()
+    # Open the CAN device
+    print("Establishing a new network...")
+    network = canopen.Network()
 
-  time.sleep(0.2) # Wait for any bus-off to clear
+    time.sleep(0.2) # Wait for any bus-off to clear
 
-  if platform.system() == "Windows":
-    network.connect(bustype='pcan', channel='PCAN_USBBUS'+str(int(can_device[-1:])+1), bitrate=1000000)
-  elif platform.system() == "Linux":
-    network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)
+    if platform.system() == "Windows":
+      network.connect(bustype='pcan', channel='PCAN_USBBUS'+str(int(can_device[-1:])+1), bitrate=1000000)
+    elif platform.system() == "Linux":
+      network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)
 
-  print("Connection succeeded, adding CANopen node...")
-  # Add our canopen node along with its object dictionary (for parsing)
-  node = network.add_node(can_id, edsfile)
+    print("Connection succeeded, adding CANopen node...")
+    # Add our canopen node along with its object dictionary (for parsing)
+    node = network.add_node(can_id, edsfile)
 
-  myfile = open(csvfile, 'r')
-  #config_csv = csv.reader(myfile)
+    myfile = open(csvfile, 'r')
+    #config_csv = csv.reader(myfile)
 
-  canopen_runner(myfile, can_id, can_id, None, False, False, False)
+    canopen_runner(myfile, can_id, can_id, None, False, False, False)
 
 def start(can_device, can_id, edsfile, csvfile):
-  global node
-  global errors
+    global node
+    global errors
 
-  errors = 0
-#   can_device = sys.argv[1]
-#   can_id = int(sys.argv[2])
-#   edsfile = sys.argv[3]
-#   csvfile = sys.argv[4]
-  print("can_device={0}".format(can_device))
-  print("can_id={0}".format(can_id))
-  print("edsfile={0}".format(edsfile))
-  print("csvfile={0}".format(csvfile))
+    errors = 0
 
-  # Open the CAN device
-  print("Establishing a new network...")
-  network = canopen.Network()
+    print("can_device={0}".format(can_device))
+    print("can_id={0}".format(can_id))
+    print("edsfile={0}".format(edsfile))
+    print("csvfile={0}".format(csvfile))
 
-  time.sleep(0.2) # Wait for any bus-off to clear
+    # Open the CAN device
+    print("Establishing a new network...")
+    network = canopen.Network()
 
-  if platform.system() == "Windows":
-    network.connect(bustype='pcan', channel='PCAN_USBBUS'+str(int(can_device[-1:])+1), bitrate=1000000)
-  elif platform.system() == "Linux":
-    network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)
+    time.sleep(0.2) # Wait for any bus-off to clear
 
-  print("Connection succeeded, adding CANopen node...")
-  # Add our canopen node along with its object dictionary (for parsing)
-  node = network.add_node(can_id, edsfile)
+    if platform.system() == "Windows":
+      network.connect(bustype='pcan', channel='PCAN_USBBUS'+str(int(can_device[-1:])+1), bitrate=1000000)
+    elif platform.system() == "Linux":
+      network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)
 
-    # canopen_runner(csvfile, replace_id, start_id, edsfile, v, force, no_warnings):
+    print("Connection succeeded, adding CANopen node...")
+    # Add our canopen node along with its object dictionary (for parsing)
+    node = network.add_node(can_id, edsfile)
 
-  myfile = open(csvfile, 'r')
-  #errors = canopen_runner(myfile, can_id, can_id, None, False, False, False)
-  canopen_runner(myfile, can_id, can_id, None, False, False, False)
-  print("Number of errors: {}".format(errors))
-  network.disconnect()
-  if errors == 0:
-    return True
-  else:
-    return False 
+      # canopen_runner(csvfile, replace_id, start_id, edsfile, v, force, no_warnings):
+
+    myfile = open(csvfile, 'r')
+    #errors = canopen_runner(myfile, can_id, can_id, None, False, False, False)
+    canopen_runner(myfile, can_id, can_id, None, False, False, False)
+    print("Number of errors: {}".format(errors))
+    network.disconnect()
+    if errors == 0:
+      return True
+    else:
+      return False 
 
 if __name__ == "__main__":
-  run_main()
+    run_main()

@@ -71,6 +71,10 @@ class calibrate():
         self.node.sdo["ControlWord"].raw = 0x06
         self.node.sdo["ControlWord"].raw = 0x0F
 
+        self.node.sdo['Theta_e'].raw = 0x7FFF # Stall @ Alpha Peak (+pi)
+
+        self.node.sdo['Motor']['ud'].raw = 000
+
         # Set Mode to Voltage
         print("Setting Mode = VOLTAGE MODE")
         self.node.sdo["SetModeOfOperation"].raw = 12
@@ -158,14 +162,13 @@ class calibrate():
         # theta_e is 16-bit signed from -pi to +pi
         self.node.sdo['Theta_e'].raw = 0x7FFF # Stall @ Alpha Peak (+pi)
 
-        # # may try to add a delay to settle the noise!
-        # time.sleep(1) # Wait at least 75 ms for the filters to settle 
-
         # Read this motor's calibration current (mA)
         calibration_current = self.node.sdo['Calibration']['i_cal'].raw
 
         # Read the motor.peak (mA)
         i_peak = self.node.sdo['Calibration']['i_peak'].raw
+
+        time.sleep(1) # Wait at least 75 ms for the filters to settle
 
         # Increase Motor d-axis voltage (/1000 of i_peak)
         # until measured d-axis current > calibration_current mA or ud > 32000
@@ -211,8 +214,8 @@ class calibrate():
         gainfactor = round(gainfactor)
         print("New Beta Gainfactor = {0}".format(self.node.sdo['Beta']['Gainfactor'].raw))
 
-        # Check Bounds for error!!
-        error = .075 # 7.5%
+        # Check Bounds for error!! Can increase to 10% if needed
+        error = 0.10 # 10%
 
         if gainfactor > round(4096 * (1 + error)) or gainfactor < round(4096 * (1 - error)):
           print('Beta Gainfactor out of bounds!')

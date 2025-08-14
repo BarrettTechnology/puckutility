@@ -89,9 +89,17 @@ Max continuous current (mA),,0x3011,8,UNSIGNED16,1170
 Peak current (mA),,0x3011,9,UNSIGNED16,1170
 Peak current duration (ms),,0x3011,10,UNSIGNED16,500
 Motor calibration current (mA),,0x3011,11,UNSIGNED16,461
+Gear ratio motor revolution,,0x6091,1,UNSIGNED32,3249
+Gear ratio shaft revolution,,0x6091,2,UNSIGNED32,169
+Motor B (0.001 RPM/mNm),, 0x3024, 1, UNSIGNED16,2400
+Current Control Gain Factor (0.01),, 0x3024, 2, UNSIGNED8, 100
+Current Zeta Damping Factor (0.01),, 0x3024, 3, UNSIGNED8, 100
+Velocity Control Gain Factor (0.01),, 0x3024, 4, UNSIGNED8, 100
+Velocity Zeta Damping Factor (0.01),, 0x3024, 5, UNSIGNED8, 100
 
-# Gear ratio motor revolution,,0x6091,1,UNSIGNED32,3249
-# Gear ratio shaft revolution,,0x6091,2,UNSIGNED32,169
+# i2t limiting
+Cutoff filter frequency (Hz),, 0x3025,2,INTEGER16, 50
+Temp Limited Current (mA),,0x3025,3,INTEGER16, 3000
 
 # Profile mode
 Acceleration (cts/s^2),,0x6083,0,UNSIGNED32,2000000
