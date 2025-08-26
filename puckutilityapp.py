@@ -114,7 +114,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
         # Setup Window + Icon
         self.SetIcon(wx.Icon('images/BarrettIcon.png'))
-        self.SetTitle("Puck Utility App - v1.1.4")
+        self.SetTitle("Puck Utility App - v1.1.5")
         self.button_6.SetBackgroundColour(self.gray) # Initialize with gray button in idle
         self.Bind(wx.EVT_KEY_DOWN,self.onKeyDown)
         self.Bind(wx.EVT_CLOSE, self.onCloseFrame)
@@ -201,6 +201,10 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         self.temp_limited_current = self.node.sdo.upload(0x3025,3)
         self.temp_limited_current = int.from_bytes(self.temp_limited_current, byteorder='little',signed=False)
         # print('I_temp_limited: {}'.format(self.temp_limited_current))
+
+        # Get peak velocity
+        self.peak_velocity = self.node.sdo.upload(0x6080,0)
+        self.peak_velocity = int.from_bytes(self.peak_velocity, byteorder='little',signed=False)
 
         print('Gear Ratio determined: {}'.format(self.gearRatio))
 
@@ -822,6 +826,12 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
         elif quick_test == 2: # Velocity
             ctspersec = cmd_value * 4096 / 60 * self.gearRatio
+            print("Set Target Velocity = {0}".format(cmd_value) + " RPM")
+            # print('Ctspersec: {}'.format(ctspersec))
+            if ctspersec > self.peak_velocity:
+                print('Target Velocity Higher than peak motor velocity. Limiting to maximum velocity...')
+                ctspersec = self.peak_velocity
+                cmd_value = round(ctspersec / 4096 * 60 / self.gearRatio)
             print("Set TargetVelocity = {0}".format(cmd_value) + " RPM")
             self.node.sdo["TargetVelocity"].raw = ctspersec # Send
 
@@ -831,7 +841,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             #  607A Target, 6081 Profile Velocity, 6082 Final Velocity, 6083 Accel, 6084 Decel (positive)
             # cmd_value is in degree = 19.1 gear ratio 4096 cts 360 degrees
             ctsvalue = cmd_value / 360 * 4096 * self.gearRatio #* 19.1 # 19.1 for Dev Kit gear ratio 
-            print("Set TargetPosition += {0}".format(cmd_value) + " degrees")
+            print("Set Target Position += {0}".format(cmd_value) + " degrees")
             self.node.sdo["TargetPosition"].raw = self.node.sdo["PositionFeedback"].raw + ctsvalue # Send
 
             # Wait for StatusWord[12] == 0 (ready to receive new waypoint)
