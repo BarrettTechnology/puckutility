@@ -33,6 +33,8 @@ import sys
 import math
 import datetime
 import canopen_runner
+# import pyserial
+# import slcan
 
 # TODO
 # Possibly add a way to update all puck firmware??
@@ -291,6 +293,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         try:
           if platform.system() == "Windows":
             self.network.connect(bustype='pcan', channel='PCAN_USBBUS'+str(int(can_device[-1:])+1), bitrate=1000000)
+            # self.network.connect(bustype='slcan', channel='COM7@128000', bitrate=1000000) # for SLCAN
           elif platform.system() == "Linux":
             self.network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)    
           elif platform.system() == "Darwin":
