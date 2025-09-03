@@ -30,25 +30,33 @@ class calibrate():
         # Try to add calibrate all step!
         print("Running full calibration for Puck {}".format(self.getID()))
         continueCal = self.test_encoder(None, True)
+        self.Disable()
         if continueCal == False:
           print('Ending calibration...')
+          self.Enable()
           return
         continueCal = self.calibrate_ibias(None, True)
         if continueCal == False:
           print('Ending calibration...')
+          self.Enable()
           return
         continueCal = self.calibrate_igainfactor(None, True)
         if continueCal == False:
           print('Ending calibration...')
+          self.Enable()
           return
         self.calibrate_enczero(None, True)
         if continueCal == False:
           print('Ending calibration...')
+          self.Enable()
           return
+        self.Enable()
         #event.Skip()
 
     def calibrate_ibias(self, event, calAll=False):  # wxGlade: wxp3_frame.<event_handler>
         print("Event handler 'calibrate_ibias'")
+        if calAll==False:
+          self.Disable()
         quick_test = self.choice_test.GetSelection()
         if quick_test != 0:
             self.lastMode = 0 # Reset lastMode
@@ -64,6 +72,7 @@ class calibrate():
         self.frame_statusbar.SetStatusText("Calibrating ibias...", 1)
         self.frame_statusbar.Update()
         wx.Yield()
+
 
         # Clear faults, RTSO, OpEnabled
         print("Going OpEnabled")
@@ -125,9 +134,13 @@ class calibrate():
         #self.text_ctrl_6.ChangeValue(str(self.node.sdo['Cal']['iSense1'].raw))
         if self.ADC_ON == False and self.adcWasON == True:
            self.on_off_adc(self)
+        if calAll==False:
+          self.Enable()
 
     def calibrate_igainfactor(self, event, calAll=False):  # wxGlade: wxp3_frame.<event_handler>
         print("Event handler 'calibrate_igainfactor'")
+        if calAll==False:
+          self.Disable() 
         quick_test = self.choice_test.GetSelection()
         if quick_test != 0:
             self.lastMode = 0 # Reset lastMode
@@ -243,11 +256,13 @@ class calibrate():
         if self.ADC_ON == False and self.adcWasON == True:
            self.on_off_adc(self)
 
+        if calAll==False:
+          self.Enable()
+
     def calibrate_itiming(self, event):  # wxGlade: wxp3_frame.<event_handler>
         print("Event handler 'calibrate_itiming' not implemented!")
         # Tune the current sampling moment to minimize noise
         # Collect noise statistics at/near falling edge of the widest PWM, in all 6 sectors
-        
 
         event.Skip()
 
@@ -257,6 +272,8 @@ class calibrate():
 
     def calibrate_enczero(self, event, calAll=False):  # wxGlade: wxp3_frame.<event_handler>
         print("Event handler 'calibrate_enczero'")
+        if calAll==False:
+          self.Disable()
         quick_test = self.choice_test.GetSelection()
         if quick_test != 0:
             self.lastMode = 0 # Reset lastMode
@@ -397,13 +414,17 @@ class calibrate():
         if self.ADC_ON == False and self.adcWasON == True:
             self.on_off_adc(self)
 
+        if calAll==False:
+          self.Enable()
+
     def calibrate_encdir(self, event):  # wxGlade: wxp3_frame.<event_handler>
         print("Event handler 'calibrate_encdir' not implemented!")
         event.Skip()
 
-    def calibrate_enclag(self, event):  # wxGlade: wxp3_frame.<event_handler>
+    def calibrate_enclag(self, event,calAll=False):  # wxGlade: wxp3_frame.<event_handler>
         print("Event handler 'calibrate_enclag'")
-
+        if calAll==False:
+          self.Disable()
         # Clear faults, RTSO, OpEnabled
         print("Going OpEnabled")
         self.node.sdo["ControlWord"].raw = 0x80
@@ -496,9 +517,13 @@ class calibrate():
         print("Setting Mode = IDLE")
         self.node.sdo["SetModeOfOperation"].raw = 0
 
+        if calAll==False:
+          self.Enable()
+
     def test_encoder(self,event,calAll=False):
         print("Testing magnetic encoder...")
-
+        if calAll==False:
+          self.Disable()
         self.frame_statusbar.SetStatusText("Testing magnetic encoder...", 1)
         self.frame_statusbar.Update()
         wx.Yield()
@@ -546,6 +571,8 @@ class calibrate():
 
         if self.ADC_ON == False and self.adcWasON == True:
             self.on_off_adc(self)
+        if calAll==False:
+          self.Enable()
 
     def set_user_dir(self, event):  # wxGlade: wxp3_frame.<event_handler>
         print("Event handler 'set_user_dir'")
@@ -570,13 +597,13 @@ class calibrate():
       print('Opening support page...')
       webbrowser.open_new(r'PuckUtilityAppGuide.pdf')
 
-    def tune_gains(self, event):  # wxGlade: wxp3_frame.<event_handler>
-        print("Event handler 'tune_gains' not implemented!")
-        event.Skip()
+    # def tune_gains(self, event):  # wxGlade: wxp3_frame.<event_handler>
+    #     print("Event handler 'tune_gains' not implemented!")
+    #     event.Skip()
 
-    def save_calibration(self, event):  # wxGlade: wxp3_frame.<event_handler>
-        print("Event handler 'save_calibration' not implemented!")
-        event.Skip()
+    # def save_calibration(self, event):  # wxGlade: wxp3_frame.<event_handler>
+    #     print("Event handler 'save_calibration' not implemented!")
+    #     event.Skip()
     
     def exit_program(self, event):  # wxGlade: wxp3_frame.<event_handler>
         self.Close()

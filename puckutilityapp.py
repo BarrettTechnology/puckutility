@@ -38,15 +38,13 @@ import canopen_runner
 
 # TODO
 # Possibly add a way to update all puck firmware??
-# Look into direction reversing at high velocities!
 # Look into possible issues with Pucks responding to sync messages when not in focus (this appears to be caused by COB ID only being updated when configuration is set)
 # If connection is lost, something needs to reset the on/off *** This is very annoying
 # SHOULD use RPDOs to handle control mode in the future and command values! This is the correct way to handle (needs an issue and addition for v1.1.5)
 # Do not clear tpdo 1 and 2, use these in the monitor / position
 # refresh looks awful on windows
-# add freeze for frame when calibrating (like tuner)
-# make                     self.gain_input.SetValue(str(cmd_value)) happen when velocity is limited
 # 0A current reading should never have - sign
+# scan puck should auto reset on/off switch to off
 
 # WISH LIST:
 # Drag and drop firmware / configurations w/ autodetect to avoid browsing
@@ -70,6 +68,20 @@ def is_jlink_detected():
                 return True
     return False
 
+# Class for DropTarger
+class DropTarget(wx.FileDropTarget):
+    def __init__(self,window):
+        wx.FileDropTarget.__init__(self)
+        self.window = window
+
+    def OnDropFiles(self,x,y,filenames):
+        print('you dropped it!!!!!')
+        for filepath in filenames:
+            self.window.ProcessDroppedFile(filepath)
+        return True
+
+# Build class, then set drop target as frame
+
 # wxGlade auto-generates the puckutilityapp_frame's event handler stubs (in wxp3_glade.py).
 # We are overriding these stubs with real event handler code here.
 # I'd rather use XRC files, but wxGlade 0.9.3 isn't generating event handler bindings for menu items!
@@ -87,6 +99,10 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         icons = wx.Icon("images/BarrettLogo.png")
         self.SetBackgroundColour(wx.Colour(255,255,255))
         USE_BUFFERED_DC = True
+
+        # Init drop target
+        dt = DropTarget(self)
+        self.SetDropTarget(dt)
 
         # Initialize self variables
         # self.gearRatio = 1
@@ -158,6 +174,20 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         # Hide the "Factory" menu if JLink is not detected
         # if not is_jlink_detected():
         self.frame_menubar.Remove(self.frame_menubar.FindMenu("Factory"))
+
+    def ProcessDroppedFile(self,filepath):
+        print(filepath)
+        root, extension = os.path.splitext(filepath)
+        print(extension)
+        if extension == '.ebin':
+            print('firmware')
+            # Run firmware upload
+        elif extension == '.csv':
+            print('configuration')
+            # Run configuration upload
+        else:
+            print('invalid file...')
+            # add a popup
 
     def OnEraseBackground(self, evt):
         # yanked from ColourDB.py
@@ -839,6 +869,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 print('Target Velocity Higher than peak motor velocity. Limiting to maximum velocity...')
                 ctspersec = self.peak_velocity
                 cmd_value = round(ctspersec / 4096 * 60 / self.gearRatio)
+                self.text_testvalue.SetValue(str(cmd_value)) 
             print("Set TargetVelocity = {0}".format(cmd_value) + " RPM")
             self.node.sdo["TargetVelocity"].raw = ctspersec # Send
 
