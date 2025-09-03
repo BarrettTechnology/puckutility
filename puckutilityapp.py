@@ -42,8 +42,12 @@ import canopen_runner
 # SHOULD use RPDOs to handle control mode in the future and command values! This is the correct way to handle (needs an issue and addition for v1.1.5)
 # Do not clear tpdo 1 and 2, use these in the monitor / position
 # refresh looks awful on windows
+# add freeze for frame when calibrating (like tuner)
+# make                     self.gain_input.SetValue(str(cmd_value)) happen when velocity is limited
+# 0A current reading should never have - sign
 
 # WISH LIST:
+# Drag and drop firmware / configurations w/ autodetect to avoid browsing
 
 def get_version(vers): # Convert uint32_t to semantic version: Major.Minor.Patch
     return "{0}.{1}.{2}".format(
