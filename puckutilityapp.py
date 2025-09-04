@@ -43,8 +43,6 @@ import canopen_runner
 # SHOULD use RPDOs to handle control mode in the future and command values! This is the correct way to handle (needs an issue and addition for v1.1.5)
 # Do not clear tpdo 1 and 2, use these in the monitor / position
 # refresh looks awful on windows
-# 0A current reading should never have - sign
-# scan puck should auto reset on/off switch to off
 
 # WISH LIST:
 

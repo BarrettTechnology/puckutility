@@ -120,10 +120,6 @@ class calibrate():
           answer = dlg.ShowModal()
           dlg.Destroy()
           print("Encoder readings unstable...")
-          if answer == wx.ID_YES:
-             return True
-          if answer == wx.ID_NO:
-             return False
 
         # Set Mode to Idle (0)
         print("Setting Mode = IDLE")
@@ -136,6 +132,13 @@ class calibrate():
            self.on_off_adc(self)
         if calAll==False:
           self.Enable()
+        try:
+          if answer == wx.ID_YES:
+              return True
+          if answer == wx.ID_NO:
+              return False
+        except:
+          pass
 
     def calibrate_igainfactor(self, event, calAll=False):  # wxGlade: wxp3_frame.<event_handler>
         print("Event handler 'calibrate_igainfactor'")
@@ -243,10 +246,6 @@ class calibrate():
           dlg = wx.MessageDialog(None,msg,'Warning!',wx.YES_NO | wx.ICON_WARNING)
           answer = dlg.ShowModal()
           dlg.Destroy()
-          if answer == wx.ID_YES:
-             return True
-          if answer == wx.ID_NO:
-             return False
 
         self.node.sdo['Save']['Single'].raw = ((0x3008 << 8) | 0x06) # Save Alpha gainfactor to EE
         self.node.sdo['Save']['Single'].raw = ((0x3009 << 8) | 0x06) # Save Beta gainfactor to EE
@@ -258,6 +257,13 @@ class calibrate():
 
         if calAll==False:
           self.Enable()
+        try:
+          if answer == wx.ID_YES:
+              return True
+          if answer == wx.ID_NO:
+              return False
+        except:
+          pass
 
     def calibrate_itiming(self, event):  # wxGlade: wxp3_frame.<event_handler>
         print("Event handler 'calibrate_itiming' not implemented!")
@@ -404,10 +410,6 @@ class calibrate():
           dlg = wx.MessageDialog(None,msg,'Warning!',wx.YES_NO | wx.ICON_WARNING)
           answer = dlg.ShowModal()
           dlg.Destroy()
-          if answer == wx.ID_YES:
-             return True
-          if answer == wx.ID_NO:
-             return False
 
         self.frame_statusbar.SetStatusText("Ready", 1)
 
@@ -416,6 +418,13 @@ class calibrate():
 
         if calAll==False:
           self.Enable()
+        try:
+          if answer == wx.ID_YES:
+              return True
+          if answer == wx.ID_NO:
+              return False
+        except:
+          pass
 
     def calibrate_encdir(self, event):  # wxGlade: wxp3_frame.<event_handler>
         print("Event handler 'calibrate_encdir' not implemented!")
@@ -562,17 +571,20 @@ class calibrate():
           answer = dlg.ShowModal()
           dlg.Destroy()
           print("Encoder readings unstable...")
-          if answer == wx.ID_YES:
-             return True
-          if answer == wx.ID_NO:
-             return False
-          
+
         self.frame_statusbar.SetStatusText("Ready", 1)
 
         if self.ADC_ON == False and self.adcWasON == True:
             self.on_off_adc(self)
         if calAll==False:
           self.Enable()
+        try:
+          if answer == wx.ID_YES:
+              return True
+          if answer == wx.ID_NO:
+              return False
+        except:
+          pass
 
     def set_user_dir(self, event):  # wxGlade: wxp3_frame.<event_handler>
         print("Event handler 'set_user_dir'")
