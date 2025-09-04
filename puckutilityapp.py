@@ -47,7 +47,6 @@ import canopen_runner
 # scan puck should auto reset on/off switch to off
 
 # WISH LIST:
-# Drag and drop firmware / configurations w/ autodetect to avoid browsing
 
 def get_version(vers): # Convert uint32_t to semantic version: Major.Minor.Patch
     return "{0}.{1}.{2}".format(
@@ -977,6 +976,10 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             current = self.node.tpdo[3]['CurrentFeedback'].raw
             current = (current / 1000 * self.i_peak) * 1/math.sqrt(2) / 1000
             currentString = str(round(current,1)) + "A"
+            # If current is 0 remove negative sign (if present)
+            if round(current,1) == 0 and currentString[0] == "-":
+                currentString = currentString[1:]
+                
             # i2t_value = self.node.tpdo[2]['i2t.Value'].raw
             # print(i2t_value)
             if currentString != self.VBus.GetLabel():
