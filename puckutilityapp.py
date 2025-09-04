@@ -75,7 +75,7 @@ class DropTarget(wx.FileDropTarget):
         self.window = window
 
     def OnDropFiles(self,x,y,filenames):
-        print('you dropped it!!!!!')
+        # print('you dropped it!!!!!')
         for filepath in filenames:
             self.window.ProcessDroppedFile(filepath)
         return True
@@ -176,15 +176,17 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         self.frame_menubar.Remove(self.frame_menubar.FindMenu("Factory"))
 
     def ProcessDroppedFile(self,filepath):
-        print(filepath)
+        # print(filepath)
         root, extension = os.path.splitext(filepath)
-        print(extension)
-        if extension == '.ebin':
-            print('firmware')
+        # print(extension)
+        if extension == '.ebin' or extension == '.bin':
+            print('P4 Firmware Detected...')
+            self.browse_fw(None,filepath)
             # Run firmware upload
         elif extension == '.csv':
-            print('configuration')
+            print('Motor Configuration Detected...')
             # Run configuration upload
+            self.file_to_p3(None,filepath)
         else:
             print('invalid file...')
             # add a popup
@@ -564,7 +566,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         if self.adcWasON == True:
             self.on_off_adc(self)
 
-    def browse_fw(self, event):  # wxGlade: wxp3_frame.<event_handler>
+    def browse_fw(self, event, path=False):  # wxGlade: wxp3_frame.<event_handler>
         #print("Event handler 'browse_fw'")
 
         quick_test = self.choice_test.GetSelection()
@@ -609,81 +611,83 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         print("Found bootloader version: {0}".format(version))
 
         if semver.match(version, '==1.0.0') and platform.system() != "Windows":
-          msg = "To update firmware, please run this program under Windows."
-          print(msg)
-          wx.MessageBox(msg, 'Info', wx.OK | wx.ICON_INFORMATION)
-          return
-        
-        # File browser
-        if platform.system() == "Windows":
-            directory = '../firmware'
+            msg = "To update firmware, please run this program under Windows."
+            print(msg)
+            wx.MessageBox(msg, 'Info', wx.OK | wx.ICON_INFORMATION)
+            return
+        if path == False:
+            # File browser
+            if platform.system() == "Windows":
+                directory = '../firmware'
+            else:
+                directory = 'firmware/'
+
+            # File browser
+            with wx.FileDialog(self, "Select firmware file", directory, wildcard="BIN files (*.bin;*.ebin)|*.bin;*.ebin",
+                          style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST) as fileDialog:
+
+              if fileDialog.ShowModal() == wx.ID_CANCEL:
+                # Transmit an NMT reboot command to this node
+                print("Rebooting puck")
+                self.network.send_message(0x0, [0x81, int(node_id)])
+                time.sleep(0.5) # wait for puck to reboot (avoids loss of communication)
+                self.configure_Puck()
+                if self.adcWasON == True:
+                    self.on_off_adc(self)
+                return     # the user changed their mind
+            # Proceed loading the file chosen by the user
+            pathname = fileDialog.GetPath()
         else:
-            directory = 'firmware/'
+            pathname = path
 
-        # File browser
-        with wx.FileDialog(self, "Select firmware file", directory, wildcard="BIN files (*.bin;*.ebin)|*.bin;*.ebin",
-                       style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST) as fileDialog:
+        self.frame_statusbar.SetStatusText("Updating firmware... (about 30 seconds)", 1)
+        self.frame_statusbar.Update()
+        wx.Yield()
 
-          if fileDialog.ShowModal() == wx.ID_CANCEL:
-            # Transmit an NMT reboot command to this node
-            print("Rebooting puck")
-            self.network.send_message(0x0, [0x81, int(node_id)])
-            time.sleep(0.5) # wait for puck to reboot (avoids loss of communication)
-            self.configure_Puck()
-            if self.adcWasON == True:
-                self.on_off_adc(self)
-            return     # the user changed their mind
+        # timeStart = time.time()
+        self.network.disconnect()
 
-          self.frame_statusbar.SetStatusText("Updating firmware... (about 30 seconds)", 1)
-          self.frame_statusbar.Update()
-          wx.Yield()
+        if semver.match(version, '==1.0.0'):
+            l = ['blhost', '-p', can_device + "," + node_id, 'flash-erase-all']
+            subprocess.call(l) # Note: this waits until the subprocess exits
 
-          # Proceed loading the file chosen by the user
-          pathname = fileDialog.GetPath()
-          # timeStart = time.time()
-          self.network.disconnect()
+            l = ['blhost', '-p', can_device + "," + node_id, 'write-memory', '0x8000', pathname]
+            subprocess.call(l) # Note: this waits until the subprocess exits
 
-          if semver.match(version, '==1.0.0'):
-              l = ['blhost', '-p', can_device + "," + node_id, 'flash-erase-all']
-              subprocess.call(l) # Note: this waits until the subprocess exits
+            # blhost -p can0,1 reset
+            # blhost -p can0,1 execute 0 0 0 (address, arg, stack)
+            l = ['blhost', '-p', can_device + "," + node_id, 'reset']
+            subprocess.call(l) # Note: this waits until the subprocess exits
+        else:
+            if platform.system() == "Windows":
+                python_name = "python"
+            else:
+                python_name = "python3"
+            l = [python_name, "flashp4.py", can_device, node_id, pathname]
+            
+            subprocess.call(l) # Note: this waits until the subprocess exits
 
-              l = ['blhost', '-p', can_device + "," + node_id, 'write-memory', '0x8000', pathname]
-              subprocess.call(l) # Note: this waits until the subprocess exits
-
-              # blhost -p can0,1 reset
-              # blhost -p can0,1 execute 0 0 0 (address, arg, stack)
-              l = ['blhost', '-p', can_device + "," + node_id, 'reset']
-              subprocess.call(l) # Note: this waits until the subprocess exits
-          else:
-              if platform.system() == "Windows":
-                  python_name = "python"
-              else:
-                  python_name = "python3"
-              l = [python_name, "flashp4.py", can_device, node_id, pathname]
-              
-              subprocess.call(l) # Note: this waits until the subprocess exits
-
-          # Re-scan
-          self.can_port(None)
-          self.scan_pucks(None)
-          # timeFinish = round(time.time() - timeStart,2)
-          # print('Time elapsed: {}'.format(timeFinish))
-          #print("Establishing a new network...")
-          #self.network = canopen.Network()
-          #
-          #if platform.system() == "Windows":
-          #  self.network.connect(bustype='pcan', channel='PCAN_USBBUS'+str(int(can_device[-1:])+1), bitrate=1000000)
-          #elif platform.system() == "Linux":
-          #  self.network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)
-          #self.node = self.network.add_node(int(node_id), 'puck3.eds')
-          time.sleep(0.5) # wait for puck to reboot (avoids loss of communication)
-        #   self.configure_Puck()
-          self.frame_statusbar.SetStatusText("Ready", 1)
+        # Re-scan
+        self.can_port(None)
+        self.scan_pucks(None)
+        # timeFinish = round(time.time() - timeStart,2)
+        # print('Time elapsed: {}'.format(timeFinish))
+        #print("Establishing a new network...")
+        #self.network = canopen.Network()
+        #
+        #if platform.system() == "Windows":
+        #  self.network.connect(bustype='pcan', channel='PCAN_USBBUS'+str(int(can_device[-1:])+1), bitrate=1000000)
+        #elif platform.system() == "Linux":
+        #  self.network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)
+        #self.node = self.network.add_node(int(node_id), 'puck3.eds')
+        time.sleep(0.5) # wait for puck to reboot (avoids loss of communication)
+        #self.configure_Puck()
+        self.frame_statusbar.SetStatusText("Ready", 1)
 
         if self.ADC_ON == False and self.adcWasON == True:
             self.on_off_adc(self)
 
-    def file_to_p3(self, event):  # wxGlade: wxp3_frame.<event_handler>
+    def file_to_p3(self, event, path=False):  # wxGlade: wxp3_frame.<event_handler>
         #print("Event handler 'file_to_p3'")
         # If motor is not idled, idle
         quick_test = self.choice_test.GetSelection()
@@ -698,72 +702,76 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         if self.ADC_ON == True:
             self.on_off_adc(self)
             self.adcWasON = True
-        # File browser
-        if platform.system() == "Windows":
-            directory = '../config'
+
+        if path == False:
+            print('no path')
+            # File browser
+            if platform.system() == "Windows":
+                directory = '../config'
+            else:
+                directory = 'config/'
+
+            with wx.FileDialog(self, "Open CANopen CSV file", directory, wildcard="CSV files (*.csv)|*.csv",
+                          style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST) as fileDialog:
+
+              if fileDialog.ShowModal() == wx.ID_CANCEL:
+                  if self.adcWasON == True:
+                    self.on_off_adc(self)
+                  return     # the user changed their mind
+              # Proceed loading the file chosen by the user
+              pathname = fileDialog.GetPath()
         else:
-            directory = 'config/'
+            pathname = path
 
-        with wx.FileDialog(self, "Open CANopen CSV file", directory, wildcard="CSV files (*.csv)|*.csv",
-                       style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST) as fileDialog:
+        self.frame_statusbar.SetStatusText("Updating configuration...", 1)
+        self.frame_statusbar.Update()
+        wx.Yield()
 
-          if fileDialog.ShowModal() == wx.ID_CANCEL:
-              if self.adcWasON == True:
-                self.on_off_adc(self)
-              return     # the user changed their mind
+        can_device = self.choice_port.GetStringSelection()
+        node_id = self.choice_id.GetString(self.choice_id.GetSelection())
 
-          self.frame_statusbar.SetStatusText("Updating configuration...", 1)
-          self.frame_statusbar.Update()
-          wx.Yield()
+        print("Writing OD entries")
+        self.network.disconnect()
+        
+        success = canopen_runner.start(can_device, int(node_id),'puck4.eds', pathname)
+        
+        if success == True:
+          print("Success!")
+        else:
+          print("Configuration file failed to upload...")
+          msg = "Configuration file failed to upload..." \
+          "\n\nDebug:" \
+          "\n-Verify proper configuration file formatting" \
+          "\n-Verify correct version of config file" \
+          "\n-View terminal log for additional details"
+          dlg = wx.MessageDialog(None,msg)
+          dlg.ShowModal()
+          dlg.Destroy()
 
-          # Proceed loading the file chosen by the user
-          pathname = fileDialog.GetPath()
+        print("Establishing a new network...")
+        self.network = canopen.Network()
 
-          can_device = self.choice_port.GetStringSelection()
-          node_id = self.choice_id.GetString(self.choice_id.GetSelection())
+        if platform.system() == "Windows":
+          self.network.connect(bustype='pcan', channel='PCAN_USBBUS'+str(int(can_device[-1:])+1), bitrate=1000000)
+        elif platform.system() == "Linux":
+          self.network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)
+        self.node = self.network.add_node(int(node_id), 'puck4.eds')
+        
+        # Save all OD entries to EEPROM (takes about 0.55 sec)
+        print("Saving OD entries")
+        default_timeout = canopen.sdo.SdoClient.RESPONSE_TIMEOUT
+        canopen.sdo.SdoClient.RESPONSE_TIMEOUT = 1.0
+        self.node.sdo['Save']['All'].raw = 0x65766173 # Key = 'SAVE'
+        canopen.sdo.SdoClient.RESPONSE_TIMEOUT = default_timeout
 
-          print("Writing OD entries")
-          self.network.disconnect()
-          
-          success = canopen_runner.start(can_device, int(node_id),'puck4.eds', pathname)
-          
-          if success == True:
-            print("Success!")
-          else:
-            print("Configuration file failed to upload...")
-            msg = "Configuration file failed to upload..." \
-            "\n\nDebug:" \
-            "\n-Verify proper configuration file formatting" \
-            "\n-Verify correct version of config file" \
-            "\n-View terminal log for additional details"
-            dlg = wx.MessageDialog(None,msg)
-            dlg.ShowModal()
-            dlg.Destroy()
-
-          print("Establishing a new network...")
-          self.network = canopen.Network()
-
-          if platform.system() == "Windows":
-            self.network.connect(bustype='pcan', channel='PCAN_USBBUS'+str(int(can_device[-1:])+1), bitrate=1000000)
-          elif platform.system() == "Linux":
-            self.network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)
-          self.node = self.network.add_node(int(node_id), 'puck4.eds')
-          
-          # Save all OD entries to EEPROM (takes about 0.55 sec)
-          print("Saving OD entries")
-          default_timeout = canopen.sdo.SdoClient.RESPONSE_TIMEOUT
-          canopen.sdo.SdoClient.RESPONSE_TIMEOUT = 1.0
-          self.node.sdo['Save']['All'].raw = 0x65766173 # Key = 'SAVE'
-          canopen.sdo.SdoClient.RESPONSE_TIMEOUT = default_timeout
-
-          # Transmit an NMT reboot command to this node
-          print("Rebooting puck")
-          self.network.send_message(0x0, [0x81, int(node_id)])
-          time.sleep(0.5) # wait for puck to reboot (avoids loss of communication)
-          self.configure_Puck()
-          self.frame_statusbar.SetStatusText("Ready", 1)
-          if self.adcWasON == True:
-              self.on_off_adc(self)
+        # Transmit an NMT reboot command to this node
+        print("Rebooting puck")
+        self.network.send_message(0x0, [0x81, int(node_id)])
+        time.sleep(0.5) # wait for puck to reboot (avoids loss of communication)
+        self.configure_Puck()
+        self.frame_statusbar.SetStatusText("Ready", 1)
+        if self.adcWasON == True:
+            self.on_off_adc(self)
     
     def select_test(self, event):  # wxGlade: wxp3_frame.<event_handler>
         #print("Event handler 'select_test'")
