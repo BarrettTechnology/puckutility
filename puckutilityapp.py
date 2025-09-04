@@ -188,8 +188,12 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             # Run configuration upload
             self.file_to_p3(None,filepath)
         else:
-            print('invalid file...')
+            print('Invalid file...')
             # add a popup
+            msg = 'Invalid file type! \n\n\nExpected Extensions-\nFirmware: ".ebin"\nConfig: ".csv"'
+            dlg = wx.MessageDialog(None,msg,'Warning!', wx.ICON_WARNING)
+            dlg.ShowModal()
+            dlg.Destroy()
 
     def OnEraseBackground(self, evt):
         # yanked from ColourDB.py
