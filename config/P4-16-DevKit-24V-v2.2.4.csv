@@ -91,7 +91,7 @@ Peak current duration (ms),,0x3011,10,UNSIGNED16,5000
 Motor calibration current (mA),,0x3011,11,UNSIGNED16,500
 Gear ratio motor revolution,,0x6091,1,UNSIGNED32,3249
 Gear ratio shaft revolution,,0x6091,2,UNSIGNED32,169
-Motor B (0.001 RPM/mNm),, 0x3024, 1, UNSIGNED16,556
+Motor Speed/Trq (0.001 RPM/mNm),, 0x3024, 1, UNSIGNED16,556
 Current Control Gain Factor (0.01),, 0x3024, 2, UNSIGNED8, 100
 Current Zeta Damping Factor (0.01),, 0x3024, 3, UNSIGNED8, 100
 Velocity Control Gain Factor (0.01),, 0x3024, 4, UNSIGNED8, 100

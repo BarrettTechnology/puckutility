@@ -184,6 +184,10 @@ class calibrate():
         # Read the motor.peak (mA)
         i_peak = self.node.sdo['Calibration']['i_peak'].raw
 
+        # If calibration current is greater than i_peak, limit
+        if calibration_current > i_peak:
+           calibration_current = i_peak
+
         time.sleep(1) # Wait at least 75 ms for the filters to settle
 
         # Increase Motor d-axis voltage (/1000 of i_peak)
@@ -317,6 +321,10 @@ class calibrate():
 
         # Read the motor.peak (mA)
         i_peak = self.node.sdo['Calibration']['i_peak'].raw
+
+        # If calibration current is greater than i_peak, limit
+        if calibration_current > i_peak:
+           calibration_current = i_peak
 
         # Increase Motor d-axis voltage until measured d-axis current > calibration_current mA or ud > 32000
         motor_ud = 0
