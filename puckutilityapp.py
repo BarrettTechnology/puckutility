@@ -45,6 +45,7 @@ import canopen_runner
 # refresh looks awful on windows
 
 # WISH LIST:
+# Add loading for firmware to status bar
 
 def get_version(vers): # Convert uint32_t to semantic version: Major.Minor.Patch
     return "{0}.{1}.{2}".format(

@@ -54,7 +54,7 @@ class calibrate():
         #event.Skip()
 
     def calibrate_ibias(self, event, calAll=False):  # wxGlade: wxp3_frame.<event_handler>
-        print("Event handler 'calibrate_ibias'")
+        # print("Event handler 'calibrate_ibias'")
         if calAll==False:
           self.Disable()
         quick_test = self.choice_test.GetSelection()
@@ -141,7 +141,7 @@ class calibrate():
           pass
 
     def calibrate_igainfactor(self, event, calAll=False):  # wxGlade: wxp3_frame.<event_handler>
-        print("Event handler 'calibrate_igainfactor'")
+        # print("Event handler 'calibrate_igainfactor'")
         if calAll==False:
           self.Disable() 
         quick_test = self.choice_test.GetSelection()
@@ -281,7 +281,7 @@ class calibrate():
         event.Skip()
 
     def calibrate_enczero(self, event, calAll=False):  # wxGlade: wxp3_frame.<event_handler>
-        print("Event handler 'calibrate_enczero'")
+        # print("Event handler 'calibrate_enczero'")
         if calAll==False:
           self.Disable()
         quick_test = self.choice_test.GetSelection()
