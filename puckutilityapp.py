@@ -33,6 +33,7 @@ import sys
 import math
 import datetime
 import canopen_runner
+import can
 # import pyserial
 # import slcan
 
@@ -325,35 +326,57 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
           pass
 
         print("Establishing a new network...")
-        self.network = canopen.Network()
+        # self.network = canopen.Network()
         can_device = self.choice_port.GetStringSelection()
 
-        try:
-          if platform.system() == "Windows":
-            self.network.connect(bustype='pcan', channel='PCAN_USBBUS'+str(int(can_device[-1:])+1), bitrate=1000000)
-            # self.network.connect(bustype='slcan', channel='COM7@128000', bitrate=1000000) # for SLCAN
-          elif platform.system() == "Linux":
-            self.network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)    
-          elif platform.system() == "Darwin":
-            self.network.connect(bustype='pcan', channel='PCAN_USBBUS1',bitrate=1000000) 
-          # This will attempt to read an SDO from nodes 1 - 127
-          self.network.scanner.reset()
-          #print('network reset')
-          self.network.scanner.search()
-          #print('search completed')
-        except Exception as e: 
-            print(e)
-            print('No CAN driver found!')
-            msg = 'No CAN bus found! \nCheck connection and try again'
-            dlg = wx.MessageDialog(None,msg)
-            dlg.ShowModal()
-            # Try to clear out selection of select ID and set ID
-            n = ''
-            self.choice_id.SetItems([n])
-            self.text_id.ChangeValue(str(n))
+        # find devices
+        devicelist = can.detect_available_configs(interfaces=["usbtingo"])
+        print(devicelist)
 
-            dlg.Destroy()
-            return
+        # Testing USBtingo
+        # Trying as bus first? network seems to hang
+
+        bus = can.interface.Bus(interface='usbtingo', bitrate=1000000, databitrate=1000000, is_fd=False)
+        self.network = canopen.Network(bus=bus)
+        # self.network.connect(bustype='usbtingo',bitrate=1000000, databitrate=1000000, is_fd=False)
+        print('connected to usbtingo...')
+        # This will attempt to read an SDO from nodes 1 - 127
+        self.network.scanner.reset()
+        print('network reset')
+        self.network.scanner.search()
+        print('search completed')
+
+        # Commenting out original for now
+        # try:
+        #   if platform.system() == "Windows":
+        #     self.network.connect(bustype='pcan', channel='PCAN_USBBUS'+str(int(can_device[-1:])+1), bitrate=1000000)
+        #     # self.network.connect(bustype='slcan', channel='COM7@128000', bitrate=1000000) # for SLCAN
+        #   elif platform.system() == "Linux":
+        #     self.network.connect(bustype='usbtingo',bitrate=1000000)
+        #     print('connected to usbtingo...')
+        #     # self.network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)    
+        #   elif platform.system() == "Darwin":
+        #     self.network.connect(bustype='pcan', channel='PCAN_USBBUS1',bitrate=1000000) 
+        #   # This will attempt to read an SDO from nodes 1 - 127
+        #   self.network.scanner.reset()
+        #   #print('network reset')
+        #   self.network.scanner.search()
+        #   #print('search completed')
+        # except Exception as e: 
+        #     print(e)
+        #     print('No CAN driver found!')
+        #     msg = 'No CAN bus found! \nCheck connection and try again'
+        #     dlg = wx.MessageDialog(None,msg)
+        #     dlg.ShowModal()
+        #     # Try to clear out selection of select ID and set ID
+        #     n = ''
+        #     self.choice_id.SetItems([n])
+        #     self.text_id.ChangeValue(str(n))
+
+        #     dlg.Destroy()
+        #     return
+        
+
         # We may need to wait a short while here to allow all nodes to respond
         time.sleep(0.05)
         #self.scan_pucks(None)
