@@ -34,6 +34,7 @@ import math
 import datetime
 import canopen_runner
 import can
+# import python-can-usbtingo # this isn't something to import
 # import pyserial
 # import slcan
 
@@ -326,25 +327,55 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
           pass
 
         print("Establishing a new network...")
-        # self.network = canopen.Network()
+        self.network = canopen.Network()
         can_device = self.choice_port.GetStringSelection()
 
         # find devices
-        devicelist = can.detect_available_configs(interfaces=["usbtingo"])
-        print(devicelist)
+        # devicelist = can.detect_available_configs(interfaces=["usbtingo"])
+        # print(devicelist)
 
-        # Testing USBtingo
+        # This kind of works!
+        # with can.Bus(interface="usbtingo", bitrate=1000000) as bus:
+
+        #     msgtx = can.Message(arbitration_id=0x0, is_extended_id=False, data=[0x81])
+        #     print(msgtx)
+        #     bus.send(msgtx)
+        #     print('waiting for response...')
+        #     msgrx = bus.recv()
+        #     print(msgrx)
+
+        # # Testing USBtingo
         # Trying as bus first? network seems to hang
-
-        bus = can.interface.Bus(interface='usbtingo', bitrate=1000000, databitrate=1000000, is_fd=False)
-        self.network = canopen.Network(bus=bus)
+        self.network = canopen.Network()
+        self.network.connect(interface='usbtingo',bitrate=1000000, is_fd=False)
+        # bus = can.interface.Bus(interface='usbtingo', bitrate=1000000, databitrate=1000000, is_fd=False)
+        # self.network = canopen.Network(bus=bus)
         # self.network.connect(bustype='usbtingo',bitrate=1000000, databitrate=1000000, is_fd=False)
         print('connected to usbtingo...')
+        # self.network.start()
+        # print('started network...')
         # This will attempt to read an SDO from nodes 1 - 127
-        self.network.scanner.reset()
-        print('network reset')
-        self.network.scanner.search()
-        print('search completed')
+        # self.network.scanner.reset()
+        # print('network reset')
+        # time.sleep(1)
+
+        # Try to send messages instead of scanning first! 
+        # maybe reboot?
+
+        # For some reason this seems to need to occur?
+        # Transmit an NMT reboot command to this node
+        # print("Rebooting puck")
+        # self.network.send_message(0x0, [0x81, int(127)])
+        # time.sleep(0.5) # wait for puck to reboot (avoids loss of communication)
+        # print('rebooted...')
+        # self.network.scanner.search()
+        # # time.sleep(1)
+        # print('search completed')
+
+
+
+
+
 
         # Commenting out original for now
         # try:
@@ -352,9 +383,9 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         #     self.network.connect(bustype='pcan', channel='PCAN_USBBUS'+str(int(can_device[-1:])+1), bitrate=1000000)
         #     # self.network.connect(bustype='slcan', channel='COM7@128000', bitrate=1000000) # for SLCAN
         #   elif platform.system() == "Linux":
-        #     self.network.connect(bustype='usbtingo',bitrate=1000000)
-        #     print('connected to usbtingo...')
-        #     # self.network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)    
+        #     # self.network.connect(bustype='usbtingo',bitrate=1000000)
+        #     # print('connected to usbtingo...')
+        #     self.network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)    
         #   elif platform.system() == "Darwin":
         #     self.network.connect(bustype='pcan', channel='PCAN_USBBUS1',bitrate=1000000) 
         #   # This will attempt to read an SDO from nodes 1 - 127
