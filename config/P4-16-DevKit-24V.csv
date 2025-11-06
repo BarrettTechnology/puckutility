@@ -1,7 +1,7 @@
 # This is a CANopen config file for the Maxon EC-max 16 (283835)
 
 Name,FILE_INFO,,,STRING,Configure Puck $ID
-Version,FILE_VERSION,,,STRING,V2.2.1 (2025-03-14)
+Version,FILE_VERSION,,,STRING,V2.2.3 (2025-08-14)
 #Set node ID in device,,0x21B0,0,UNSIGNED16,$ID
 Set node ID in app,SETTING_NODE_ID,,,UNSIGNED8,$ID
 #Save ID,,0x1010,4,UNSIGNED32,0x21B000
@@ -85,10 +85,21 @@ Motor poles,,0x3011,3,UNSIGNED8,2
 Motor Kt (mNm/A),,0x3011,4,UNSIGNED16,19
 Motor Rt (0.01 Ohms),,0x3011,5,UNSIGNED16,2050
 Motor Lt (0.01 mH),,0x3011,6,UNSIGNED16,57
-Max continuous current (mA),,0x3011,8,UNSIGNED16,461
+Max continuous current (mA),,0x3011,8,UNSIGNED16,1170
 Peak current (mA),,0x3011,9,UNSIGNED16,1170
 Peak current duration (ms),,0x3011,10,UNSIGNED16,500
 Motor calibration current (mA),,0x3011,11,UNSIGNED16,461
+Gear ratio motor revolution,,0x6091,1,UNSIGNED32,3249
+Gear ratio shaft revolution,,0x6091,2,UNSIGNED32,169
+Motor B (0.001 RPM/mNm),, 0x3024, 1, UNSIGNED16,2400
+Current Control Gain Factor (0.01),, 0x3024, 2, UNSIGNED8, 100
+Current Zeta Damping Factor (0.01),, 0x3024, 3, UNSIGNED8, 100
+Velocity Control Gain Factor (0.01),, 0x3024, 4, UNSIGNED8, 100
+Velocity Zeta Damping Factor (0.01),, 0x3024, 5, UNSIGNED8, 100
+
+# i2t limiting
+Cutoff filter frequency (Hz),, 0x3025,2,INTEGER16, 50
+Temp Limited Current (mA),,0x3025,3,INTEGER16, 1000
 
 # Profile mode
 Acceleration (cts/s^2),,0x6083,0,UNSIGNED32,2000000

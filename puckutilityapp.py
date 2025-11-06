@@ -15,6 +15,7 @@ import wx
 from puckutilityapp_gui import puckutilityapp_frame
 from calibrate_menu import calibrate
 from factory_menu import factory
+import OnOffButton
 
 import canopen_runner
 
@@ -31,16 +32,18 @@ import webbrowser
 import sys
 import math
 import datetime
+import canopen_runner
 
 # TODO
-# Add save feature for Puck configuration!!
 # Possibly add a way to update all puck firmware??
-# ADD a wxpython based frame for custom motor tuning (gains configuration)
-# Maybe add escape feature to close app?
-# Add reboot to startup, and closing to idle pucks
-# Add a failed message for failed config file uploads
 # Look into direction reversing at high velocities!
-# Look into possible issues with Pucks responding to sync messages when not in focus
+# Look into possible issues with Pucks responding to sync messages when not in focus (this appears to be caused by COB ID only being updated when configuration is set)
+# If connection is lost, something needs to reset the on/off *** This is very annoying
+# SHOULD use RPDOs to handle control mode in the future and command values! This is the correct way to handle (needs an issue and addition for v1.1.5)
+# Do not clear tpdo 1 and 2, use these in the monitor / position
+# refresh looks awful on windows
+
+# WISH LIST:
 
 def get_version(vers): # Convert uint32_t to semantic version: Major.Minor.Patch
     return "{0}.{1}.{2}".format(
@@ -80,10 +83,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         USE_BUFFERED_DC = True
 
         # Initialize self variables
-        self.gearRatio = 3249 / 169 # Default for ec max 16mm dev kit
-        #self.gearRatio = 225 / 16
-        #self.gearRatio = 1
-        #self.gearRatio = 10
+        # self.gearRatio = 1
         self.encoderResolution = 4096 # cts / revolution
         self.adcWasON = False
         self.lastMode = 0 
@@ -101,13 +101,41 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         self.NetworkActive = True
         self.Rescanning = False
 
+        self.outputShaft = True
+
         self.ADC_ON = False
+
+        # Barrett colors
+        self.blue = '#253B92'
+        self.orange = '#FF7C1B'
+        self.gray = '#8C8C8C'
+
+        self.peak_factor = 0.75 # % Peak for Current Colors
 
         # Setup Window + Icon
         self.SetIcon(wx.Icon('images/BarrettIcon.png'))
-        self.SetTitle("Puck Utility App - v1.1.3")
-        self.button_6.SetBackgroundColour((66,255,0)) # Initialize with green button
+        self.SetTitle("Puck Utility App - v1.1.4")
+        self.button_6.SetBackgroundColour(self.gray) # Initialize with gray button in idle
+        self.Bind(wx.EVT_KEY_DOWN,self.onKeyDown)
         self.Bind(wx.EVT_CLOSE, self.onCloseFrame)
+        self.backgroundBMP = wx.Bitmap("images/Background.png") # recreating the BMP each rewrite causes massive lagging this is much better!
+        # Bind backgound function to assign bitmap
+        self.Bind(wx.EVT_ERASE_BACKGROUND, self.OnEraseBackground)
+
+        # Add button to onoffpanel
+        # MAY WANT TO INCREASE THE SIZE OF THIS IN CASE IT GIVES BETTER RESOLUTION
+        sizer = wx.BoxSizer(wx.HORIZONTAL)
+        self.onoff1 = OnOffButton.OnOffButton(self.onoffpanel, -1, size=(50, 34), initial=0, border=False, name="2")
+        self.onoff1.Bind(OnOffButton.EVT_ON_OFF, self.on_off_adc)
+        # Demonstrate individual control adjustments
+        self.onoff1.SetOnColour(self.orange) # Barrett Orange
+        self.onoff1.SetOnForegroundColour(self.gray) # Barrett Blue
+        self.onoff1.SetOffColour(self.blue) # Barret Gray
+        self.onoff1.SetOffForegroundColour(self.gray) # Barrett Blue
+        self.onoff1.SetToolTip("ADC Monitor ON/OFF")
+        sizer.Add(self.onoff1, 0, wx.ALIGN_CENTER)
+        self.onoffpanel.SetSizer(sizer)
+
         # Disable the unimplemented menu items
         menu = "Calibrate"
         for item in [#"Calibrate All", 
@@ -115,7 +143,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
           "Tune Gains...", "Save to CSV..."]:
           menu_item = self.frame_menubar.FindMenuItem(menu, item)
           self.frame_menubar.Enable(menu_item, False)
-          #self.frame_menubar.Remove(menu_item) # Attempt at removing greyed out items
 
         menu = "Factory"
         for item in ["Initialize Puck", "Test All", "Test Flash", "Test RAM", "Test EEPROM", "Test Amplifier", "Test Encoder"]:
@@ -126,6 +153,24 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         # if not is_jlink_detected():
         self.frame_menubar.Remove(self.frame_menubar.FindMenu("Factory"))
 
+    def OnEraseBackground(self, evt):
+        # yanked from ColourDB.py
+        dc = evt.GetDC()
+
+        if not dc:
+            dc = wx.ClientDC(self)
+            rect = self.GetUpdateRegion().GetBox()
+            dc.SetClippingRect(rect)
+        dc.Clear()
+        dc.DrawBitmap(self.backgroundBMP, 0, 0)
+
+    def onKeyDown(self,event):
+        event.Skip()
+        # print(event.GetKeyCode())
+        if event.GetKeyCode() == 27: # ESC
+            self.onCloseFrame(None)
+            return
+    
     def setID(self,i):
         self.ID = i
 
@@ -133,7 +178,32 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         return self.ID
     
     def configure_Puck(self):
-        
+
+        # Read and set gear ratio from object dictionary
+        motor_rev = self.node.sdo.upload(0x6091,1)
+        motor_rev = int.from_bytes(motor_rev, byteorder='little',signed=False)
+        shaft_rev = self.node.sdo.upload(0x6091,2)
+        shaft_rev = int.from_bytes(shaft_rev, byteorder='little',signed=False)
+        # print('Numerator: {}'.format(motor_rev))
+        # print('Denominator: {}'.format(shaft_rev))
+        self.gearRatio = motor_rev / shaft_rev
+
+        self.i_cont = self.node.sdo.upload(0x3011,8)
+        self.i_cont = int.from_bytes(self.i_cont, byteorder='little',signed=False)
+        print('I_cont: {}'.format(self.i_cont))
+        self.i_peak = self.node.sdo.upload(0x3011,9)
+        self.i_peak = int.from_bytes(self.i_peak, byteorder='little',signed=False)
+        # print('I_peak: {}'.format(self.i_peak))
+
+        self.temp_limit = self.node.sdo.upload(0x2384,9)
+        self.temp_limit = int.from_bytes(self.temp_limit, byteorder='little',signed=False)
+
+        self.temp_limited_current = self.node.sdo.upload(0x3025,3)
+        self.temp_limited_current = int.from_bytes(self.temp_limited_current, byteorder='little',signed=False)
+        # print('I_temp_limited: {}'.format(self.temp_limited_current))
+
+        print('Gear Ratio determined: {}'.format(self.gearRatio))
+
         print("Reading PDOs...")
         try:
             self.node.tpdo.read()
@@ -149,11 +219,14 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
         # 8-bytes (64 bits) per PDO - make sure there is space for each data type || split PDOs to fit (can change sync timing per PDO as well)
         print("Configuring TPDO3 and TPDO4 for ADC Monitor...") 
-        self.node.tpdo[3].add_variable('Amplifier','BusVoltage') # (0x3000,1) Bus Voltage - "BusVoltage" (16 bit)
+        self.node.tpdo[2].add_variable('i2t','Value') # (0x3025,1) i2t Value - "Value" (16 bit)
+        self.node.tpdo[3].add_variable('CurrentFeedback') # Iq - "CurrentFeedback" (16 bit)
         self.node.tpdo[3].add_variable('Amplifier','Temperature') # (0x3000,2) Puck Temp - "Temperature" (16 bit)
         self.node.tpdo[3].add_variable('Motor','Therm') # (0x3010,3) Motor Temp - "Therm" (16 bit)
         self.node.tpdo[4].add_variable('PositionFeedback') # (0x6064, 0) Position - "PositionFeedback" (32 bit)
         self.node.tpdo[4].add_variable('VelocityFeedback')# (0x606C,0) Velocity - "VelocityFeedback" (32 bit)
+        self.node.tpdo[2].trans_type = 10 # TX on every 10th sync
+        self.node.tpdo[2].enabled = True
         self.node.tpdo[3].trans_type = 10 # TX on every 10th sync
         self.node.tpdo[3].enabled = True
         self.node.tpdo[4].trans_type = 0 # TX on every sync
@@ -169,10 +242,17 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             pass
 
         # Each time we receive this PDO from the puck, execute a callback
+        self.node.tpdo[2].add_callback(self.tpdo2_callback)
         self.node.tpdo[3].add_callback(self.tpdo3_callback)
         self.node.tpdo[4].add_callback(self.tpdo4_callback)
 
         self.node.sdo["HeartbeatPeriod"].raw = 0
+
+    def tpdo2_callback(self, msg):
+        global node
+
+        # Call function to update ADC Monitor
+        wx.CallAfter(self.getMonitor)
 
     def tpdo3_callback(self, msg):
         global node
@@ -193,8 +273,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
     def can_port(self,event):
         #print("Event handler 'can_port'")
-        #self.on_off_adc(self)
-        #print(self.adcWasON)
         if(self.ADC_ON == True):
             self.on_off_adc(self) # Turn off adc 
         try:
@@ -243,7 +321,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         if self.lastMode != 0:
             self.lastMode = 0 # Reset lastMode
             self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
-            self.button_6.SetBackgroundColour((66,255,0))
+            self.button_6.SetBackgroundColour(self.gray)
             self.button_6.SetLabel("Go")
             print("Idling...")
         
@@ -290,7 +368,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 dlg.ShowModal()
                 dlg.Destroy()
                 return
-            #self.configure_Puck()
             #print(str(datetime.datetime.now()) + " Complete!!!")
         except Exception as e: 
             try:
@@ -318,9 +395,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             else:
                 self.initialize = MyApp.getNodes(self)
                 node_idx = self.initialize.index(self.getID())
-                #base this on getNodes
-                #node_idx = MyApp.getNodes.index(self.getID())
-            #base this on getNodes
             node_id = self.initialize[node_idx]
             self.setID(node_id)
             self.firstRun = False
@@ -371,7 +445,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             cmd_value = input * rated_torque * self.gearRatio / 1000 # cmd_value * 1000 / (rated_torque * self.gearRatio) # Scale
             self.text_testvalue.SetValue(str(round(cmd_value)))
         elif(current_mode == 3):
-            # update select test to trq mode and update input to current target torque
+            # update select test to velocity mode and update input to current target torque
             print('updating mode...')
             self.choice_test.SetSelection(2)
             input = self.node.sdo["TargetVelocity"].raw
@@ -392,11 +466,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         # may want to make this more centralized (like for loop to configure all at once)
         self.configure_Puck() # This makes sure all pucks are configured to remove bug with first round adc on turning puck idle
 
-        #self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
-        #self.text_ctrl_6.ChangeValue(str(self.node.sdo['Cal']['iSense1'].raw))
-        #self.text_ctrl_7.ChangeValue(str(self.node.sdo['Calibration']['e_zero'].raw))
-        #self.text_ctrl_9.ChangeValue(str(self.node.sdo['EncoderConfig']['LagFactor'].raw))
-
     def set_id(self, event):  # wxGlade: wxp3_frame.<event_handler>
         if self.ADC_ON == True:
             self.on_off_adc(self)
@@ -407,7 +476,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         if self.lastMode != 0:
             self.lastMode = 0 # Reset lastMode
             self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
-            self.button_6.SetBackgroundColour((66,255,0))
+            self.button_6.SetBackgroundColour(self.gray)
             self.button_6.SetLabel("Go")
             print("Idling...")
 
@@ -457,18 +526,18 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
     def browse_fw(self, event):  # wxGlade: wxp3_frame.<event_handler>
         #print("Event handler 'browse_fw'")
 
-        if self.ADC_ON == True:
-           self.on_off_adc(self)
-           self.adcWasON = True
-        else:
-           self.adcWasON = False
-
         quick_test = self.choice_test.GetSelection()
         if quick_test != 0:
             self.lastMode = 0 # Reset lastMode
             print("Setting Mode = IDLE")
             self.choice_test.SetSelection(0)
-            self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE   
+            self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
+            # Set Go Color to Gray
+            self.button_6.SetBackgroundColour(self.gray)
+
+        if self.ADC_ON == True:
+            self.on_off_adc(self)
+            self.adcWasON = True
 
         can_device = self.choice_port.GetStringSelection()
         node_id = self.choice_id.GetString(self.choice_id.GetSelection())
@@ -530,11 +599,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
           # Proceed loading the file chosen by the user
           pathname = fileDialog.GetPath()
-
+          # timeStart = time.time()
           self.network.disconnect()
-
-          self.can_port(None)
-          self.scan_pucks(None)
 
           if semver.match(version, '==1.0.0'):
               l = ['blhost', '-p', can_device + "," + node_id, 'flash-erase-all']
@@ -553,11 +619,14 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
               else:
                   python_name = "python3"
               l = [python_name, "flashp4.py", can_device, node_id, pathname]
+              
               subprocess.call(l) # Note: this waits until the subprocess exits
 
           # Re-scan
+          self.can_port(None)
           self.scan_pucks(None)
-          
+          # timeFinish = round(time.time() - timeStart,2)
+          # print('Time elapsed: {}'.format(timeFinish))
           #print("Establishing a new network...")
           #self.network = canopen.Network()
           #
@@ -567,7 +636,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
           #  self.network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)
           #self.node = self.network.add_node(int(node_id), 'puck3.eds')
           time.sleep(0.5) # wait for puck to reboot (avoids loss of communication)
-          self.configure_Puck()
+        #   self.configure_Puck()
           self.frame_statusbar.SetStatusText("Ready", 1)
 
         if self.ADC_ON == False and self.adcWasON == True:
@@ -582,6 +651,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             print("Setting Mode = IDLE")
             self.choice_test.SetSelection(0)
             self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
+            # Set Go Color to Gray
+            self.button_6.SetBackgroundColour(self.gray)
 
         if self.ADC_ON == True:
             self.on_off_adc(self)
@@ -610,15 +681,23 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
           can_device = self.choice_port.GetStringSelection()
           node_id = self.choice_id.GetString(self.choice_id.GetSelection())
 
-          # Call canopen_runner.py script with all required parameters
           print("Writing OD entries")
           self.network.disconnect()
-          if platform.system() == "Windows":
-              python_name = "python"
+          
+          success = canopen_runner.start(can_device, int(node_id),'puck4.eds', pathname)
+          
+          if success == True:
+            print("Success!")
           else:
-              python_name = "python3"
-          l = [python_name, 'canopen_runner.py', can_device, node_id, 'puck4.eds', pathname]
-          subprocess.call(l) # Note: this waits until the subprocess exits
+            print("Configuration file failed to upload...")
+            msg = "Configuration file failed to upload..." \
+            "\n\nDebug:" \
+            "\n-Verify proper configuration file formatting" \
+            "\n-Verify correct version of config file" \
+            "\n-View terminal log for additional details"
+            dlg = wx.MessageDialog(None,msg)
+            dlg.ShowModal()
+            dlg.Destroy()
 
           print("Establishing a new network...")
           self.network = canopen.Network()
@@ -644,94 +723,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
           self.frame_statusbar.SetStatusText("Ready", 1)
           if self.adcWasON == True:
               self.on_off_adc(self)
-
-
-    # def file_to_p3(self, event):  # wxGlade: wxp3_frame.<event_handler>
-    #     #print("Event handler 'file_to_p3'")
-    #     # If motor is not idled, idle
-    #     quick_test = self.choice_test.GetSelection()
-    #     if quick_test != 0:
-    #         self.lastMode = 0 # Reset lastMode
-    #         print("Setting Mode = IDLE")
-    #         self.choice_test.SetSelection(0)
-    #         self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
-
-    #     if self.ADC_ON == True:
-    #         self.on_off_adc(self)
-    #         self.adcWasON = True
-    #     # File browser
-    #     if platform.system() == "Windows":
-    #         directory = '../config'
-    #     else:
-    #         directory = 'config/'
-
-    #     with wx.FileDialog(self, "Open CANopen CSV file", directory, wildcard="CSV files (*.csv)|*.csv",
-    #                    style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST) as fileDialog:
-
-    #         if fileDialog.ShowModal() == wx.ID_CANCEL:
-    #             if self.adcWasON == True:
-    #                 self.on_off_adc(self)
-    #             return     # the user changed their mind
-
-    #         self.frame_statusbar.SetStatusText("Updating configuration...", 1)
-    #         self.frame_statusbar.Update()
-    #         wx.Yield()
-
-    #         # Proceed loading the file chosen by the user
-    #         pathname = fileDialog.GetPath()
-
-    #         can_device = self.choice_port.GetStringSelection()
-    #         node_id = self.choice_id.GetString(self.choice_id.GetSelection())
-
-    #         # Call canopen_runner.py script with all required parameters
-    #         print("Writing OD entries")
-    #         self.network.disconnect()
-    #         if platform.system() == "Windows":
-    #             python_name = "python"
-    #         else:
-    #             python_name = "python3"
-    #         l = [python_name, 'canopen_runner.py', can_device, node_id, 'puck4.eds', pathname]
-    #         subprocess.call(l)
-    #         # # TRY TO CATCH ANY ERROR
-            
-    #         # try:
-    #         #     subprocess.call(l)
-    #         # except:
-    #         #     print('Upload Failed!')
-    #         #     msg = "Upload Failed!" \
-    #         #     "\n\nDebug:" \
-    #         #     "\n- Verify csv file is correctly formatted" \
-    #         #     "\n- Ensure proper installation of all required libraries"
-    #         #     dlg = wx.MessageDialog(None,msg)
-    #         #     dlg.ShowModal()
-    #         #     dlg.Destroy()         
-
-    #         # # THIS IS NOT WORKING TO CATCH FAILED CSV UPLOADS
-
-    #         print("Establishing a new network...")
-    #         self.network = canopen.Network()
-
-    #         if platform.system() == "Windows":
-    #             self.network.connect(bustype='pcan', channel='PCAN_USBBUS'+str(int(can_device[-1:])+1), bitrate=1000000)
-    #         elif platform.system() == "Linux":
-    #             self.network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)
-    #             self.node = self.network.add_node(int(node_id), 'puck4.eds')
-            
-    #         # Save all OD entries to EEPROM (takes about 0.55 sec)
-    #         print("Saving OD entries")
-    #         default_timeout = canopen.sdo.SdoClient.RESPONSE_TIMEOUT
-    #         canopen.sdo.SdoClient.RESPONSE_TIMEOUT = 1.0
-    #         self.node.sdo['Save']['All'].raw = 0x65766173 # Key = 'SAVE'
-    #         canopen.sdo.SdoClient.RESPONSE_TIMEOUT = default_timeout
-
-    #         # Transmit an NMT reboot command to this node
-    #         print("Rebooting puck")
-    #         self.network.send_message(0x0, [0x81, int(node_id)])
-    #         time.sleep(0.5) # wait for puck to reboot (avoids loss of communication)
-    #         self.configure_Puck()
-    #         self.frame_statusbar.SetStatusText("Ready", 1)
-    #         if self.adcWasON == True:
-    #             self.on_off_adc(self)
     
     def select_test(self, event):  # wxGlade: wxp3_frame.<event_handler>
         #print("Event handler 'select_test'")
@@ -752,6 +743,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.lastMode = 0 # Reset lastMode
             print("Setting Mode = IDLE")
             self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
+            # Set Go Color to Gray
+            self.button_6.SetBackgroundColour(self.gray)
             return
         else:
             # Clear faults, RTSO, OpEnabled
@@ -759,6 +752,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.node.sdo["ControlWord"].raw = 0x80
             self.node.sdo["ControlWord"].raw = 0x06
             self.node.sdo["ControlWord"].raw = 0x0F
+            # Set Go Color to Orange
+            self.button_6.SetBackgroundColour(self.orange)
 
         if quick_test == 1: # Torque
             # Set Mode to Torque (4)
@@ -803,7 +798,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             return
         
         quick_test = self.choice_test.GetSelection()
-        cmd_value = int(self.text_testvalue.GetValue())
+        cmd_value = float(self.text_testvalue.GetValue())
 
         if quick_test == 0:
             # Error Message
@@ -818,16 +813,15 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             if abs(cmd_value / self.gearRatio) > rated_torque:
             # Needs to be based on gear Ratio
                 cmd_value = math.copysign(rated_torque * self.gearRatio, cmd_value) # Saturate
-            trq_value = cmd_value * 1000 / (rated_torque * self.gearRatio) # Scale
+            trq_value = round(cmd_value * 1000 / (rated_torque * self.gearRatio)) # Scale
             
             # Needs scaling for accurate gear ratio based torque!!!
             print("Set TargetTorque = {0}".format(cmd_value) + " mNm ({0}".format(round(trq_value/10,2)) + "% max)") # show mNm & percent max
-            
+            print("Command CAN value - {}".format(trq_value))
             self.node.sdo["TargetTorque"].raw = trq_value # Send
 
         elif quick_test == 2: # Velocity
-            # cmd_value is in RPM = 19.1 gear ratio 4096cts/sec
-            ctspersec = cmd_value * 4096 / 60 * self.gearRatio #* 19.1 # 19.1 for Dev Kit gear ratio
+            ctspersec = cmd_value * 4096 / 60 * self.gearRatio
             print("Set TargetVelocity = {0}".format(cmd_value) + " RPM")
             self.node.sdo["TargetVelocity"].raw = ctspersec # Send
 
@@ -864,7 +858,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             # stop homing
             self.node.sdo["ControlWord"].raw &= ~0x0010
 
-
         self.lastMode = quick_test
 
     def logo_click(self,event): # wxGlade: wxp3_frame.<event_handler>
@@ -898,39 +891,41 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                         print(self.PTemp.GetLabel())
                         self.PTemp.SetForegroundColour(wx.Colour(0,0,0))
                         self.PTemp.SetLabel('N/A')
-                elif 250 >ampTemp >= 90:
+                elif ampTemp >= self.temp_limit:
                     self.PTemp.SetLabel(ampTempString)
                     self.PTemp.SetForegroundColour(wx.Colour(245,16,0)) # Red
-                elif 50 <= ampTemp < 90:
+                elif 50 <= ampTemp < self.temp_limit:
                     self.PTemp.SetLabel(ampTempString)
-                    self.PTemp.SetForegroundColour(wx.Colour(255,132,0)) # Orange
+                    self.PTemp.SetForegroundColour(self.orange) # Orange
                 elif ampTemp < 0:
                     self.PTemp.SetLabel(ampTempString)
                     self.PTemp.SetForegroundColour(wx.Colour(115,155,208)) # Icy blue
                 else:    
                     self.PTemp.SetLabel(ampTempString)
-                    self.PTemp.SetForegroundColour(wx.Colour(0,0,0)) # Green
-            if ampTemp > 100:
+                    self.PTemp.SetForegroundColour(wx.Colour(0,0,0)) # Black
+            if ampTemp >= 100:
                 # Turn off test
                 #Set Mode to IDLE
                 self.lastMode = 0 # Reset lastMode
                 self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
-                self.button_6.SetBackgroundColour((66,255,0))
+                self.button_6.SetBackgroundColour(self.orange)
                 self.button_6.SetLabel("Go")
                 print("Puck Overheating - Stopping test...")
 
             # Read ADC for Bus Voltage, format properly, and update Frame
-            #busVoltagebyte = self.node.sdo.upload(0x3000,1)
-            busVoltage = self.node.tpdo[3]['Amplifier.BusVoltage'].raw
-            #busVoltage = int.from_bytes(busVoltagebyte, byteorder='little', signed='signed')
-            busVoltageString = str(busVoltage/10) + "V"
-            if busVoltageString != self.VBus.GetLabel():
-                self.VBus.SetLabel(busVoltageString)
+            #currentbyte = self.node.sdo.upload(0x3000,1)
+            current = self.node.tpdo[3]['CurrentFeedback'].raw
+            current = (current / 1000 * self.i_peak) * 1/math.sqrt(2) / 1000
+            currentString = str(round(current,1)) + "A"
+            # i2t_value = self.node.tpdo[2]['i2t.Value'].raw
+            # print(i2t_value)
+            if currentString != self.VBus.GetLabel():
+                self.VBus.SetLabel(currentString)
                 #Colour Setting
-                if busVoltage/10 >= 55:
-                    self.VBus.SetForegroundColour(wx.Colour(245,16,0))
-                elif 50 <= busVoltage/10 < 55:
-                    self.VBus.SetForegroundColour(wx.Colour(255,132,0))
+                if (current <= -self.i_peak / math.sqrt(2) / 1000 * self.peak_factor) or (current >= self.i_peak / math.sqrt(2) / 1000 * self.peak_factor):
+                    self.VBus.SetForegroundColour(wx.Colour(245,16,0)) # Red
+                elif (current <= -self.i_cont / math.sqrt(2) / 1000) or (current >= self.i_cont / math.sqrt(2) / 1000):
+                    self.VBus.SetForegroundColour(self.orange) # Orange
                 else:
                     self.VBus.SetForegroundColour(wx.Colour(0,0,0))
             # Read ADC for Motor Temperature, format properly, and update Frame
@@ -953,8 +948,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 self.MTemp.SetLabel('N/A')
                 self.MTemp.SetForegroundColour(wx.Colour(0,0,0))
         except:
-            #self.network.disconnect()
-            #getPosition happens 10 times faster, let it handle this
             pass
 
     def getPosition(self): #Get RPM + Update every 10th cycle for 10Hz
@@ -963,9 +956,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             currentSysTime = time.time() # Get Current System time for accurate calc
             
             encPosRad = encPos * 2.0 * math.pi / self.encoderResolution / self.gearRatio # * 0.0015339 / self.gearRatio # added division by gear ratio 
-        
-            #Modebyte = self.node.sdo.upload(0x6061,0)
-            #Mode = int.from_bytes(Modebyte, byteorder='little', signed='signed')
 
             if self.motorPresent: # and Mode != 0: # Add Mode != 0 to stop updates when in idle (only useful for annoying graphics when no motor attached)
                 if abs(encPosRad - self.lastPosRad) > 0.005: # if encPos has changed - this saves CPU usage and limits screen refreshes
@@ -1034,18 +1024,18 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.network.sync.start(0.01)
             #Turn on ADC Monitoring
             self.ADC_ON = True
-            # Change image to -
-            negativeBitmap = wx.Bitmap('images/negative-.png')
-            self.Plus.SetBitmap(negativeBitmap)
+            # # Change image to -
+            # negativeBitmap = wx.Bitmap('images/negative-.png')
+            # self.Plus.SetBitmap(negativeBitmap)
         elif self.ADC_ON == True:
             print('Turning off ADC Monitor')
             #Turn off ADC Monitoring
             # Stop sync transmission
             self.network.sync.stop()
             self.ADC_ON = False
-            # Change image to +
-            positiveBitmap = wx.Bitmap('images/plus+.png')
-            self.Plus.SetBitmap(positiveBitmap) 
+            # # Change image to +
+            # positiveBitmap = wx.Bitmap('images/plus+.png')
+            # self.Plus.SetBitmap(positiveBitmap) 
             # Reset monitor values to N/A
             self.VBus.SetLabel('N/A')
             self.PTemp.SetLabel('N/A')
@@ -1067,45 +1057,16 @@ class MyApp(wx.App):
 
         # Setup CAN network
         # TODO BUG Now you can't switch CAN ports!!! need this as a function that can be called?
-        """
-        try:
-          self.network.disconnect() # Close any open networks
-        except:
-          pass
+        # Is this still true?
 
-        print("Establishing a new network...")
-        self.network = canopen.Network()
-        #can_device = self.choice_port.GetStringSelection()
-        can_device = "can0"
-
-        try:
-          if platform.system() == "Windows":
-            self.network.connect(bustype='pcan', channel='PCAN_USBBUS'+str(int(can_device[-1:])+1), bitrate=1000000)
-          elif platform.system() == "Linux":
-            self.network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)    
-          elif platform.system() == "Darwin":
-            self.network.connect(bustype='pcan', channel='PCAN_USBBUS1',bitrate=1000000) 
-          # This will attempt to read an SDO from nodes 1 - 127
-          self.network.scanner.reset()
-          #print('network reset')
-          self.network.scanner.search()
-          #print('search completed')
-        except Exception as e: 
-            print(e)
-            print('No CAN driver found!')
-            msg = 'No CAN bus found! \nCheck connection and try again'
-            dlg = wx.MessageDialog(None,msg)
-            dlg.ShowModal()
-            dlg.Destroy()
-            return
-        # We may need to wait a short while here to allow all nodes to respond
-        time.sleep(0.05)
-
-        """
+        # With new firmware and no configuration, adc bugs out big time if it tries to turn on
 
         self.frame = MyFrame(None, wx.ID_ANY, "")
+        self.frame.Centre()
         self.frame.Show()
+        # can make this into a try, and set to reconnect on state button?
         self.frame.can_port(None)
+        self.Bind(wx.EVT_KEY_DOWN,self.frame.onKeyDown)
         # Maybe set this ^ on a while loop for when no bus is active
         # Transmit an NMT reboot command to this node
         print("Booting...")
@@ -1118,15 +1079,9 @@ class MyApp(wx.App):
         if len(self.getNodes()) == 0:
             print('No Pucks active')
             return True
+        
+        # print(self.frame.GetSize())
 
-        while len(self.frame.network.scanner.nodes) == 0:
-            try:
-                time.sleep(1)
-                first = min(self.getNodes())
-                self.frame.setID(first)
-                wx.CallAfter(self.frame.scan_pucks(self))
-            except:
-                pass
         self.addPucks(self.frame.getID())
         i = len(self.getNodes())
         if i == 0:

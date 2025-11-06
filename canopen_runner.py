@@ -113,6 +113,11 @@ def parse_error_code(code):
     Returns a string description of the provided error code
     Descriptions are specified for the runner command
     """
+    global errors 
+
+    if code != 0:
+        errors = errors + 1
+
     if code == 0:
         return "No Error"
     elif code == 1:
@@ -254,6 +259,8 @@ def canopen_runner(csvfile, replace_id, start_id, edsfile, v, force,
     verbose = v
     #print("replace_id: {0}".format(replace_id))
     objdict = None
+    errors = 0
+
     if edsfile != None:
         try:
             objdict = import_od(edsfile)
@@ -271,12 +278,16 @@ def canopen_runner(csvfile, replace_id, start_id, edsfile, v, force,
         display_line = ("Error (line " + str(line[0]) + "): " +
                         parse_error_code(line[1]))
         printout(display_line, True)
+        # errors = errors + 1
 
     #if there are invalid lines & user has elected not to force continue, quit
     if len(invalid_lines) and not force:
         return
     csvfile.seek(0) #reset CSV file pointer
     result = execute_canopen_runner(csv.reader(csvfile), replace_id, start_id)
+    # print('result of run = {}'.format(result))
+
+    return errors
 
 def validate(csvfile, replace_id, objdict):
     """
@@ -422,6 +433,7 @@ def execute_canopen_runner(csvfile, replace_id, start_id):
     sdo_retries = 1 #pulled from canopen.sdo
     sdo_b2b = 1 #set to 0 as default
     global node
+    global errors
     
     linenum = 0
     for row in csvfile:
@@ -493,49 +505,90 @@ def execute_canopen_runner(csvfile, replace_id, start_id):
                 time.sleep(sdo_b2b/1000.0)
             except ConnectionError:
                 printout("ERROR: Could not connect to CAN device", True)
+                errors = errors + 1
             except SdoCommunicationError:
                 if (index == 0x21B0 and subindex == 0): # 0x21B0 = device ID
                     continue #suppress error b/c id inside device changed
                 printout("ERROR: SDO Communication Error on line " +
                          str(linenum) + ".", True)
+                errors = errors + 1
             except SdoAbortedError as e:
                 printout("ERROR: SDO Aborted Error on line " + str(linenum) +
                          ". Error code " + str(e.code), True)
+                errors = errors + 1
     #click.secho("Done", fg="green")
     print("Done")
 
 # $ canopen_runner <can_dev> <can_id> <eds_file> <csv_file>
 def run_main():
-  global node
+    global node
 
-  can_device = sys.argv[1]
-  can_id = int(sys.argv[2])
-  edsfile = sys.argv[3]
-  csvfile = sys.argv[4]
-  print("can_device={0}".format(can_device))
-  print("can_id={0}".format(can_id))
-  print("edsfile={0}".format(edsfile))
-  print("csvfile={0}".format(csvfile))
+    can_device = sys.argv[1]
+    can_id = int(sys.argv[2])
+    edsfile = sys.argv[3]
+    csvfile = sys.argv[4]
+    print("can_device={0}".format(can_device))
+    print("can_id={0}".format(can_id))
+    print("edsfile={0}".format(edsfile))
+    print("csvfile={0}".format(csvfile))
 
-  # Open the CAN device
-  print("Establishing a new network...")
-  network = canopen.Network()
+    # Open the CAN device
+    print("Establishing a new network...")
+    network = canopen.Network()
 
-  time.sleep(0.2) # Wait for any bus-off to clear
+    time.sleep(0.2) # Wait for any bus-off to clear
 
-  if platform.system() == "Windows":
-    network.connect(bustype='pcan', channel='PCAN_USBBUS'+str(int(can_device[-1:])+1), bitrate=1000000)
-  elif platform.system() == "Linux":
-    network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)
+    if platform.system() == "Windows":
+      network.connect(bustype='pcan', channel='PCAN_USBBUS'+str(int(can_device[-1:])+1), bitrate=1000000)
+    elif platform.system() == "Linux":
+      network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)
 
-  print("Connection succeeded, adding CANopen node...")
-  # Add our canopen node along with its object dictionary (for parsing)
-  node = network.add_node(can_id, edsfile)
+    print("Connection succeeded, adding CANopen node...")
+    # Add our canopen node along with its object dictionary (for parsing)
+    node = network.add_node(can_id, edsfile)
 
-  myfile = open(csvfile, 'r')
-  #config_csv = csv.reader(myfile)
+    myfile = open(csvfile, 'r')
+    #config_csv = csv.reader(myfile)
 
-  canopen_runner(myfile, can_id, can_id, None, False, False, False)
+    canopen_runner(myfile, can_id, can_id, None, False, False, False)
+
+def start(can_device, can_id, edsfile, csvfile):
+    global node
+    global errors
+
+    errors = 0
+
+    print("can_device={0}".format(can_device))
+    print("can_id={0}".format(can_id))
+    print("edsfile={0}".format(edsfile))
+    print("csvfile={0}".format(csvfile))
+
+    # Open the CAN device
+    print("Establishing a new network...")
+    network = canopen.Network()
+
+    time.sleep(0.2) # Wait for any bus-off to clear
+
+    if platform.system() == "Windows":
+      network.connect(bustype='pcan', channel='PCAN_USBBUS'+str(int(can_device[-1:])+1), bitrate=1000000)
+    elif platform.system() == "Linux":
+      network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)
+
+    print("Connection succeeded, adding CANopen node...")
+    # Add our canopen node along with its object dictionary (for parsing)
+    node = network.add_node(can_id, edsfile)
+
+      # canopen_runner(csvfile, replace_id, start_id, edsfile, v, force, no_warnings):
+
+    myfile = open(csvfile, 'r')
+    #errors = canopen_runner(myfile, can_id, can_id, None, False, False, False)
+    canopen_runner(myfile, can_id, can_id, None, False, False, False)
+    print("Number of errors: {}".format(errors))
+    network.disconnect()
+    if errors == 0:
+      return True
+    else:
+      return False 
 
 if __name__ == "__main__":
-  run_main()
+    run_main()

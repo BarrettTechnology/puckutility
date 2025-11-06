@@ -1429,6 +1429,20 @@ DefaultValue =  0
 AccessType = RW
 ObjectType = 0x07
 
+[3025]
+DataType = 0x05
+ParameterName = i2t
+DefaultValue =  1
+AccessType = RW
+ObjectType = 0x08
+
+[3025sub1]
+DataType = 0x07
+ParameterName = Value
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
 [603f]
 DataType = 0x06
 ParameterName = LastError

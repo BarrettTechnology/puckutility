@@ -3,6 +3,7 @@ import wx
 import canopen
 import time
 import math
+import webbrowser
 
 # TODO - added calibrate all pucks feature
 
@@ -11,9 +12,6 @@ class calibrate():
         print(self.network.scanner.nodes)
         starting_id = self.getID()
         for i in self.network.scanner.nodes:
-            #if(i == 1):
-            #    print('skipping...')
-            #    continue
             print(i)
             indexID = self.network.scanner.nodes.index(i)
             self.choice_id.SetSelection(indexID) # Move to next ID for calibration
@@ -73,6 +71,10 @@ class calibrate():
         self.node.sdo["ControlWord"].raw = 0x06
         self.node.sdo["ControlWord"].raw = 0x0F
 
+        self.node.sdo['Theta_e'].raw = 0x7FFF # Stall @ Alpha Peak (+pi)
+
+        self.node.sdo['Motor']['ud'].raw = 000
+
         # Set Mode to Voltage
         print("Setting Mode = VOLTAGE MODE")
         self.node.sdo["SetModeOfOperation"].raw = 12
@@ -83,8 +85,6 @@ class calibrate():
           print("Previous {0} iSense bias = {1}".format(channel, self.node.sdo[channel]['Bias'].raw))
           filt = self.node.sdo[channel]['Filtered'].raw # Q12.4
           filt = (filt >> 4) + ((filt & 0x0008) >> 3) # Round Q12.4 to Q12.0
-          #self.node.sdo['Alpha']['Bias'].raw = 2050 # Alpha
-          #self.node.sdo['Beta']['Bias'].raw = 2075 # Beta
           self.node.sdo[channel]['Bias'].raw = filt
           print("New {0} iSense bias = {1}".format(channel, filt))
 
@@ -92,10 +92,10 @@ class calibrate():
         self.node.sdo['Save']['Single'].raw = ((0x3009 << 8) | 0x03) # Save Beta iSense cal to EE
 
         # Check Bounds for error!!
-        error = .02 # 2% error
+        error = .03 # 3% error
 
         a_bias = self.node.sdo['Alpha']['Bias'].raw
-        b_bias = self.node.sdo['Alpha']['Bias'].raw
+        b_bias = self.node.sdo['Beta']['Bias'].raw
 
         if a_bias > 2048 * (1 + error) or a_bias < 2048 * (1 - error) or b_bias > 2048 * (1 + error) or b_bias < 2048 * (1 - error) :
           print('iSense Bias out of bounds!')
@@ -162,14 +162,13 @@ class calibrate():
         # theta_e is 16-bit signed from -pi to +pi
         self.node.sdo['Theta_e'].raw = 0x7FFF # Stall @ Alpha Peak (+pi)
 
-        # # may try to add a delay to settle the noise!
-        # time.sleep(1) # Wait at least 75 ms for the filters to settle 
-
         # Read this motor's calibration current (mA)
         calibration_current = self.node.sdo['Calibration']['i_cal'].raw
 
         # Read the motor.peak (mA)
         i_peak = self.node.sdo['Calibration']['i_peak'].raw
+
+        time.sleep(1) # Wait at least 75 ms for the filters to settle
 
         # Increase Motor d-axis voltage (/1000 of i_peak)
         # until measured d-axis current > calibration_current mA or ud > 32000
@@ -215,8 +214,8 @@ class calibrate():
         gainfactor = round(gainfactor)
         print("New Beta Gainfactor = {0}".format(self.node.sdo['Beta']['Gainfactor'].raw))
 
-        # Check Bounds for error!!
-        error = .075 # 7.5%
+        # Check Bounds for error!! Can increase to 10% if needed
+        error = 0.10 # 10%
 
         if gainfactor > round(4096 * (1 + error)) or gainfactor < round(4096 * (1 - error)):
           print('Beta Gainfactor out of bounds!')
@@ -499,6 +498,17 @@ class calibrate():
 
     def test_encoder(self,event,calAll=False):
         print("Testing magnetic encoder...")
+
+        self.frame_statusbar.SetStatusText("Testing magnetic encoder...", 1)
+        self.frame_statusbar.Update()
+        wx.Yield()
+
+        if self.ADC_ON == True:
+            self.adcWasON = True
+            self.on_off_adc(self)
+        else:
+            self.adcWasON = False
+
         # Set Mode to Idle (0)
         print("Setting Mode = IDLE")
         self.node.sdo["SetModeOfOperation"].raw = 0
@@ -531,6 +541,11 @@ class calibrate():
              return True
           if answer == wx.ID_NO:
              return False
+          
+        self.frame_statusbar.SetStatusText("Ready", 1)
+
+        if self.ADC_ON == False and self.adcWasON == True:
+            self.on_off_adc(self)
 
     def set_user_dir(self, event):  # wxGlade: wxp3_frame.<event_handler>
         print("Event handler 'set_user_dir'")
@@ -551,7 +566,9 @@ class calibrate():
           if abs(starting_position - ending_position) > (encoder_resolution / 8):
             done = True
           
-        
+    def open_support_page(self, event):
+      print('Opening support page...')
+      webbrowser.open_new(r'PuckUtilityAppGuide.pdf')
 
     def tune_gains(self, event):  # wxGlade: wxp3_frame.<event_handler>
         print("Event handler 'tune_gains' not implemented!")
