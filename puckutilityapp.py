@@ -992,23 +992,23 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                     self.VBus.SetForegroundColour(wx.Colour(0,0,0))
             # Read ADC for Motor Temperature, format properly, and update Frame
             #motorTempbyte = self.node.sdo.upload(0x3010,3) # This needs to be the correct value
-            motorTemp = self.node.tpdo[3]['Motor.Therm'].raw
+            motorTemp = self.node.tpdo[3]['Motor.Therm'].raw / 10
             #motorTemp = int.from_bytes(motorTempbyte, byteorder='little', signed='signed')
             motorTempString = str(motorTemp) + "C"
-            if False: # adding automatic N/A for Dev Kit App #motorTempString != self.MTemp.GetLabel() and motorTemp != 0 and motorTemp != -8 and motorTemp != -9 and motorTemp < ampTemp + 15:
+            if True: # adding automatic N/A for Dev Kit App #motorTempString != self.MTemp.GetLabel() and motorTemp != 0 and motorTemp != -8 and motorTemp != -9 and motorTemp < ampTemp + 15:
                 self.MTemp.SetLabel(motorTempString)
                 #Colour Setting
-                if motorTemp >= 90:
+                if motorTemp >= 100:
                     self.MTemp.SetForegroundColour(wx.Colour(245,16,0))
-                elif 50 <= motorTemp < 90:
+                elif 75 <= motorTemp < 100:
                     self.MTemp.SetForegroundColour(wx.Colour(255,132,0))
                 elif motorTemp < 0:
                     self.MTemp.SetForegroundColour(wx.Colour(115,155,208))
                 else:
                     self.MTemp.SetForegroundColour(wx.Colour(0,0,0))
-            elif motorTemp == 0 or motorTemp == -8 or motorTemp == -9 or motorTemp > ampTemp + 15: # Handles case of no motor thermistor present
-                self.MTemp.SetLabel('N/A')
-                self.MTemp.SetForegroundColour(wx.Colour(0,0,0))
+            # elif motorTemp == 0 or motorTemp == -8 or motorTemp == -9 or motorTemp > ampTemp + 15: # Handles case of no motor thermistor present
+            #     self.MTemp.SetLabel('N/A')
+            #     self.MTemp.SetForegroundColour(wx.Colour(0,0,0))
         except:
             pass
 
