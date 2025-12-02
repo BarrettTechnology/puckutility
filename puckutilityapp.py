@@ -288,14 +288,13 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
           if platform.system() == "Windows":
             self.network.connect(bustype='pcan', channel='PCAN_USBBUS'+str(int(can_device[-1:])+1), bitrate=1000000)
           elif platform.system() == "Linux":
-            self.network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)    
+            self.network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)
           elif platform.system() == "Darwin":
-            self.network.connect(bustype='pcan', channel='PCAN_USBBUS1',bitrate=1000000) 
-          # This will attempt to read an SDO from nodes 1 - 127
-          self.network.scanner.reset()
-          #print('network reset')
-          self.network.scanner.search()
-          #print('search completed')
+            self.network.connect(bustype='pcan', channel='PCAN_USBBUS1',bitrate=1000000)
+          # Wait for CAN notifier thread to fully initialize and start receiving messages
+          print('Network connected, waiting for notifier to initialize...')
+          time.sleep(0.2)
+          print('CAN port ready')
         except Exception as e: 
             print(e)
             print('No CAN driver found!')
@@ -329,10 +328,44 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             # Think we need these  for scan to work...
             # This will attempt to read an SDO from nodes 1 - 127
             self.network.scanner.reset()
-            #print('network reset')
-            self.network.scanner.search()
-            #print('search completed')
-            time.sleep(0.5)
+            print('Scanner reset - nodes list cleared')
+
+            # The scanner.search() can overwhelm the transmit buffer by sending
+            # SDO requests to all 127 nodes too quickly. Implement rate-limited scan.
+            print('Scanner search initiated - sending SDO requests with rate limiting...')
+            sdo_req = b"\x40\x00\x10\x00\x00\x00\x00\x00"
+            scan_limit = 127  # Scan nodes 1-127
+
+            # Send SDO requests with small delay to avoid buffer overflow
+            for node_id in range(1, scan_limit + 1):
+                try:
+                    self.network.send_message(0x600 + node_id, sdo_req)
+                    # Small delay to prevent transmit buffer overflow
+                    # This is much faster than the default scanner but won't overflow
+                    if node_id % 10 == 0:  # Pause every 10 messages
+                        time.sleep(0.01)
+                except Exception as e:
+                    # If we get transmit errors, slow down
+                    print('Transmit error at node {}, slowing down: {}'.format(node_id, e))
+                    time.sleep(0.05)
+
+            # Poll for nodes instead of using a fixed delay
+            # This is more robust as it waits until nodes respond
+            max_wait_time = 1.0  # Maximum time to wait in seconds
+            poll_interval = 0.05  # Check every 50ms
+            elapsed_time = 0.0
+
+            print('Waiting for nodes to respond...')
+            while elapsed_time < max_wait_time:
+                time.sleep(poll_interval)
+                elapsed_time += poll_interval
+                if len(self.network.scanner.nodes) > 0:
+                    print('Found {} node(s) after {:.2f}s'.format(
+                        len(self.network.scanner.nodes), elapsed_time))
+                    break
+
+            if len(self.network.scanner.nodes) == 0:
+                print('No nodes found after {:.2f}s timeout'.format(max_wait_time))
 
             for node_id in self.network.scanner.nodes:
                 print("Found node %d!" % node_id) 
@@ -360,8 +393,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 self.select_id(None)
 
             else:
-                if(node_id == 127):
-                    return
                 print('No Pucks Found') # Establish error for no pucks
                 msg = 'No Pucks Found! \nDebug:\nPower Connection\nCAN Connection\n\nVerify Connection and Retry'
                 dlg = wx.MessageDialog(None,msg)
@@ -369,17 +400,14 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 dlg.Destroy()
                 return
             #print(str(datetime.datetime.now()) + " Complete!!!")
-        except Exception as e: 
-            try:
-                if(node_id == 127):
-                    return
-            except:
-                print('No CAN driver found!')
-                msg = 'No CAN bus found! \nCheck connection and try again'
-                dlg = wx.MessageDialog(None,msg)
-                dlg.ShowModal()
-                dlg.Destroy()
-                return
+        except Exception as e:
+            print('Exception during scan: {}'.format(e))
+            print('No CAN driver found!')
+            msg = 'No CAN bus found! \nCheck connection and try again'
+            dlg = wx.MessageDialog(None,msg)
+            dlg.ShowModal()
+            dlg.Destroy()
+            return
 
     def select_id(self, event):  # wxGlade: wxp3_frame.<event_handler>
         #print("Event handler 'select_id'")
