@@ -1028,6 +1028,13 @@ DefaultValue =  0
 AccessType = RW
 ObjectType = 0x07
 
+[3000sub4]
+DataType = 0x03
+ParameterName = Vref
+DefaultValue =  0
+AccessType = RW
+ObjectType = 0x07
+
 [3001]
 DataType = 0x05
 ParameterName = Amp

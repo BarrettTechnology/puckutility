@@ -101,7 +101,7 @@ if __name__ == "__main__":
 
       print("Connection succeeded, adding CANopen node...")
       # Add our canopen node along with its object dictionary (for parsing)
-      node = network.add_node(can_id, 'puck3.eds')
+      node = network.add_node(can_id, '../puck4.eds')
 
     except:
       pass  
