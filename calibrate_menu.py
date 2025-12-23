@@ -454,17 +454,17 @@ class calibrate():
         self.node.sdo['EncoderConfig']['LagFactor'].raw = 0
 
         # Increase TargetTorque until iq.fbk = 1000 mA
-        cmd_value = 500
+        cmd_value = 0
         self.node.sdo["TargetTorque"].raw = cmd_value # Send
-        #q_fbk = 0
-        #while True:
-        #  self.node.sdo["TargetTorque"].raw = cmd_value # Send
-        #  time.sleep(0.05)
-        #  q_fbk = self.node.sdo['CurrentFeedback'].raw
-        #  print("TargetTorque = {0}, CurrentFeedback = {1} mA".format(cmd_value, q_fbk))
-        #  if q_fbk > 1000:
-        #    break
-        #  cmd_value += 50
+        # q_fbk = 0
+        while True:
+         self.node.sdo["TargetTorque"].raw = cmd_value # Send
+         time.sleep(0.05)
+         q_fbk = self.node.sdo['CurrentFeedback'].raw
+         print("TargetTorque = {0}, CurrentFeedback = {1} mA".format(cmd_value, q_fbk))
+         if q_fbk > 1000 or cmd_value == 1000:
+           break
+         cmd_value += 50
           
         # Set the number of lag increments to attempt without setting a new max_vel
         max_cycles = 50
