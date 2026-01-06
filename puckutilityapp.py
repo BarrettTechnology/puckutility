@@ -272,6 +272,9 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         self.Rescanning = False
 
     def can_port(self,event):
+        return
+
+    def can_port_open(self,event):
         #print("Event handler 'can_port'")
         if(self.ADC_ON == True):
             self.on_off_adc(self) # Turn off adc 
@@ -325,6 +328,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             print("Idling...")
         
         try:
+            self.can_port_open(None)
+
             # Think we need these  for scan to work...
             # This will attempt to read an SDO from nodes 1 - 127
             self.network.scanner.reset()
@@ -651,7 +656,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
               subprocess.call(l) # Note: this waits until the subprocess exits
 
           # Re-scan
-          self.can_port(None)
+          self.can_port_open(None)
           self.scan_pucks(None)
           # timeFinish = round(time.time() - timeStart,2)
           # print('Time elapsed: {}'.format(timeFinish))
