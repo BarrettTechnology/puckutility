@@ -33,6 +33,8 @@ import sys
 import math
 import datetime
 import canopen_runner
+import click
+import threading
 # import pyserial
 # import slcan
 
@@ -101,6 +103,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         # Init drop target
         dt = DropTarget(self)
         self.SetDropTarget(dt)
+
+        # self.LAUNCH = '2F.11.34.01.04.00.00.00'
 
         # Initialize self variables
         # self.gearRatio = 1
@@ -172,6 +176,47 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         # Hide the "Factory" menu if JLink is not detected
         # if not is_jlink_detected():
         self.frame_menubar.Remove(self.frame_menubar.FindMenu("Factory"))
+
+        # attempt to add progress bar
+        self.progress = wx.Gauge(self.frame_statusbar, range=100, style=wx.GA_HORIZONTAL|wx.ALIGN_CENTER_VERTICAL)
+        # self.Bind(wx.EVT_SIZE,self.OnResize)
+
+        # Create screen context device
+        self.dc = wx.ScreenDC()
+        # Initial Positioniing
+        self.RepositionGauge()
+        # self.Show()
+    
+    #this may be unnecessary
+    def OnResize(self,event):
+        self.RepositionGauge()
+        event.Skip()
+
+    def RepositionGauge(self):
+        rect = self.frame_statusbar.GetFieldRect(1)
+        # Get text width and add this to the start spot!!
+        text = "Progress: 100%"
+        width, height = self.dc.GetTextExtent(text)
+        print(width)
+        self.progress.SetPosition((rect.x +15 + width, rect.y +2))
+        self.progress.SetSize((rect.width - 4, rect.height - 4))
+
+    def UpdateProgress(self,value):
+        self.progress.SetValue(value)
+
+    def OnStartTask(self,event):
+        thread = threading.Thread(target=self.WorkerThread)
+        thread.daemon = True
+        thread.start()
+
+    def WorkerThread(self):
+        for i in range (101):
+            time.sleep(0.05)
+            wx.CallAfter(self.UpdateUI,i)
+
+    def UpdateUI(self,value):
+        self.progress.SetValue(value)
+        self.frame_statusbar.SetStatusText(f"Progress: {value}%",1)
 
     def ProcessDroppedFile(self,filepath):
         # print(filepath)
@@ -363,6 +408,13 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         #print("Event handler 'scan_pucks'")
         #print(str(datetime.datetime.now()) + " Event handler 'scan_pucks'")
         # Set Mode to IDLE in case test is active
+
+        self.frame_statusbar.SetStatusText("Scanning Pucks...", 1)
+        self.frame_statusbar.Update()
+        wx.Yield()
+
+        self.OnStartTask(None)
+
         if self.lastMode != 0:
             self.lastMode = 0 # Reset lastMode
             self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
@@ -370,6 +422,23 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.button_6.SetLabel("Go")
             print("Idling...")
         
+        # click.echo("Searching for nodes...")
+        # with click.progressbar(search_ids, length=len(search_ids)) as search_bar:
+        #     for node_id in search_bar:
+        #         try:
+        #             utils.can_sdo_upload(node_id, 0x1000, 0x0000, timeout=.01)
+        #             found_ids.append(node_id)
+        #         except Exception as e:
+        #             logger.debug(e)
+        # if found_ids:
+        #     click.echo("Found: {}".format(found_ids))
+        # else:
+        #     click.echo("Found none")
+        #     raise SystemExit(1)
+        # might also be such a thing as gauge?
+        
+        # self.progress_bar = wx.Gauge(self.frame_statusbar, -1, style=wx.GA_HORIZONTAL|wx.GA_SMOOTH)
+
         try:
             # Think we need these  for scan to work...
             # This will attempt to read an SDO from nodes 1 - 127
@@ -425,6 +494,10 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 dlg.ShowModal()
                 dlg.Destroy()
                 return
+            
+        self.frame_statusbar.SetStatusText("Ready", 1)
+        self.frame_statusbar.Update()
+        wx.Yield()
 
     def select_id(self, event):  # wxGlade: wxp3_frame.<event_handler>
         #print("Event handler 'select_id'")
@@ -633,6 +706,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 print("Rebooting puck")
                 self.network.send_message(0x0, [0x81, int(node_id)])
                 time.sleep(0.5) # wait for puck to reboot (avoids loss of communication)
+                # self.network.send_message(0x4, [self.LAUNCH, int(node_id)])
                 self.configure_Puck()
                 if self.adcWasON == True:
                     self.on_off_adc(self)
@@ -642,7 +716,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         else:
             pathname = path
 
-        self.frame_statusbar.SetStatusText("Updating firmware... (about 30 seconds)", 1)
+        self.frame_statusbar.SetStatusText("Updating firmware... (~30 seconds)", 1)
         self.frame_statusbar.Update()
         wx.Yield()
 
@@ -770,6 +844,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         print("Rebooting puck")
         self.network.send_message(0x0, [0x81, int(node_id)])
         time.sleep(0.5) # wait for puck to reboot (avoids loss of communication)
+        # self.network.send_message(0x4, [self.LAUNCH, int(node_id)])
+        # cansend can0 67F#2F.11.34.01.04.00.00.00
         self.configure_Puck()
         self.frame_statusbar.SetStatusText("Ready", 1)
         if self.adcWasON == True:
@@ -1134,6 +1210,7 @@ class MyApp(wx.App):
         print("Booting...")
         self.frame.network.send_message(0x0, [0x81, 0])
         time.sleep(0.5) # wait for puck to reboot (avoids loss of communication)
+        # self.frame.network.send_message(0x4, [self.LAUNCH, 127])
         #self.frame.network = self.network
         self.frame.scan_pucks(self)
         self.initialize = self.frame.network.scanner.nodes
@@ -1141,7 +1218,6 @@ class MyApp(wx.App):
         if len(self.getNodes()) == 0:
             print('No Pucks active')
             return True
-        
         # print(self.frame.GetSize())
 
         self.addPucks(self.frame.getID())

@@ -201,7 +201,7 @@ class calibrate():
             round(self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak, 2), 
             self.node.sdo['CurrentFeedback'].raw / 1000.0 * i_peak,
             self.node.sdo['Motor']['ud'].raw))
-          motor_ud += 100
+          motor_ud += 50 # was 100
           self.node.sdo['Motor']['ud'].raw = motor_ud
           time.sleep(0.05)
 
@@ -440,8 +440,25 @@ class calibrate():
 
     def calibrate_enclag(self, event,calAll=False):  # wxGlade: wxp3_frame.<event_handler>
         print("Event handler 'calibrate_enclag'")
+
+        self.frame_statusbar.SetStatusText("Calibrating Encoder Lag...", 1)
+        self.frame_statusbar.Update()
+        wx.Yield()
+
+        if self.ADC_ON == True:
+            self.adcWasON = True
+            self.on_off_adc(self)
+        else:
+            self.adcWasON = False
+
         if calAll==False:
           self.Disable()
+
+        # Set Mode to Idle (0)
+        print("Setting Mode = IDLE")
+        self.node.sdo["SetModeOfOperation"].raw = 0
+        time.sleep(1) # Wait at least 75 ms for the filters to settle
+
         # Clear faults, RTSO, OpEnabled
         print("Going OpEnabled")
         self.node.sdo["ControlWord"].raw = 0x80
@@ -496,6 +513,7 @@ class calibrate():
         # Invert TargetTorque
         self.node.sdo["TargetTorque"].raw = -cmd_value # Send
         self.node.sdo['EncoderConfig']['LagFactor'].raw = 0
+        
         time.sleep(0.5)
 
         # Init: cycles = 0, max = 0, lag = 0
@@ -534,6 +552,13 @@ class calibrate():
         print("Setting Mode = IDLE")
         self.node.sdo["SetModeOfOperation"].raw = 0
 
+        if calAll==False:
+          self.Enable()
+
+        self.frame_statusbar.SetStatusText("Ready", 1)
+
+        if self.ADC_ON == False and self.adcWasON == True:
+            self.on_off_adc(self)
         if calAll==False:
           self.Enable()
 
