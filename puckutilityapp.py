@@ -179,10 +179,14 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         # if not is_jlink_detected():
         self.frame_menubar.Remove(self.frame_menubar.FindMenu("Factory"))
 
+        # should be able to over ride and make rounded corners! radius = 10 or 12
         # attempt to add progress bar
         # self.progress = wx.Gauge(self.frame_statusbar, range=100, style=wx.GA_HORIZONTAL| wx.CENTER | wx.ALL) #wx.ALIGN_CENTER_VERTICAL)
-        self.progress = PG.PyGauge(self.frame_statusbar, range=100)
+        self.progress = PG.PyGauge(self.frame_statusbar, range=100, style=wx.ALIGN_CENTER_VERTICAL | wx.ALL)
         self.progress.SetBarColour(self.orange)
+        self.progress.SetBarGradient(('#FFFFFF',self.orange))
+        # print(self.progress.GetBarGradient())
+        # self.progress.SetBarGradient()
         self.progress.Hide()
         # self.progress.SetBorderColor(wx.BLACK)
         self.dc = wx.ScreenDC()
@@ -201,8 +205,9 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         text = "Progress: 100%"
         width, height = self.dc.GetTextExtent(text)
         # print(width)
-        self.progress.SetBorderPadding(2)
-        self.progress.SetPosition((rect.x + 20 + width, int(rect.y/2 - 1)))
+        self.progress.SetBorderPadding(25)
+        self.progress.SetPosition((rect.x + 20 + width, int(rect.y * 2 + 1)))
+        # self.progress.
         self.progress.SetSize((rect.width - 4, rect.height - 8))
 
     def UpdateProgress(self,value):
