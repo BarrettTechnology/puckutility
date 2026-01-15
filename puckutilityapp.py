@@ -35,6 +35,8 @@ import datetime
 import canopen_runner
 import click
 import threading
+import wx.lib.agw.pygauge as PG
+
 # import pyserial
 # import slcan
 
@@ -178,41 +180,52 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         self.frame_menubar.Remove(self.frame_menubar.FindMenu("Factory"))
 
         # attempt to add progress bar
-        self.progress = wx.Gauge(self.frame_statusbar, range=100, style=wx.GA_HORIZONTAL|wx.ALIGN_CENTER_VERTICAL)
-        # self.Bind(wx.EVT_SIZE,self.OnResize)
-
-        # Create screen context device
+        # self.progress = wx.Gauge(self.frame_statusbar, range=100, style=wx.GA_HORIZONTAL| wx.CENTER | wx.ALL) #wx.ALIGN_CENTER_VERTICAL)
+        self.progress = PG.PyGauge(self.frame_statusbar, range=100)
+        self.progress.SetBarColour(self.orange)
+        self.progress.Hide()
+        # self.progress.SetBorderColor(wx.BLACK)
         self.dc = wx.ScreenDC()
         # Initial Positioniing
         self.RepositionGauge()
-        # self.Show()
+
     
     #this may be unnecessary
-    def OnResize(self,event):
-        self.RepositionGauge()
-        event.Skip()
+    # def OnResize(self,event):
+    #     self.RepositionGauge()
+    #     event.Skip()
 
     def RepositionGauge(self):
         rect = self.frame_statusbar.GetFieldRect(1)
         # Get text width and add this to the start spot!!
         text = "Progress: 100%"
         width, height = self.dc.GetTextExtent(text)
-        print(width)
-        self.progress.SetPosition((rect.x +15 + width, rect.y +2))
-        self.progress.SetSize((rect.width - 4, rect.height - 4))
+        # print(width)
+        self.progress.SetBorderPadding(2)
+        self.progress.SetPosition((rect.x + 20 + width, int(rect.y/2 - 1)))
+        self.progress.SetSize((rect.width - 4, rect.height - 8))
 
     def UpdateProgress(self,value):
         self.progress.SetValue(value)
 
     def OnStartTask(self,event):
-        thread = threading.Thread(target=self.WorkerThread)
-        thread.daemon = True
-        thread.start()
+        self.thread = threading.Thread(target=self.WorkerThread)
+        self.thread.daemon = True
+        self.thread.start()
+        self.progress.Show()
 
     def WorkerThread(self):
         for i in range (101):
-            time.sleep(0.05)
+            time.sleep(0.02)
             wx.CallAfter(self.UpdateUI,i)
+        time.sleep(1)
+        # i = 0
+        # wx.CallAfter(self.UpdateUI,i)
+        wx.CallAfter(self.OnTaskComplete)
+
+    def OnTaskComplete(self):
+        self.progress.Hide()
+        self.frame_statusbar.SetStatusText("Ready", 1)
 
     def UpdateUI(self,value):
         self.progress.SetValue(value)
