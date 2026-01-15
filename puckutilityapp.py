@@ -205,10 +205,10 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         text = "Progress: 100%"
         width, height = self.dc.GetTextExtent(text)
         # print(width)
-        self.progress.SetBorderPadding(25)
-        self.progress.SetPosition((rect.x + 20 + width, int(rect.y * 2 + 1)))
+        # self.progress.SetBorderPadding(25)
+        self.progress.SetPosition((rect.x + 20 + width, int(rect.y * 2 + 2)))
         # self.progress.
-        self.progress.SetSize((rect.width - 4, rect.height - 8))
+        self.progress.SetSize((rect.width - 6, rect.height - 8))
 
     def UpdateProgress(self,value):
         self.progress.SetValue(value)
