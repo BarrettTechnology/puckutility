@@ -17,7 +17,7 @@ from calibrate_menu import calibrate
 from factory_menu import factory
 import OnOffButton
 
-import canopen_runner
+# import canopen_runner
 
 import os
 import canopen
@@ -183,7 +183,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         # attempt to add progress bar
         # self.progress = wx.Gauge(self.frame_statusbar, range=100, style=wx.GA_HORIZONTAL| wx.CENTER | wx.ALL) #wx.ALIGN_CENTER_VERTICAL)
         self.progress = PG.PyGauge(self.frame_statusbar, range=100, style=wx.ALIGN_CENTER_VERTICAL | wx.ALL)
-        self.progress.SetBarColour(self.orange)
+        # self.progress.SetBarColour(self.orange)
         self.progress.SetBarGradient(('#FFFFFF',self.orange))
         # print(self.progress.GetBarGradient())
         # self.progress.SetBarGradient()
@@ -193,7 +193,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         # Initial Positioniing
         self.RepositionGauge()
 
-    
+        # NOW need to work on pass the update thread into other programs??
+
     #this may be unnecessary
     # def OnResize(self,event):
     #     self.RepositionGauge()
@@ -201,19 +202,22 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
     def RepositionGauge(self):
         rect = self.frame_statusbar.GetFieldRect(1)
+        # print('repo')
         # Get text width and add this to the start spot!!
         text = "Progress: 100%"
         width, height = self.dc.GetTextExtent(text)
-        # print(width)
-        # self.progress.SetBorderPadding(25)
         self.progress.SetPosition((rect.x + 20 + width, int(rect.y * 2 + 2)))
-        # self.progress.
         self.progress.SetSize((rect.width - 6, rect.height - 8))
 
     def UpdateProgress(self,value):
         self.progress.SetValue(value)
 
     def OnStartTask(self,event):
+        # Set color
+        if self.ADC_ON == True:
+            self.progress.SetBarGradient(('#FFFFFF',self.blue))
+        else:
+            self.progress.SetBarGradient(('#FFFFFF',self.orange))
         self.thread = threading.Thread(target=self.WorkerThread)
         self.thread.daemon = True
         self.thread.start()
@@ -760,6 +764,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             l = [python_name, "flashp4.py", can_device, node_id, pathname]
             
             subprocess.call(l) # Note: this waits until the subprocess exits
+
+        # LOOKs like were gonna need to call flashp4.py directly??
 
         # Re-scan
         self.can_port(None)
