@@ -131,6 +131,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
         self.ADC_ON = False
 
+        self.progressbar_EN = False
+
         # Barrett colors
         self.blue = '#253B92'
         self.orange = '#FF7C1B'
@@ -214,14 +216,15 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
     def OnStartTask(self,event):
         # Set color
-        if self.ADC_ON == True:
-            self.progress.SetBarGradient(('#FFFFFF',self.blue))
-        else:
-            self.progress.SetBarGradient(('#FFFFFF',self.orange))
-        self.thread = threading.Thread(target=self.WorkerThread)
-        self.thread.daemon = True
-        self.thread.start()
-        self.progress.Show()
+        if self.progressbar_EN == True:
+            if self.ADC_ON == True:
+                self.progress.SetBarGradient(('#FFFFFF',self.blue))
+            else:
+                self.progress.SetBarGradient(('#FFFFFF',self.orange))
+            self.thread = threading.Thread(target=self.WorkerThread)
+            self.thread.daemon = True
+            self.thread.start()
+            self.progress.Show()
 
     def WorkerThread(self):
         for i in range (101):
