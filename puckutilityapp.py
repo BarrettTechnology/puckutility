@@ -131,7 +131,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
         self.ADC_ON = False
 
-        self.progressbar_EN = False
+        self.progressbar_EN = True # False
 
         # Barrett colors
         self.blue = '#253B92'
@@ -201,6 +201,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
     # def OnResize(self,event):
     #     self.RepositionGauge()
     #     event.Skip()
+
+    
 
     def RepositionGauge(self):
         rect = self.frame_statusbar.GetFieldRect(1)

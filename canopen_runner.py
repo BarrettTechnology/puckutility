@@ -100,6 +100,14 @@ class DATATYPE(enum.Enum):
 ############################# UTILITY FUNCTIONS ###############################
 ###############################################################################
 
+def progressbar(update_progress):
+    progress = 0
+    while progress < 100:
+        progress += 1
+        time.sleep(0.1)
+        update_progress.put(progress)
+    update_progress.put("Done")
+
 def printout(text, override=False):
     """
     Prints the text if global verbose is true or override is true
