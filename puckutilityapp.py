@@ -29,12 +29,14 @@ import semver
 from threading import Thread
 import multiprocessing
 from canopen_runner import progressbar
+from flashp4 import progressbar
 import time
 import webbrowser
 import sys
 import math
 import datetime
 import canopen_runner
+import flashp4
 import click
 import threading
 import wx.lib.agw.pygauge as PG
@@ -43,7 +45,7 @@ import wx.lib.agw.pygauge as PG
 # import slcan
 
 # TODO
-# Possibly add a way to update all puck firmware??
+# Possibly add a way to update all puck firmware?? ****** THIS WOULD BE A GOOD FEATURE TO FOCUS ON!
 # Look into possible issues with Pucks responding to sync messages when not in focus (this appears to be caused by COB ID only being updated when configuration is set)
 # If connection is lost, something needs to reset the on/off *** This is very annoying
 # SHOULD use RPDOs to handle control mode in the future and command values! This is the correct way to handle (needs an issue and addition for v1.1.5)
@@ -51,7 +53,7 @@ import wx.lib.agw.pygauge as PG
 # refresh looks awful on windows
 
 # WISH LIST:
-# Add loading for firmware to status bar
+# Add loading for firmware to status bar (config is complete!)
 
 def get_version(vers): # Convert uint32_t to semantic version: Major.Minor.Patch
     return "{0}.{1}.{2}".format(
@@ -264,7 +266,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
     #     # i = 0
     #     # wx.CallAfter(self.UpdateUI,i)
         
-
     def OnTaskComplete(self):
         # self.thread.join()
         self.progress.Hide()
@@ -800,23 +801,52 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 python_name = "python3"
             l = [python_name, "flashp4.py", can_device, node_id, pathname]
             
-            subprocess.call(l) # Note: this waits until the subprocess exits
+            # OG WAY -_-
+            # subprocess.call(l) # Note: this waits until the subprocess exits
 
         # LOOKs like were gonna need to call flashp4.py directly??
+
+        can_device = self.choice_port.GetStringSelection()
+        node_id = self.choice_id.GetString(self.choice_id.GetSelection())
+
+        # print("Writing OD entries")
+        self.network.disconnect()
+
+        # Using multithreading!
+        self.OnStartTask(None) # need this to show!! 
+
+        # probs don't need eds??
+        process = multiprocessing.Process(target=flashp4.start,args=(can_device, int(node_id),'puck4.eds',pathname,self.update_queue,))
+        process.start()
+        self.progress.Show()
+
+        self.update = []
+
+        while True:
+            try:
+                self.update.append(self.update_queue.get_nowait())
+                if self.update[-1] == "Pass" or self.update[-1] == "Fail" or self.update[-1] == "Done":
+                    result = self.update[-1]
+                    # print('process complete')
+                    break
+                else:
+                    # print(f"Received update: {self.update[-1]}% complete")
+                    self.UpdateUI(self.update[-1])
+            except multiprocessing.queues.Empty:
+                time.sleep(0.05)
+
+        process.terminate()
+        process.join()
+        self.OnTaskComplete()
+
+        print(result)
 
         # Re-scan
         self.can_port(None)
         self.scan_pucks(None)
         # timeFinish = round(time.time() - timeStart,2)
         # print('Time elapsed: {}'.format(timeFinish))
-        #print("Establishing a new network...")
-        #self.network = canopen.Network()
-        #
-        #if platform.system() == "Windows":
-        #  self.network.connect(bustype='pcan', channel='PCAN_USBBUS'+str(int(can_device[-1:])+1), bitrate=1000000)
-        #elif platform.system() == "Linux":
-        #  self.network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)
-        #self.node = self.network.add_node(int(node_id), 'puck3.eds')
+
         time.sleep(0.5) # wait for puck to reboot (avoids loss of communication)
         #self.configure_Puck()
         self.frame_statusbar.SetStatusText("Ready", 1)
@@ -878,11 +908,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
         self.update = []
 
-        # UpdateProgress(self,value)
-        # wx.CallAfter(self.UpdateUI,self.update[-1])
-
-        # I think this needs to be calling the worker thread or otherwise updating it
-
         while True:
             try:
                 self.update.append(self.update_queue.get_nowait())
@@ -891,25 +916,16 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                     # print('process complete')
                     break
                 else:
-                    print(f"Received update: {self.update[-1]}% complete")
+                    # print(f"Received update: {self.update[-1]}% complete")
                     self.UpdateUI(self.update[-1])
             except multiprocessing.queues.Empty:
                 time.sleep(0.05)
 
-        # process.shutdown()
         process.terminate()
         process.join()
-        print('Process Terminated')
         self.OnTaskComplete()
-        # not terminating??
-
-        # need to get the result of the multiprocessing Process that runs!
-        # success = self.update[-2]
-        # print(success)
 
         print(result)
-
-        # success = canopen_runner.start(can_device, int(node_id),'puck4.eds', pathname,0)
         
         if result == "Pass":
           print("Success!")

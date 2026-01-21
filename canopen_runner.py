@@ -102,21 +102,8 @@ class DATATYPE(enum.Enum):
 ###############################################################################
 
 def progressbar(update_progress, progress):
-    # Fake test! 
-    # progress = 0
-    # while progress < 101:
-    #     progress += 5
-    #     time.sleep(0.05)
-    #     update_progress.put(progress)
-    # update_progress.put(0)
-    # update_progress.put("Done")
-
     update_progress.put(progress)
-
-    # Live update of progress!
-    # row / total rows
     
-
 def printout(text, override=False):
     """
     Prints the text if global verbose is true or override is true
@@ -460,14 +447,9 @@ def execute_canopen_runner(csvfile, replace_id, start_id, progress, rowcount):
     # print(type(csvfile))
     linenum = 0
     for row in csvfile:
-        # print(len(csvfile))
-        # print(type(row))
-        # print(row)
-        # Need total number of lines to divide linenum by!!
-
-        print(linenum)
+        # print(linenum)
         value = round(linenum / rowcount * 100)
-        print(value)
+        # print(value)
         progressbar(progress, value)
         linenum += 1
         if len(row) == 0 or (len(row) == 1 and row[0].isspace()): #is empty line
@@ -585,11 +567,6 @@ def run_main():
     canopen_runner(myfile, can_id, can_id, None, False, False, False)
 
 def start(can_device, can_id, edsfile, csvfile,progress):
-    # if progress == 0:
-    #     pass
-    # else:
-    #     progressbar(progress)
-
     global node
     global errors
 
