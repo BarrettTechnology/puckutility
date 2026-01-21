@@ -563,10 +563,10 @@ class calibrate():
           self.Enable()
 
     def test_encoder(self,event,calAll=False):
-        print("Testing magnetic encoder...")
+        print("Testing Encoder...")
         if calAll==False:
           self.Disable()
-        self.frame_statusbar.SetStatusText("Testing magnetic encoder...", 1)
+        self.frame_statusbar.SetStatusText("Testing Encoder...", 1)
         self.frame_statusbar.Update()
         wx.Yield()
 
