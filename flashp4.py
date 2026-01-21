@@ -142,20 +142,20 @@ def start(can_device, can_id, edsfile, firmfile,progress):
     print("edsfile={0}".format(edsfile))
     print("csvfile={0}".format(firmfile))
 
-    # Open the CAN device
-    print("Establishing a new network...")
-    network = canopen.Network()
+    # # Open the CAN device
+    # print("Establishing a new network...")
+    # network = canopen.Network()
 
-    time.sleep(0.2) # Wait for any bus-off to clear
+    # time.sleep(0.2) # Wait for any bus-off to clear
 
-    if platform.system() == "Windows":
-      network.connect(bustype='pcan', channel='PCAN_USBBUS'+str(int(can_device[-1:])+1), bitrate=1000000)
-    elif platform.system() == "Linux":
-      network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)
+    # if platform.system() == "Windows":
+    #   network.connect(bustype='pcan', channel='PCAN_USBBUS'+str(int(can_device[-1:])+1), bitrate=1000000)
+    # elif platform.system() == "Linux":
+    #   network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)
 
-    print("Connection succeeded, adding CANopen node...")
-    # Add our canopen node along with its object dictionary (for parsing)
-    node = network.add_node(can_id, edsfile)
+    # print("Connection succeeded, adding CANopen node...")
+    # # Add our canopen node along with its object dictionary (for parsing)
+    # node = network.add_node(can_id, edsfile)
 
       # canopen_runner(csvfile, replace_id, start_id, edsfile, v, force, no_warnings):
 
@@ -167,9 +167,9 @@ def start(can_device, can_id, edsfile, firmfile,progress):
     # canopen_runner(myfile, can_id, can_id, None, False, False, False, progress, rowcount)
 
     # THIS IS WHERE WE ARE RUNNING IT FROM
-    result = flash(can_device, can_id, firmfile,progress)
+    result = flash(can_device, can_id, firmfile, progress)
     # print("Number of errors: {}".format(errors))
-    network.disconnect()
+    # network.disconnect()
     progressbar(progress, 100)
     progressbar(progress, "Done")
     # need to print a final error count, after "Done" to catch any errors still!!

@@ -761,18 +761,18 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             with wx.FileDialog(self, "Select firmware file", directory, wildcard="BIN files (*.bin;*.ebin)|*.bin;*.ebin",
                           style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST) as fileDialog:
 
-              if fileDialog.ShowModal() == wx.ID_CANCEL:
-                # Transmit an NMT reboot command to this node
-                print("Rebooting puck")
-                self.network.send_message(0x0, [0x81, int(node_id)])
-                time.sleep(0.5) # wait for puck to reboot (avoids loss of communication)
-                # self.network.send_message(0x4, [self.LAUNCH, int(node_id)])
-                self.configure_Puck()
-                if self.adcWasON == True:
-                    self.on_off_adc(self)
-                return     # the user changed their mind
-            # Proceed loading the file chosen by the user
-            pathname = fileDialog.GetPath()
+                if fileDialog.ShowModal() == wx.ID_CANCEL:
+                    # Transmit an NMT reboot command to this node
+                    print("Rebooting puck")
+                    self.network.send_message(0x0, [0x81, int(node_id)])
+                    time.sleep(0.5) # wait for puck to reboot (avoids loss of communication)
+                    # self.network.send_message(0x4, [self.LAUNCH, int(node_id)])
+                    self.configure_Puck()
+                    if self.adcWasON == True:
+                        self.on_off_adc(self)
+                    return     # the user changed their mind
+                # Proceed loading the file chosen by the user
+                pathname = fileDialog.GetPath()
         else:
             pathname = path
 
@@ -783,23 +783,23 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         # timeStart = time.time()
         self.network.disconnect()
 
-        if semver.match(version, '==1.0.0'):
-            l = ['blhost', '-p', can_device + "," + node_id, 'flash-erase-all']
-            subprocess.call(l) # Note: this waits until the subprocess exits
+        # if semver.match(version, '==1.0.0'):
+        #     l = ['blhost', '-p', can_device + "," + node_id, 'flash-erase-all']
+        #     subprocess.call(l) # Note: this waits until the subprocess exits
 
-            l = ['blhost', '-p', can_device + "," + node_id, 'write-memory', '0x8000', pathname]
-            subprocess.call(l) # Note: this waits until the subprocess exits
+        #     l = ['blhost', '-p', can_device + "," + node_id, 'write-memory', '0x8000', pathname]
+        #     subprocess.call(l) # Note: this waits until the subprocess exits
 
-            # blhost -p can0,1 reset
-            # blhost -p can0,1 execute 0 0 0 (address, arg, stack)
-            l = ['blhost', '-p', can_device + "," + node_id, 'reset']
-            subprocess.call(l) # Note: this waits until the subprocess exits
-        else:
-            if platform.system() == "Windows":
-                python_name = "python"
-            else:
-                python_name = "python3"
-            l = [python_name, "flashp4.py", can_device, node_id, pathname]
+        #     # blhost -p can0,1 reset
+        #     # blhost -p can0,1 execute 0 0 0 (address, arg, stack)
+        #     l = ['blhost', '-p', can_device + "," + node_id, 'reset']
+        #     subprocess.call(l) # Note: this waits until the subprocess exits
+        # else:
+        #     if platform.system() == "Windows":
+        #         python_name = "python"
+        #     else:
+        #         python_name = "python3"
+        #     l = [python_name, "flashp4.py", can_device, node_id, pathname]
             
             # OG WAY -_-
             # subprocess.call(l) # Note: this waits until the subprocess exits
@@ -840,6 +840,15 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         self.OnTaskComplete()
 
         print(result)
+
+        # print("Establishing a new network...")
+        # self.network = canopen.Network()
+
+        # if platform.system() == "Windows":
+        #   self.network.connect(bustype='pcan', channel='PCAN_USBBUS'+str(int(can_device[-1:])+1), bitrate=1000000)
+        # elif platform.system() == "Linux":
+        #   self.network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)
+        # self.node = self.network.add_node(int(node_id), 'puck4.eds')
 
         # Re-scan
         self.can_port(None)
