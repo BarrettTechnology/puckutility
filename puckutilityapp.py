@@ -217,7 +217,9 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         self.progress.SetSize((rect.width - 6, rect.height - 8))
 
     def UpdateProgress(self,value):
-        print('called')
+        # print('called')
+        if value > 100:
+            value = 100
         self.progress.SetValue(value)
 
     def OnStartTask(self,event):
@@ -225,40 +227,42 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         print('Start')
         if self.progressbar_EN == True:
             self.progress.Show()
-            if self.ADC_ON == True:
+            if self.adcWasON == True: # THIS IS ALWAYs changing?? i think at least? either way, not picking up the difference
                 self.progress.SetBarGradient(('#FFFFFF',self.blue))
+                print('on')
             else:
                 self.progress.SetBarGradient(('#FFFFFF',self.orange))
+                print('off')
             # self.thread = threading.Thread(target=self.WorkerThread)
             # self.thread.daemon = True
             # self.thread.start()
             # self.progress.Show()
 
-    def WorkerThread(self):
-        # Blank tester!
-        # for i in range (101):
-        #     time.sleep(0.02)
-        #     wx.CallAfter(self.UpdateUI,i)
-        # time.sleep(1)
+    # def WorkerThread(self):
+    #     # Blank tester!
+    #     # for i in range (101):
+    #     #     time.sleep(0.02)
+    #     #     wx.CallAfter(self.UpdateUI,i)
+    #     # time.sleep(1)
 
-        # New handler
-        active = True
-        while active:
-            print('called worker!')
-            if len(self.update) == 0:
-                print('no updates')
-                pass
-            else:
-                while(self.update[-1] != "Done"):
-                    print(self.update[-1])
-                    wx.CallAfter(self.UpdateUI,self.update[-1])
-                time.sleep(0.5)
-                print('killed')
-                wx.CallAfter(self.OnTaskComplete)
-                active = False
-            time.sleep(0.5)
-        # i = 0
-        # wx.CallAfter(self.UpdateUI,i)
+    #     # New handler
+    #     active = True
+    #     while active:
+    #         print('called worker!')
+    #         if len(self.update) == 0:
+    #             print('no updates')
+    #             pass
+    #         else:
+    #             while(self.update[-1] != "Done"):
+    #                 print(self.update[-1])
+    #                 wx.CallAfter(self.UpdateUI,self.update[-1])
+    #             time.sleep(0.5)
+    #             print('killed')
+    #             wx.CallAfter(self.OnTaskComplete)
+    #             active = False
+    #         time.sleep(0.5)
+    #     # i = 0
+    #     # wx.CallAfter(self.UpdateUI,i)
         
 
     def OnTaskComplete(self):
@@ -267,7 +271,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         self.frame_statusbar.SetStatusText("Ready", 1)
 
     def UpdateUI(self,value):
-        print('update ui')
+        # print('update ui')
         # self.progress.Show()
         self.UpdateProgress(value)
         # self.progress.SetValue(value)
@@ -883,14 +887,13 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             try:
                 self.update.append(self.update_queue.get_nowait())
                 if self.update[-1] == "Done":
-                    print('process complete')
+                    # print('process complete')
                     break
                 else:
                     print(f"Received update: {self.update[-1]}% complete")
                     self.UpdateUI(self.update[-1])
-                    # wx.CallAfter(self.UpdateUI,self.update[-1])
             except multiprocessing.queues.Empty:
-                time.sleep(0.1)
+                time.sleep(0.05)
 
         # process.shutdown()
         process.terminate()
@@ -943,6 +946,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         self.frame_statusbar.SetStatusText("Ready", 1)
         if self.adcWasON == True:
             self.on_off_adc(self)
+            self.adcWasON = False
     
     def select_test(self, event):  # wxGlade: wxp3_frame.<event_handler>
         #print("Event handler 'select_test'")

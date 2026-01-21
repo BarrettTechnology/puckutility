@@ -19,6 +19,7 @@ import sys
 from canopen.objectdictionary import import_od
 from canopen.sdo import SdoCommunicationError, SdoAbortedError
 from struct import pack, unpack
+# import pandas as pd
 
 logger = logging.getLogger(__name__)
 verbose = False
@@ -100,14 +101,20 @@ class DATATYPE(enum.Enum):
 ############################# UTILITY FUNCTIONS ###############################
 ###############################################################################
 
-def progressbar(update_progress):
-    progress = 0
-    while progress < 100:
-        progress += 10
-        time.sleep(0.1)
-        update_progress.put(progress)
-    update_progress.put(0)
-    update_progress.put("Done")
+def progressbar(update_progress, progress):
+    # Fake test! 
+    # progress = 0
+    # while progress < 101:
+    #     progress += 5
+    #     time.sleep(0.05)
+    #     update_progress.put(progress)
+    # update_progress.put(0)
+    # update_progress.put("Done")
+
+    update_progress.put(progress)
+
+    # Live update of progress!
+    # row / total rows
     
 
 def printout(text, override=False):
@@ -253,7 +260,7 @@ def math_eval(node):
 ###############################################################################
 
 def canopen_runner(csvfile, replace_id, start_id, edsfile, v, force,
-                   no_warnings):
+                   no_warnings, progress, rowcount):
     """
     Main function for Runner, called by cli.py
     First validates the provided CSV file, then conditionally launches runner
@@ -294,7 +301,7 @@ def canopen_runner(csvfile, replace_id, start_id, edsfile, v, force,
     if len(invalid_lines) and not force:
         return
     csvfile.seek(0) #reset CSV file pointer
-    result = execute_canopen_runner(csv.reader(csvfile), replace_id, start_id)
+    result = execute_canopen_runner(csv.reader(csvfile), replace_id, start_id, progress, rowcount)
     # print('result of run = {}'.format(result))
 
     return errors
@@ -428,7 +435,7 @@ def validate(csvfile, replace_id, objdict):
     return (invalid_lines, warning_lines)
 
 
-def execute_canopen_runner(csvfile, replace_id, start_id):
+def execute_canopen_runner(csvfile, replace_id, start_id, progress, rowcount):
     """
     Actually parses the csv file and sends the proper sequence of CANOpen
     SDO/NMT messages as well as accurately processes other commands as specified
@@ -444,10 +451,24 @@ def execute_canopen_runner(csvfile, replace_id, start_id):
     sdo_b2b = 1 #set to 0 as default
     global node
     global errors
-    
+
+    # rowcount = sum(1 for line in csvfile)
+    # data_copy = list(csvfile)
+    # rowcount = len(data_copy)
+    # rowcount = len(list(csvfile))
+    # print(rowcount)
+    # print(type(csvfile))
     linenum = 0
     for row in csvfile:
         # print(len(csvfile))
+        # print(type(row))
+        # print(row)
+        # Need total number of lines to divide linenum by!!
+
+        print(linenum)
+        value = round(linenum / rowcount * 100)
+        print(value)
+        progressbar(progress, value)
         linenum += 1
         if len(row) == 0 or (len(row) == 1 and row[0].isspace()): #is empty line
             continue #skip it
@@ -564,10 +585,10 @@ def run_main():
     canopen_runner(myfile, can_id, can_id, None, False, False, False)
 
 def start(can_device, can_id, edsfile, csvfile,progress):
-    if progress == 0:
-        pass
-    else:
-        progressbar(progress)
+    # if progress == 0:
+    #     pass
+    # else:
+    #     progressbar(progress)
 
     global node
     global errors
@@ -596,11 +617,16 @@ def start(can_device, can_id, edsfile, csvfile,progress):
 
       # canopen_runner(csvfile, replace_id, start_id, edsfile, v, force, no_warnings):
 
+    with open(csvfile,'r') as file:
+        reader = csv.reader(file)
+        rowcount = len(list(reader)) - 1
+
     myfile = open(csvfile, 'r')
     #errors = canopen_runner(myfile, can_id, can_id, None, False, False, False)
-    canopen_runner(myfile, can_id, can_id, None, False, False, False)
+    canopen_runner(myfile, can_id, can_id, None, False, False, False, progress, rowcount)
     print("Number of errors: {}".format(errors))
     network.disconnect()
+    progressbar(progress, "Done")
     if errors == 0:
       return True
     else:
