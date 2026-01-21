@@ -192,7 +192,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         self.progress.SetBarGradient(('#FFFFFF',self.orange))
         # print(self.progress.GetBarGradient())
         # self.progress.SetBarGradient()
-        self.progress.Hide()
+        # self.progress.Hide()
         # self.progress.SetBorderColor(wx.BLACK)
         self.dc = wx.ScreenDC()
         # Initial Positioniing
@@ -210,6 +210,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         rect = self.frame_statusbar.GetFieldRect(1)
         # print('repo')
         # Get text width and add this to the start spot!!
+        # get the actual in use text for width? or just make smaller so it doesn't block text?
         text = "Progress: 100%"
         width, height = self.dc.GetTextExtent(text)
         self.progress.SetPosition((rect.x + 20 + width, int(rect.y * 2 + 2)))
@@ -221,7 +222,9 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
     def OnStartTask(self,event):
         # Set color
+        print('Start')
         if self.progressbar_EN == True:
+            self.progress.Show()
             if self.ADC_ON == True:
                 self.progress.SetBarGradient(('#FFFFFF',self.blue))
             else:
@@ -229,7 +232,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             # self.thread = threading.Thread(target=self.WorkerThread)
             # self.thread.daemon = True
             # self.thread.start()
-            self.progress.Show()
+            # self.progress.Show()
 
     def WorkerThread(self):
         # Blank tester!
@@ -265,7 +268,9 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
     def UpdateUI(self,value):
         print('update ui')
-        self.progress.SetValue(value)
+        # self.progress.Show()
+        self.UpdateProgress(value)
+        # self.progress.SetValue(value)
         self.frame_statusbar.SetStatusText(f"Progress: {value}%",1)
 
     def ProcessDroppedFile(self,filepath):
@@ -865,6 +870,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         self.OnStartTask(None) # need this to show!! 
         process = multiprocessing.Process(target=canopen_runner.start,args=(can_device, int(node_id),'puck4.eds',pathname,self.update_queue,))
         process.start()
+        self.progress.Show()
 
         self.update = []
 
@@ -890,6 +896,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         process.terminate()
         process.join()
         print('Process Terminated')
+        self.OnTaskComplete()
         # not terminating??
 
         # need to get the result of the multiprocessing Process that runs!
