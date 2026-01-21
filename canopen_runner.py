@@ -626,12 +626,15 @@ def start(can_device, can_id, edsfile, csvfile,progress):
     canopen_runner(myfile, can_id, can_id, None, False, False, False, progress, rowcount)
     print("Number of errors: {}".format(errors))
     network.disconnect()
-    progressbar(progress, "Done")
+    # progressbar(progress, "Done")
+    # need to print a final error count, after "Done" to catch any errors still!!
     if errors == 0:
-      return True
+    #   return True
+        progressbar(progress, "Pass")
     else:
-      return False 
-    exit
+    #   return False 
+        progressbar(progress, "Fail")
+    return
 
 if __name__ == "__main__":
     run_main()

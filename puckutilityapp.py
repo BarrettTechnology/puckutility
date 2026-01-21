@@ -886,7 +886,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         while True:
             try:
                 self.update.append(self.update_queue.get_nowait())
-                if self.update[-1] == "Done":
+                if self.update[-1] == "Pass" or self.update[-1] == "Fail":
+                    result = self.update[-1]
                     # print('process complete')
                     break
                 else:
@@ -903,11 +904,14 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         # not terminating??
 
         # need to get the result of the multiprocessing Process that runs!
-        success = self.update[-2]
+        # success = self.update[-2]
+        # print(success)
+
+        print(result)
 
         # success = canopen_runner.start(can_device, int(node_id),'puck4.eds', pathname,0)
         
-        if success == 0 or success == True:
+        if result == "Pass":
           print("Success!")
         else:
           print("Configuration file failed to upload...")
