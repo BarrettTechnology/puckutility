@@ -269,6 +269,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
     def OnTaskComplete(self):
         # self.thread.join()
         self.progress.Hide()
+        self.UpdateProgress(0)
         self.frame_statusbar.SetStatusText("Ready", 1)
 
     def UpdateUI(self,value):
@@ -277,6 +278,11 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         self.UpdateProgress(value)
         # self.progress.SetValue(value)
         self.frame_statusbar.SetStatusText(f"Progress: {value}%",1)
+        self.GetStatusBar().Refresh()
+        self.GetStatusBar().Update()
+        # self.Refresh()
+        # self.Update()
+        # force refresh to help windows?
 
     def ProcessDroppedFile(self,filepath):
         # print(filepath)
@@ -816,11 +822,12 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         self.OnStartTask(None) # need this to show!! 
 
         # probs don't need eds??
-        process = multiprocessing.Process(target=flashp4.start,args=(can_device, int(node_id),'puck4.eds',pathname,self.update_queue,))
+        process = multiprocessing.Process(target=flashp4.start,args=(can_device, int(node_id),pathname,self.update_queue,))
         process.start()
         self.progress.Show()
 
         self.update = []
+        self.update.clear()
 
         while True:
             try:

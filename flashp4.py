@@ -126,7 +126,7 @@ def flash(can_device, can_id, file_name, progress):
     network.disconnect()
     return flash_result.SUCCESS
 
-def start(can_device, can_id, edsfile, firmfile,progress):
+def start(can_device, can_id, firmfile,progress):
     # if progress == 0:
     #     pass
     # else:
@@ -139,7 +139,7 @@ def start(can_device, can_id, edsfile, firmfile,progress):
 
     print("can_device={0}".format(can_device))
     print("can_id={0}".format(can_id))
-    print("edsfile={0}".format(edsfile))
+    # print("edsfile={0}".format(edsfile))
     print("csvfile={0}".format(firmfile))
 
     # # Open the CAN device
@@ -180,6 +180,12 @@ def start(can_device, can_id, edsfile, firmfile,progress):
     # #   return False 
     #     progressbar(progress, "Fail")
     # return
+    if result:
+        progressbar(progress, "Fail")
+        print("\nFlash failed: " + flash_result.get_string[result])
+    else:
+        progressbar(progress, "Pass")
+        print("Flash succeeded!")
 
 if __name__ == "__main__":
     # Read the command-line arguments
