@@ -37,7 +37,7 @@ import math
 import datetime
 import canopen_runner
 import flashp4
-import click
+# import click
 import threading
 import wx.lib.agw.pygauge as PG
 
