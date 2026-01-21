@@ -103,10 +103,12 @@ class DATATYPE(enum.Enum):
 def progressbar(update_progress):
     progress = 0
     while progress < 100:
-        progress += 1
+        progress += 10
         time.sleep(0.1)
         update_progress.put(progress)
+    update_progress.put(0)
     update_progress.put("Done")
+    
 
 def printout(text, override=False):
     """
@@ -445,6 +447,7 @@ def execute_canopen_runner(csvfile, replace_id, start_id):
     
     linenum = 0
     for row in csvfile:
+        # print(len(csvfile))
         linenum += 1
         if len(row) == 0 or (len(row) == 1 and row[0].isspace()): #is empty line
             continue #skip it
@@ -560,7 +563,12 @@ def run_main():
 
     canopen_runner(myfile, can_id, can_id, None, False, False, False)
 
-def start(can_device, can_id, edsfile, csvfile):
+def start(can_device, can_id, edsfile, csvfile,progress):
+    if progress == 0:
+        pass
+    else:
+        progressbar(progress)
+
     global node
     global errors
 
@@ -597,6 +605,7 @@ def start(can_device, can_id, edsfile, csvfile):
       return True
     else:
       return False 
+    exit
 
 if __name__ == "__main__":
     run_main()

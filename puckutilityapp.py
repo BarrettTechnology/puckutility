@@ -27,6 +27,8 @@ import subprocess
 import math
 import semver
 from threading import Thread
+import multiprocessing
+from canopen_runner import progressbar
 import time
 import webbrowser
 import sys
@@ -132,6 +134,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         self.ADC_ON = False
 
         self.progressbar_EN = True # False
+        self.update = []
 
         # Barrett colors
         self.blue = '#253B92'
@@ -196,13 +199,12 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         self.RepositionGauge()
 
         # NOW need to work on pass the update thread into other programs??
+        self.update_queue = multiprocessing.Queue()
 
     #this may be unnecessary
     # def OnResize(self,event):
     #     self.RepositionGauge()
     #     event.Skip()
-
-    
 
     def RepositionGauge(self):
         rect = self.frame_statusbar.GetFieldRect(1)
@@ -214,6 +216,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         self.progress.SetSize((rect.width - 6, rect.height - 8))
 
     def UpdateProgress(self,value):
+        print('called')
         self.progress.SetValue(value)
 
     def OnStartTask(self,event):
@@ -223,25 +226,45 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 self.progress.SetBarGradient(('#FFFFFF',self.blue))
             else:
                 self.progress.SetBarGradient(('#FFFFFF',self.orange))
-            self.thread = threading.Thread(target=self.WorkerThread)
-            self.thread.daemon = True
-            self.thread.start()
+            # self.thread = threading.Thread(target=self.WorkerThread)
+            # self.thread.daemon = True
+            # self.thread.start()
             self.progress.Show()
 
     def WorkerThread(self):
-        for i in range (101):
-            time.sleep(0.02)
-            wx.CallAfter(self.UpdateUI,i)
-        time.sleep(1)
+        # Blank tester!
+        # for i in range (101):
+        #     time.sleep(0.02)
+        #     wx.CallAfter(self.UpdateUI,i)
+        # time.sleep(1)
+
+        # New handler
+        active = True
+        while active:
+            print('called worker!')
+            if len(self.update) == 0:
+                print('no updates')
+                pass
+            else:
+                while(self.update[-1] != "Done"):
+                    print(self.update[-1])
+                    wx.CallAfter(self.UpdateUI,self.update[-1])
+                time.sleep(0.5)
+                print('killed')
+                wx.CallAfter(self.OnTaskComplete)
+                active = False
+            time.sleep(0.5)
         # i = 0
         # wx.CallAfter(self.UpdateUI,i)
-        wx.CallAfter(self.OnTaskComplete)
+        
 
     def OnTaskComplete(self):
+        # self.thread.join()
         self.progress.Hide()
         self.frame_statusbar.SetStatusText("Ready", 1)
 
     def UpdateUI(self,value):
+        print('update ui')
         self.progress.SetValue(value)
         self.frame_statusbar.SetStatusText(f"Progress: {value}%",1)
 
@@ -440,7 +463,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         self.frame_statusbar.Update()
         wx.Yield()
 
-        self.OnStartTask(None)
+        # self.OnStartTask(None)
 
         if self.lastMode != 0:
             self.lastMode = 0 # Reset lastMode
@@ -837,10 +860,44 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
         print("Writing OD entries")
         self.network.disconnect()
+
+        # Using multithreading!
+        self.OnStartTask(None) # need this to show!! 
+        process = multiprocessing.Process(target=canopen_runner.start,args=(can_device, int(node_id),'puck4.eds',pathname,self.update_queue,))
+        process.start()
+
+        self.update = []
+
+        # UpdateProgress(self,value)
+        # wx.CallAfter(self.UpdateUI,self.update[-1])
+
+        # I think this needs to be calling the worker thread or otherwise updating it
+
+        while True:
+            try:
+                self.update.append(self.update_queue.get_nowait())
+                if self.update[-1] == "Done":
+                    print('process complete')
+                    break
+                else:
+                    print(f"Received update: {self.update[-1]}% complete")
+                    self.UpdateUI(self.update[-1])
+                    # wx.CallAfter(self.UpdateUI,self.update[-1])
+            except multiprocessing.queues.Empty:
+                time.sleep(0.1)
+
+        # process.shutdown()
+        process.terminate()
+        process.join()
+        print('Process Terminated')
+        # not terminating??
+
+        # need to get the result of the multiprocessing Process that runs!
+        success = self.update[-2]
+
+        # success = canopen_runner.start(can_device, int(node_id),'puck4.eds', pathname,0)
         
-        success = canopen_runner.start(can_device, int(node_id),'puck4.eds', pathname)
-        
-        if success == True:
+        if success == 0 or success == True:
           print("Success!")
         else:
           print("Configuration file failed to upload...")
