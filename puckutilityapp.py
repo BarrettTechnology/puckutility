@@ -435,12 +435,12 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             n = ''
             self.choice_id.SetItems([n])
             self.text_id.ChangeValue(str(n))
-
             dlg.Destroy()
-            return
+            return False
         # We may need to wait a short while here to allow all nodes to respond
         time.sleep(0.05)
         #self.scan_pucks(None)
+        return True
 
 
     def scan_pucks(self, event):  # wxGlade: wxp3_frame.<event_handler>
@@ -525,14 +525,15 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         except Exception as e: 
             try:
                 if(node_id == 127):
-                    return
+                    pass
+                    #return
             except:
                 print('No CAN driver found!')
                 msg = 'No CAN bus found! \nCheck connection and try again'
                 dlg = wx.MessageDialog(None,msg)
                 dlg.ShowModal()
                 dlg.Destroy()
-                return
+                #return
             
         self.frame_statusbar.SetStatusText("Ready", 1)
         self.frame_statusbar.Update()
@@ -1262,36 +1263,45 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         os._exit(0)    
 
     def on_off_adc(self,event):
-        if self.ADC_ON == False:
-            print('Turning on ADC Monitor')
-            # Start sync transmission
-            self.network.sync.start(0.01)
-            #Turn on ADC Monitoring
-            self.ADC_ON = True
-            # # Change image to -
-            # negativeBitmap = wx.Bitmap('images/negative-.png')
-            # self.Plus.SetBitmap(negativeBitmap)
-        elif self.ADC_ON == True:
-            print('Turning off ADC Monitor')
-            #Turn off ADC Monitoring
-            # Stop sync transmission
-            self.network.sync.stop()
-            self.ADC_ON = False
-            # # Change image to +
-            # positiveBitmap = wx.Bitmap('images/plus+.png')
-            # self.Plus.SetBitmap(positiveBitmap) 
-            # Reset monitor values to N/A
-            self.VBus.SetLabel('N/A')
-            self.PTemp.SetLabel('N/A')
-            self.MTemp.SetLabel('N/A')
-            self.Vrpm.SetLabel('N/A')
-            self.VBus.SetForegroundColour((0,0,0))
-            self.PTemp.SetForegroundColour((0,0,0))
-            self.MTemp.SetForegroundColour((0,0,0))
-            self.Vrpm.SetForegroundColour((0,0,0))
+        try:
+            if self.ADC_ON == False:
+                print('Turning on ADC Monitor')
+                # Start sync transmission
+                self.network.sync.start(0.01)
+                #Turn on ADC Monitoring
+                self.ADC_ON = True
+                # # Change image to -
+                # negativeBitmap = wx.Bitmap('images/negative-.png')
+                # self.Plus.SetBitmap(negativeBitmap)
+            elif self.ADC_ON == True:
+                print('Turning off ADC Monitor')
+                #Turn off ADC Monitoring
+                # Stop sync transmission
+                self.network.sync.stop()
+                self.ADC_ON = False
+                # # Change image to +
+                # positiveBitmap = wx.Bitmap('images/plus+.png')
+                # self.Plus.SetBitmap(positiveBitmap) 
+                # Reset monitor values to N/A
+                self.VBus.SetLabel('N/A')
+                self.PTemp.SetLabel('N/A')
+                self.MTemp.SetLabel('N/A')
+                self.Vrpm.SetLabel('N/A')
+                self.VBus.SetForegroundColour((0,0,0))
+                self.PTemp.SetForegroundColour((0,0,0))
+                self.MTemp.SetForegroundColour((0,0,0))
+                self.Vrpm.SetForegroundColour((0,0,0))
 
-            img = wx.Image('images/dialnobgcroppedscaled.png')
-            self.Dial.SetBitmap(img)
+                img = wx.Image('images/dialnobgcroppedscaled.png')
+                self.Dial.SetBitmap(img)
+        except:
+            # self.on_off_adc(None) # incorrect
+            # Reset Button to off
+            print('No Puck Connected -')
+            print('Turning off ADC Monitor')
+            time.sleep(0.1)
+            self.onoff1.SetValue(0)
+            pass
 
 class MyApp(wx.App):
     def OnInit(self):
@@ -1309,27 +1319,30 @@ class MyApp(wx.App):
         self.frame.Centre()
         self.frame.Show()
         # can make this into a try, and set to reconnect on state button?
-        self.frame.can_port(None)
+        result = self.frame.can_port(None)
         self.Bind(wx.EVT_KEY_DOWN,self.frame.onKeyDown)
         # Maybe set this ^ on a while loop for when no bus is active
         # Transmit an NMT reboot command to this node
-        print("Booting...")
-        self.frame.network.send_message(0x0, [0x81, 0])
-        time.sleep(0.5) # wait for puck to reboot (avoids loss of communication)
-        # self.frame.network.send_message(0x4, [self.LAUNCH, 127])
-        #self.frame.network = self.network
-        self.frame.scan_pucks(self)
-        self.initialize = self.frame.network.scanner.nodes
-        # Placement causes node not to get added!!
-        if len(self.getNodes()) == 0:
-            print('No Pucks active')
-            return True
-        # print(self.frame.GetSize())
+        if result == True:
+            try:
+                print("Booting...")
+                self.frame.network.send_message(0x0, [0x81, 0])
+                time.sleep(0.5) # wait for puck to reboot (avoids loss of communication)
+                self.frame.scan_pucks(self)
+                self.initialize = self.frame.network.scanner.nodes
+                # Placement causes node not to get added!!
+                if len(self.getNodes()) == 0:
+                    print('No Pucks active')
+                    return True
+                # print(self.frame.GetSize())
 
-        self.addPucks(self.frame.getID())
-        i = len(self.getNodes())
-        if i == 0:
-            return
+                self.addPucks(self.frame.getID())
+                i = len(self.getNodes())
+                if i == 0:
+                    return
+            except:
+                pass
+
         return True # Added for Windows DEMO - windows can't handle multi bus currently
 
     def addPucks(self,i): # Adds Puck ID to list of Active Frames
