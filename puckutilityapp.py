@@ -1265,7 +1265,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
     def on_off_adc(self,event):
         try:
             if self.ADC_ON == False:
-                print('Turning on ADC Monitor')
+                print('Turning on ADC Monitor...')
                 # Start sync transmission
                 self.network.sync.start(0.01)
                 #Turn on ADC Monitoring
@@ -1274,7 +1274,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 # negativeBitmap = wx.Bitmap('images/negative-.png')
                 # self.Plus.SetBitmap(negativeBitmap)
             elif self.ADC_ON == True:
-                print('Turning off ADC Monitor')
+                print('Turning off ADC Monitor...')
                 #Turn off ADC Monitoring
                 # Stop sync transmission
                 self.network.sync.stop()
@@ -1298,7 +1298,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             # self.on_off_adc(None) # incorrect
             # Reset Button to off
             print('No Puck Connected -')
-            print('Turning off ADC Monitor')
+            print('Turning off ADC Monitor...')
             time.sleep(0.1)
             self.onoff1.SetValue(0)
             pass
