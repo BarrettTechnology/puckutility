@@ -170,7 +170,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         self.onoffpanel.SetSizer(sizer)
 
         # Disable the unimplemented menu items
-        menu = "Calibrate"
+        menu = "Menu"
         for item in [#"Calibrate All", 
           "Current Sense Timing", "Current Sense Slope", "Encoder Direction",
           "Tune Gains...", "Save to CSV..."]:

@@ -639,8 +639,28 @@ class calibrate():
             done = True
           
     def open_support_page(self, event):
-      print('Opening support page...')
-      webbrowser.open_new(r'PuckUtilityAppGuide.pdf')
+        print('Opening support page...')
+        webbrowser.open_new(r'PuckUtilityAppGuide.pdf')
+
+    def update_all(self, event):
+        print('Updating all Pucks...')
+        print(self.network.scanner.nodes)
+        starting_id = self.getID()
+        for i in self.network.scanner.nodes:
+            print(i)
+            indexID = self.network.scanner.nodes.index(i)
+            self.choice_id.SetSelection(indexID) # Move to next ID for calibration
+            self.select_id(None)
+
+            print("Updating firmware for Puck {}".format(self.getID()))
+            self.browse_fw(self)
+            # self.calibrate_ibias(None)
+            # self.calibrate_igainfactor(None)
+            # self.calibrate_enczero(None)
+
+        indexID = self.network.scanner.nodes.index(starting_id)
+        self.choice_id.SetSelection(indexID) # Return to starting ID after completion
+        self.select_id(None)
 
     # def tune_gains(self, event):  # wxGlade: wxp3_frame.<event_handler>
     #     print("Event handler 'tune_gains' not implemented!")
