@@ -127,10 +127,6 @@ def flash(can_device, can_id, file_name, progress):
     return flash_result.SUCCESS
 
 def start(can_device, can_id, firmfile,progress):
-    # if progress == 0:
-    #     pass
-    # else:
-    #     progressbar(progress)
 
     global node
     # global errors
@@ -140,7 +136,7 @@ def start(can_device, can_id, firmfile,progress):
     print("can_device={0}".format(can_device))
     print("can_id={0}".format(can_id))
     # print("edsfile={0}".format(edsfile))
-    print("csvfile={0}".format(firmfile))
+    print("firmware_file={0}".format(firmfile))
 
     # # Open the CAN device
     # print("Establishing a new network...")
@@ -168,10 +164,11 @@ def start(can_device, can_id, firmfile,progress):
 
     # THIS IS WHERE WE ARE RUNNING IT FROM
     result = flash(can_device, can_id, firmfile, progress)
+    print(result)
     # print("Number of errors: {}".format(errors))
     # network.disconnect()
     progressbar(progress, 100)
-    progressbar(progress, "Done")
+    # progressbar(progress, "Done")
     # need to print a final error count, after "Done" to catch any errors still!!
     # if errors == 0:
     # #   return True
