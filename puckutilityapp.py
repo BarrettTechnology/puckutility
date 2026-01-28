@@ -405,24 +405,26 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.on_off_adc(self) # Turn off adc 
         try:
             self.network.disconnect() # Close any open networks
+            print('disconnected')
         except:
-          pass
+            print('unable to disconnect')
+            pass
 
         print("Establishing a new network...")
         self.network = canopen.Network()
         can_device = self.choice_port.GetStringSelection()
 
         try:
-          if platform.system() == "Windows":
-            self.network.connect(bustype='pcan', channel='PCAN_USBBUS'+str(int(can_device[-1:])+1), bitrate=1000000)
-            # self.network.connect(bustype='slcan', channel='COM7@128000', bitrate=1000000) # for SLCAN
-          elif platform.system() == "Linux":
-            self.network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)    
-          elif platform.system() == "Darwin":
-            self.network.connect(bustype='pcan', channel='PCAN_USBBUS1',bitrate=1000000) 
-          # This will attempt to read an SDO from nodes 1 - 127
-          self.network.scanner.reset()
-          self.network.scanner.search()
+            if platform.system() == "Windows":
+                self.network.connect(bustype='pcan', channel='PCAN_USBBUS'+str(int(can_device[-1:])+1), bitrate=1000000)
+                # self.network.connect(bustype='slcan', channel='COM7@128000', bitrate=1000000) # for SLCAN
+            elif platform.system() == "Linux":
+                self.network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)    
+            elif platform.system() == "Darwin":
+                self.network.connect(bustype='pcan', channel='PCAN_USBBUS1',bitrate=1000000) 
+            # This will attempt to read an SDO from nodes 1 - 127
+            self.network.scanner.reset()
+            self.network.scanner.search()
         #   return True
         except Exception as e: 
             print(e)
@@ -440,10 +442,15 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         time.sleep(0.05)
         return True
 
-    def scan_pucks(self, event):  # wxGlade: wxp3_frame.<event_handler>
+    def scan_pucks(self, event,selfCALL=False):  # wxGlade: wxp3_frame.<event_handler>
         #print("Event handler 'scan_pucks'")
         #print(str(datetime.datetime.now()) + " Event handler 'scan_pucks'")
         # Set Mode to IDLE in case test is active
+        if self.ADC_ON == True:
+            self.on_off_adc(self)
+            self.adcWasON = True
+        else:
+            self.adcWasON = False
 
         self.frame_statusbar.SetStatusText("Scanning Pucks...", 1)
         self.frame_statusbar.Update()
@@ -461,6 +468,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.network.scanner.reset()
             self.network.scanner.search()
             time.sleep(0.5)
+            # print('made it here')
             for node_id in self.network.scanner.nodes:
                 print("Found node %d!" % node_id) 
             scan_length = len(self.network.scanner.nodes)
@@ -471,11 +479,15 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             if self.init:                   
                 self.initialize = self.network.scanner.nodes              
                 print('Initializing CAN bus...')
-                if len(self.initialize) > 0:
+                init_length = len(self.initialize)
+                if init_length > 0:
                     self.init = False
                     print('Success!')
+            # print('now we here')
             # If we found at least one, select the first
-            if len(self.network.scanner.nodes) > 0:
+            # print(scan_length)
+            if scan_length > 0:
+                # print('here')
                 if self.getID() == 0:
                     self.choice_id.SetSelection(self.getID()) # This is actually what sets the initial
                 else:
@@ -484,19 +496,34 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                     self.choice_id.SetSelection(indexID)
                 self.select_id(None)
             else:
-                # if(node_id == 127):
-                #     return
-                # print('No/ Pucks Found') # Establish error for no pucks
-                # msg = '0 NODES No Pucks Found! \nDebug:\nPower Connection\nCAN Connection\n\nVerify Connection and Retry'
-                # dlg = wx.MessageDialog(None,msg)
-                # dlg.ShowModal()
-                # dlg.Destroy()
                 self.text_id.ChangeValue('') # clear ID
-                return
+                self.choice_id.SetItems([])
+                # print('yayy')
+                try:
+                    result = self.can_port(None)
+                    # print(result)
+                    if result == True:
+                        if selfCALL == False:
+                            self.scan_pucks(None,True)
+                        else:
+                            print('No Pucks Found') # Establish error for no pucks
+                            msg = 'No Pucks Found! \nDebug:\nPower Connection\nCAN Connection\n\nVerify Connection and Retry'
+                            dlg = wx.MessageDialog(None,msg)
+                            dlg.ShowModal()
+                            dlg.Destroy()
+                except:
+                    # print('No Pucks Found') # Establish error for no pucks
+                    # msg = 'No Pucks Found! \nDebug:\nPower Connection\nCAN Connection\n\nVerify Connection and Retry'
+                    # dlg = wx.MessageDialog(None,msg)
+                    # dlg.ShowModal()
+                    # dlg.Destroy()
+                    pass
+                # self.choice_id.SetSelection(0)
             #print(str(datetime.datetime.now()) + " Complete!!!")
         except Exception as e: 
+            print('now fail')
             print(e)
-            if "buffer" in str(e):  
+            if "buffer" in str(e) or "heavy" in str(e):  
                 print('No Pucks Found') # Establish error for no pucks
                 msg = 'No Pucks Found! \nDebug:\nPower Connection\nCAN Connection\n\nVerify Connection and Retry'
                 dlg = wx.MessageDialog(None,msg)
@@ -512,8 +539,15 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                     pass
 
         # THESE ARE NOT PROPERLY DIFFERENTIATING BETWEEN CAN DEVICE FAIL AND NO PUCKS
-        # May want to try to initialize can_port if scan_pucks is run with no active device!! 
-            
+        # May want to try to initialize can_port if scan_pucks is run with no active device!!         # Set adcon off and button off automatically
+        # if self.adcWasON == True:
+        #     print('Turning off ADC Monitor...')
+        #     self.adcWasON = False
+        #     self.onoff1.SetValue(0)
+
+        if self.adcWasON == True:
+            self.on_off_adc(self)
+
         self.frame_statusbar.SetStatusText("Ready", 1)
         self.frame_statusbar.Update()
         wx.Yield()
