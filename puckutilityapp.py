@@ -503,9 +503,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 dlg.ShowModal()
                 dlg.Destroy()
             else: 
-                # maybe have this go straight to can_port and let it handle errors?
-                # print('No CAN Device found') # make this handle No CAN device! 
-                # msg = 'No CAN Device found! \nDebug:\nPower Connection\nCAN Connection\n\nVerify Connection and Retry'
                 try:
                     result = self.can_port(None)
                     # print(result)
@@ -513,17 +510,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                         self.scan_pucks(None)
                 except:
                     pass
-            # try:
-            #     if(node_id == 127):
-            #         pass
-            #         #return
-            # except:
-            #     print('No Pucks Found') # make this handle No CAN device! 
-            #     msg = 'TRY EXCEPT No CAN bus found! \nCheck connection and try again'
-            #     dlg = wx.MessageDialog(None,msg)
-            #     dlg.ShowModal()
-            #     dlg.Destroy()
-                #return
 
         # THESE ARE NOT PROPERLY DIFFERENTIATING BETWEEN CAN DEVICE FAIL AND NO PUCKS
         # May want to try to initialize can_port if scan_pucks is run with no active device!! 
@@ -733,7 +719,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             # File browser
             with wx.FileDialog(self, "Select firmware file", directory, wildcard="BIN files (*.bin;*.ebin)|*.bin;*.ebin",
                           style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST) as fileDialog:
-
                 if fileDialog.ShowModal() == wx.ID_CANCEL:
                     # Transmit an NMT reboot command to this node
                     print("Rebooting puck")
@@ -754,7 +739,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         wx.Yield()
 
         # timeStart = time.time()
-        self.network.disconnect()
 
         # if semver.match(version, '==1.0.0'):
         #     l = ['blhost', '-p', can_device + "," + node_id, 'flash-erase-all']
@@ -776,8 +760,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             
             # OG WAY -_-
             # subprocess.call(l) # Note: this waits until the subprocess exits
-
-        # LOOKs like were gonna need to call flashp4.py directly??
 
         can_device = self.choice_port.GetStringSelection()
         node_id = self.choice_id.GetString(self.choice_id.GetSelection())
@@ -822,7 +804,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         # print('Time elapsed: {}'.format(timeFinish))
 
         time.sleep(0.5) # wait for puck to reboot (avoids loss of communication)
-        #self.configure_Puck()
         self.frame_statusbar.SetStatusText("Ready", 1)
 
         if self.ADC_ON == False and self.adcWasON == True:

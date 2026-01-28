@@ -654,9 +654,6 @@ class calibrate():
 
             print("Updating firmware for Puck {}".format(self.getID()))
             self.browse_fw(self)
-            # self.calibrate_ibias(None)
-            # self.calibrate_igainfactor(None)
-            # self.calibrate_enczero(None)
 
         indexID = self.network.scanner.nodes.index(starting_id)
         self.choice_id.SetSelection(indexID) # Return to starting ID after completion
