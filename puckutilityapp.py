@@ -422,9 +422,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.network.connect(bustype='pcan', channel='PCAN_USBBUS1',bitrate=1000000) 
           # This will attempt to read an SDO from nodes 1 - 127
           self.network.scanner.reset()
-          #print('network reset')
           self.network.scanner.search()
-          #print('search completed')
         #   return True
         except Exception as e: 
             print(e)
@@ -440,9 +438,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             return False
         # We may need to wait a short while here to allow all nodes to respond
         time.sleep(0.05)
-        #self.scan_pucks(None)
         return True
-
 
     def scan_pucks(self, event):  # wxGlade: wxp3_frame.<event_handler>
         #print("Event handler 'scan_pucks'")
@@ -465,15 +461,13 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.network.scanner.reset()
             self.network.scanner.search()
             time.sleep(0.5)
-
             for node_id in self.network.scanner.nodes:
                 print("Found node %d!" % node_id) 
-
-            if(len(self.network.scanner.nodes > 0)):
+            scan_length = len(self.network.scanner.nodes)
+            if(scan_length > 0):
                 MyApp.updateNodes(self, self.network.scanner.nodes)
                 # Populate the node choice list
                 self.choice_id.SetItems([str(i) for i in self.network.scanner.nodes])
-
             if self.init:                   
                 self.initialize = self.network.scanner.nodes              
                 print('Initializing CAN bus...')
@@ -492,7 +486,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             else:
                 # if(node_id == 127):
                 #     return
-                # print('No Pucks Found') # Establish error for no pucks
+                # print('No/ Pucks Found') # Establish error for no pucks
                 # msg = '0 NODES No Pucks Found! \nDebug:\nPower Connection\nCAN Connection\n\nVerify Connection and Retry'
                 # dlg = wx.MessageDialog(None,msg)
                 # dlg.ShowModal()
@@ -501,6 +495,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 return
             #print(str(datetime.datetime.now()) + " Complete!!!")
         except Exception as e: 
+            print(e)
             if "buffer" in str(e):  
                 print('No Pucks Found') # Establish error for no pucks
                 msg = 'No Pucks Found! \nDebug:\nPower Connection\nCAN Connection\n\nVerify Connection and Retry'
@@ -518,8 +513,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                         self.scan_pucks(None)
                 except:
                     pass
-
-
             # try:
             #     if(node_id == 127):
             #         pass
@@ -1331,7 +1324,8 @@ class MyApp(wx.App):
                 i = len(self.getNodes())
                 if i == 0:
                     return
-            except:
+            except Exception as e:
+                print(e)
                 pass
 
         return True # Added for Windows DEMO - windows can't handle multi bus currently
