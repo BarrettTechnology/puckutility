@@ -1263,7 +1263,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
     def on_off_adc(self,event):
         try:
-            if len(MyApp.getNodes()) > 0:
+            if len(MyApp.getNodes(self)) > 0:
                 if self.ADC_ON == False:
                     print('Turning on ADC Monitor...')
                     # Start sync transmission
@@ -1275,7 +1275,10 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                     print('Turning off ADC Monitor...')
                     #Turn off ADC Monitoring
                     # Stop sync transmission
-                    self.network.sync.stop()
+                    try:
+                        self.network.sync.stop()
+                    except:
+                        pass
                     self.ADC_ON = False
 
                     # Reset monitor values to N/A
