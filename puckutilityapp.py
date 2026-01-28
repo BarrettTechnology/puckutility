@@ -45,15 +45,12 @@ import wx.lib.agw.pygauge as PG
 # import slcan
 
 # TODO
-# Possibly add a way to update all puck firmware?? ****** THIS WOULD BE A GOOD FEATURE TO FOCUS ON!
 # Look into possible issues with Pucks responding to sync messages when not in focus (this appears to be caused by COB ID only being updated when configuration is set)
 # If connection is lost, something needs to reset the on/off *** This is very annoying
 # SHOULD use RPDOs to handle control mode in the future and command values! This is the correct way to handle (needs an issue and addition for v1.1.5)
 # Do not clear tpdo 1 and 2, use these in the monitor / position
 # refresh looks awful on windows
-
-# WISH LIST:
-# Add loading for firmware to status bar (config is complete!)
+# Add nice set of tool tips!!!
 
 def get_version(vers): # Convert uint32_t to semantic version: Major.Minor.Patch
     return "{0}.{1}.{2}".format(
@@ -394,10 +391,10 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         # Call function to update Position / Velocity Data
         wx.CallAfter(self.getPosition)
 
-    def Rescan(self):
-        print('Out of Date - rescanning!')
-        self.scan_pucks(None)
-        self.Rescanning = False
+    # def Rescan(self): # NOT USED anymore
+    #     print('Out of Date - rescanning!')
+    #     self.scan_pucks(None)
+    #     self.Rescanning = False
 
     def can_port(self,event):
         #print("Event handler 'can_port'")
@@ -405,9 +402,9 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.on_off_adc(self) # Turn off adc 
         try:
             self.network.disconnect() # Close any open networks
-            print('disconnected')
+            # print('disconnected')
         except:
-            print('unable to disconnect')
+            # print('unable to disconnect')
             pass
 
         print("Establishing a new network...")
@@ -427,9 +424,13 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.network.scanner.search()
         #   return True
         except Exception as e: 
-            print(e)
-            print('No CAN device found!')
-            msg = 'No CAN device found! \nCheck connection and try again'
+            # print(e)
+            if "buffer" in str(e) or "heavy" in str(e):  
+                print('No Pucks Found') # Establish error for no pucks
+                msg = 'No Pucks Found! \nDebug:\nPower Connection\nCAN Connection\n\nVerify Connection and Retry'
+            else: 
+                print('No CAN device found!')
+                msg = 'No CAN device found! \nCheck connection and try again'
             dlg = wx.MessageDialog(None,msg)
             dlg.ShowModal()
             # Try to clear out selection of select ID and set ID
@@ -498,10 +499,9 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             else:
                 self.text_id.ChangeValue('') # clear ID
                 self.choice_id.SetItems([])
-                # print('yayy')
                 try:
                     result = self.can_port(None)
-                    # print(result)
+                    print(result)
                     if result == True:
                         if selfCALL == False:
                             self.scan_pucks(None,True)
@@ -521,8 +521,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 # self.choice_id.SetSelection(0)
             #print(str(datetime.datetime.now()) + " Complete!!!")
         except Exception as e: 
-            print('now fail')
-            print(e)
+            # print('now fail')
+            # print(e)
             if "buffer" in str(e) or "heavy" in str(e):  
                 print('No Pucks Found') # Establish error for no pucks
                 msg = 'No Pucks Found! \nDebug:\nPower Connection\nCAN Connection\n\nVerify Connection and Retry'
@@ -1263,42 +1263,44 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
     def on_off_adc(self,event):
         try:
-            if self.ADC_ON == False:
-                print('Turning on ADC Monitor...')
-                # Start sync transmission
-                self.network.sync.start(0.01)
-                #Turn on ADC Monitoring
-                self.ADC_ON = True
-                # # Change image to -
-                # negativeBitmap = wx.Bitmap('images/negative-.png')
-                # self.Plus.SetBitmap(negativeBitmap)
-            elif self.ADC_ON == True:
-                print('Turning off ADC Monitor...')
-                #Turn off ADC Monitoring
-                # Stop sync transmission
-                self.network.sync.stop()
-                self.ADC_ON = False
-                # # Change image to +
-                # positiveBitmap = wx.Bitmap('images/plus+.png')
-                # self.Plus.SetBitmap(positiveBitmap) 
-                # Reset monitor values to N/A
-                self.VBus.SetLabel('N/A')
-                self.PTemp.SetLabel('N/A')
-                self.MTemp.SetLabel('N/A')
-                self.Vrpm.SetLabel('N/A')
-                self.VBus.SetForegroundColour((0,0,0))
-                self.PTemp.SetForegroundColour((0,0,0))
-                self.MTemp.SetForegroundColour((0,0,0))
-                self.Vrpm.SetForegroundColour((0,0,0))
+            if len(MyApp.getNodes()) > 0:
+                if self.ADC_ON == False:
+                    print('Turning on ADC Monitor...')
+                    # Start sync transmission
+                    self.network.sync.start(0.01)
+                    #Turn on ADC Monitoring
+                    self.ADC_ON = True
 
-                img = wx.Image('images/dialnobgcroppedscaled.png')
-                self.Dial.SetBitmap(img)
+                elif self.ADC_ON == True:
+                    print('Turning off ADC Monitor...')
+                    #Turn off ADC Monitoring
+                    # Stop sync transmission
+                    self.network.sync.stop()
+                    self.ADC_ON = False
+
+                    # Reset monitor values to N/A
+                    self.VBus.SetLabel('N/A')
+                    self.PTemp.SetLabel('N/A')
+                    self.MTemp.SetLabel('N/A')
+                    self.Vrpm.SetLabel('N/A')
+                    self.VBus.SetForegroundColour((0,0,0))
+                    self.PTemp.SetForegroundColour((0,0,0))
+                    self.MTemp.SetForegroundColour((0,0,0))
+                    self.Vrpm.SetForegroundColour((0,0,0))
+
+                    img = wx.Image('images/dialnobgcroppedscaled.png')
+                    self.Dial.SetBitmap(img)
+            else:
+                print('No Puck Connected -')
+                print('Turning off ADC Monitor...')
+                time.sleep(0.1) # delay for visual effect
+                self.onoff1.SetValue(0)
         except:
             # self.on_off_adc(None) # incorrect
             # Reset Button to off
             print('No Puck Connected -')
             print('Turning off ADC Monitor...')
-            time.sleep(0.1)
+            time.sleep(0.1) # delay for visual effect
             self.onoff1.SetValue(0)
             pass
 
@@ -1308,19 +1310,13 @@ class MyApp(wx.App):
         wx.App.ActiveID = []
         wx.App.Nodes = []
 
-        # Setup CAN network
-        # TODO BUG Now you can't switch CAN ports!!! need this as a function that can be called?
-        # Is this still true?
-
-        # With new firmware and no configuration, adc bugs out big time if it tries to turn on
-
         self.frame = MyFrame(None, wx.ID_ANY, "")
         self.frame.Centre()
         self.frame.Show()
-        # can make this into a try, and set to reconnect on state button?
+
         result = self.frame.can_port(None)
         self.Bind(wx.EVT_KEY_DOWN,self.frame.onKeyDown)
-        # Maybe set this ^ on a while loop for when no bus is active
+
         # Transmit an NMT reboot command to this node
         if result == True:
             try:
@@ -1331,7 +1327,7 @@ class MyApp(wx.App):
                 self.initialize = self.frame.network.scanner.nodes
                 # Placement causes node not to get added!!
                 if len(self.getNodes()) == 0:
-                    print('No Pucks active')
+                    # print('No Pucks active')
                     return True
                 # print(self.frame.GetSize())
 
@@ -1340,7 +1336,7 @@ class MyApp(wx.App):
                 if i == 0:
                     return
             except Exception as e:
-                print(e)
+                # print(e)
                 pass
 
         return True # Added for Windows DEMO - windows can't handle multi bus currently
