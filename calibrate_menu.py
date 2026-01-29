@@ -4,6 +4,7 @@ import canopen
 import time
 import math
 import webbrowser
+import configparser
 
 # TODO - added calibrate all pucks feature
 
@@ -660,8 +661,18 @@ class calibrate():
         self.select_id(None)
 
     def system_config(self, event, filepath):
-        print('Definitely a system config')
-        
+        print("Reading config file...")
+        config = configparser.ConfigParser()
+        config.read(filepath)
+        options = config.sections()
+        for option in options:
+            config_id = int(config[option]['ID'])
+            if config_id == self.ID:
+                print("Found defaults!")
+                break
+        # self.name = config[option]['NAME']
+        # self.gearRatio = int(config[option]['RATIO'])
+
 
     # def tune_gains(self, event):  # wxGlade: wxp3_frame.<event_handler>
     #     print("Event handler 'tune_gains' not implemented!")
