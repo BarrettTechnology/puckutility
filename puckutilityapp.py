@@ -51,6 +51,9 @@ import wx.lib.agw.pygauge as PG
 # Do not clear tpdo 1 and 2, use these in the monitor / position
 # refresh looks awful on windows
 # Add nice set of tool tips!!!
+# Calibration steps individually still popup issue for multiple cal
+# Drag and drop .ini file for config?? Configure full robot at once
+# Firmware update to flashp4.py to program multiple pucks at once??
 
 def get_version(vers): # Convert uint32_t to semantic version: Major.Minor.Patch
     return "{0}.{1}.{2}".format(
@@ -223,7 +226,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
     def OnStartTask(self,event):
         # Set color
-        print('Start')
+        # print('Start')
         # if self.progressbar_EN == True:
         self.frame_statusbar.SetStatusText(f"Progress: 0%",1)
         self.progress.Show()
@@ -231,10 +234,10 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         self.GetStatusBar().Update()
         if self.adcWasON == True: # THIS IS ALWAYs changing?? i think at least? either way, not picking up the difference
             self.progress.SetBarGradient(('#FFFFFF',self.blue))
-            print('on')
+            # print('on')
         else:
             self.progress.SetBarGradient(('#FFFFFF',self.orange))
-            print('off')
+            # print('off')
         
     def OnTaskComplete(self):
         # self.thread.join()
@@ -501,7 +504,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 self.choice_id.SetItems([])
                 try:
                     result = self.can_port(None)
-                    print(result)
+                    # print(result)
                     if result == True:
                         if selfCALL == False:
                             self.scan_pucks(None,True)
@@ -547,6 +550,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
         if self.adcWasON == True:
             self.on_off_adc(self)
+            self.adcWasON = False
 
         self.frame_statusbar.SetStatusText("Ready", 1)
         self.frame_statusbar.Update()
@@ -635,6 +639,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.text_testvalue.SetValue('0')
         
         # may want to make this more centralized (like for loop to configure all at once)
+        # print('Configure...')
         self.configure_Puck() # This makes sure all pucks are configured to remove bug with first round adc on turning puck idle
 
     def set_id(self, event):  # wxGlade: wxp3_frame.<event_handler>
@@ -840,8 +845,12 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         time.sleep(0.5) # wait for puck to reboot (avoids loss of communication)
         self.frame_statusbar.SetStatusText("Ready", 1)
 
+        # print(self.ADC_ON)
+        # print(self.adcWasON)
+
         if self.ADC_ON == False and self.adcWasON == True:
             self.on_off_adc(self)
+            self.adcWasON = False
 
     def file_to_p3(self, event, path=False):  # wxGlade: wxp3_frame.<event_handler>
         #print("Event handler 'file_to_p3'")
@@ -1270,6 +1279,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                     self.network.sync.start(0.01)
                     #Turn on ADC Monitoring
                     self.ADC_ON = True
+                    # self.onoff1.SetValue(1)
 
                 elif self.ADC_ON == True:
                     print('Turning off ADC Monitor...')
@@ -1293,6 +1303,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
                     img = wx.Image('images/dialnobgcroppedscaled.png')
                     self.Dial.SetBitmap(img)
+                    # self.onoff1.SetValue(0)
             else:
                 print('No Puck Connected -')
                 print('Turning off ADC Monitor...')
