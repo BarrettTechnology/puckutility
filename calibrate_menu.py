@@ -157,6 +157,7 @@ class calibrate():
            self.adcWasON = True
         else:
            self.adcWasON = False
+
         self.frame_statusbar.SetStatusText("Calibrating igainfactor...", 1)
         self.frame_statusbar.Update()
         wx.Yield()
@@ -202,7 +203,7 @@ class calibrate():
             round(self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak, 2), 
             self.node.sdo['CurrentFeedback'].raw / 1000.0 * i_peak,
             self.node.sdo['Motor']['ud'].raw))
-          motor_ud += 50 # was 100
+          motor_ud += 25 # was 100, then 50
           self.node.sdo['Motor']['ud'].raw = motor_ud
           time.sleep(0.05)
 
@@ -666,10 +667,16 @@ class calibrate():
         config.read(filepath)
         options = config.sections()
         for option in options:
+            print(option)
             config_id = int(config[option]['ID'])
-            if config_id == self.ID:
+            if config_id == self.ID: # Check if config_id is in getNodes()
                 print("Found defaults!")
+                csvpath = config[option]['CSV']
+                print(csvpath)
+                self.file_to_p3(None, csvpath)
                 break
+            else:
+                print('ID Not found..')
         # self.name = config[option]['NAME']
         # self.gearRatio = int(config[option]['RATIO'])
 

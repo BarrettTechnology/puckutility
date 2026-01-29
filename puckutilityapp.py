@@ -463,15 +463,15 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         self.frame_statusbar.SetStatusText("Scanning Pucks...", 1)
         self.frame_statusbar.Update()
         wx.Yield()
-
-        if self.lastMode != 0:
-            self.lastMode = 0 # Reset lastMode
-            self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
-            self.button_6.SetBackgroundColour(self.gray)
-            self.button_6.SetLabel("Go")
-            print("Idling...")
         
         try:
+            if self.lastMode != 0:
+                self.lastMode = 0 # Reset lastMode
+                self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
+                self.button_6.SetBackgroundColour(self.gray)
+                self.button_6.SetLabel("Go")
+                print("Idling...")
+
             # This will attempt to read an SDO from nodes 1 - 127
             self.network.scanner.reset()
             self.network.scanner.search()
@@ -942,6 +942,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
           dlg.ShowModal()
           dlg.Destroy()
 
+        # THIS SEEMS LIKE IT SHOULDN'T HAPPEN HERE, use can_port / scan_pucks??
+
         print("Establishing a new network...")
         self.network = canopen.Network()
 
@@ -966,6 +968,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         # cansend can0 67F#2F.11.34.01.04.00.00.00
         self.configure_Puck()
         self.frame_statusbar.SetStatusText("Ready", 1)
+
         if self.adcWasON == True:
             self.on_off_adc(self)
             self.adcWasON = False
