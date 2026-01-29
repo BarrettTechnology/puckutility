@@ -271,7 +271,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             # Run configuration upload
             self.file_to_p3(None,filepath)
         elif extension == '.ini':
-            print('Robot Configuration Detected...')
+            print('System Configuration Detected...')
+            self.system_config(None,filepath)
         else:
             print('Invalid file...')
             # add a popup

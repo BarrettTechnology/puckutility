@@ -659,6 +659,10 @@ class calibrate():
         self.choice_id.SetSelection(indexID) # Return to starting ID after completion
         self.select_id(None)
 
+    def system_config(self, event, filepath):
+        print('Definitely a system config')
+        
+
     # def tune_gains(self, event):  # wxGlade: wxp3_frame.<event_handler>
     #     print("Event handler 'tune_gains' not implemented!")
     #     event.Skip()
