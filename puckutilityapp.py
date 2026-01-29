@@ -54,6 +54,7 @@ import wx.lib.agw.pygauge as PG
 # Calibration steps individually still popup issue for multiple cal
 # Drag and drop .ini file for config?? Configure full robot at once
 # Firmware update to flashp4.py to program multiple pucks at once??
+# Sometimes the progress bar is blocking our status messages
 
 def get_version(vers): # Convert uint32_t to semantic version: Major.Minor.Patch
     return "{0}.{1}.{2}".format(
