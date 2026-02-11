@@ -661,22 +661,36 @@ class calibrate():
         self.choice_id.SetSelection(indexID) # Return to starting ID after completion
         self.select_id(None)
 
+    def get_version(self, vers): # Convert uint32_t to semantic version: Major.Minor.Patch
+        return "{0}.{1}.{2}".format(
+            (vers >> 24) & 0xFF, (vers >> 8) & 0xFFFF, (vers & 0xFF))
+
     def system_config(self, event, filepath):
         print("Reading config file...")
         config = configparser.ConfigParser()
         config.read(filepath)
         options = config.sections()
+        fw_version = config['DEFAULT']['fw_version']
+        fwpath = config['DEFAULT']['fw']
         for option in options:
             print(option)
             config_id = int(config[option]['ID'])
             if config_id == self.ID: # Check if config_id is in getNodes()
-                print("Found defaults!")
+                print("Found defaults for Puck {}!".format(config_id))
+                # firmware
+                version = self.get_version(self.node.sdo['MfgSoftwareVersion'].raw)
+                # print(version)
+                if version != fw_version:
+                  print('Version {} found. Updating firmware to {}'.format(version, fw_version))
+                  self.browse_fw(None, fwpath)
+                else:
+                  print('Version {} found.'.format(version))
                 csvpath = config[option]['CSV']
-                print(csvpath)
+                # print(csvpath)
                 self.file_to_p3(None, csvpath)
                 break
             else:
-                print('ID Not found..')
+                print('Puck {} Not found...'.format(config_id))
         # self.name = config[option]['NAME']
         # self.gearRatio = int(config[option]['RATIO'])
 

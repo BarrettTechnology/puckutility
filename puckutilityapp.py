@@ -11,13 +11,10 @@
 
 
 import wx
-#import gettext
 from puckutilityapp_gui import puckutilityapp_frame
 from calibrate_menu import calibrate
 from factory_menu import factory
 import OnOffButton
-
-# import canopen_runner
 
 import os
 import canopen
@@ -37,12 +34,8 @@ import math
 import datetime
 import canopen_runner
 import flashp4
-# import click
 import threading
 import wx.lib.agw.pygauge as PG
-
-# import pyserial
-# import slcan
 
 # TODO
 # Look into possible issues with Pucks responding to sync messages when not in focus (this appears to be caused by COB ID only being updated when configuration is set)
@@ -203,6 +196,24 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
         # NOW need to work on pass the update thread into other programs??
         self.update_queue = multiprocessing.Queue()
+
+    def set_tool_tips(self,event):
+        wx.ToolTip.SetDelay(3000)
+        wx.ToolTip.SetReshow(3000)
+        # if self.getMode() == 'Current':
+            # Specifications
+        print('Setting Tool Tips...')
+        # self.can_device.SetToolTip('Input Motor Resistance')
+            # self.choice_resistance_units.SetToolTip('Select Units:\nmOhm, Ohm') 
+            # self.inductance_input.SetToolTip('Input Motor Inductance')
+            # self.choice_inductance_units.SetToolTip('Select Units:\nmH, uH')
+            # self.kt_input.SetToolTip('Input Motor Kt')
+            # self.choice_kt_units.SetToolTip('Select Units:\nmNm/A, Nm/A')
+            # self.max_trq_input.SetToolTip('Input Motor Max Torque')
+            # self.choice_max_trq_units.SetToolTip('Select Units:\nmNm, Nm')
+            # self.motor_poles_input.SetToolTip('Input Motor Poles (Pole Pairs x2)')
+            # self.gain_input.SetToolTip('Input Gain Factor')
+            # self.zeta_input.SetToolTip('Input Zeta Damping Factor')
 
     #this may be unnecessary
     # def OnResize(self,event):
@@ -1337,6 +1348,8 @@ class MyApp(wx.App):
 
         result = self.frame.can_port(None)
         self.Bind(wx.EVT_KEY_DOWN,self.frame.onKeyDown)
+
+        self.frame.set_tool_tips(None)
 
         # Transmit an NMT reboot command to this node
         if result == True:
