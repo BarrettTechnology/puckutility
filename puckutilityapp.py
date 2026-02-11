@@ -203,17 +203,19 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         # if self.getMode() == 'Current':
             # Specifications
         print('Setting Tool Tips...')
-        # self.can_device.SetToolTip('Input Motor Resistance')
-            # self.choice_resistance_units.SetToolTip('Select Units:\nmOhm, Ohm') 
-            # self.inductance_input.SetToolTip('Input Motor Inductance')
-            # self.choice_inductance_units.SetToolTip('Select Units:\nmH, uH')
-            # self.kt_input.SetToolTip('Input Motor Kt')
-            # self.choice_kt_units.SetToolTip('Select Units:\nmNm/A, Nm/A')
-            # self.max_trq_input.SetToolTip('Input Motor Max Torque')
-            # self.choice_max_trq_units.SetToolTip('Select Units:\nmNm, Nm')
-            # self.motor_poles_input.SetToolTip('Input Motor Poles (Pole Pairs x2)')
-            # self.gain_input.SetToolTip('Input Gain Factor')
-            # self.zeta_input.SetToolTip('Input Zeta Damping Factor')
+        self.choice_port.SetToolTip('Select CAN port')
+        self.button_1.SetToolTip('Scan to find all Pucks on the CAN bus')
+        self.choice_id.SetToolTip('Select active Puck')
+        self.text_version.SetToolTip('Firmware version of active Puck')
+        self.button_8.SetToolTip('Update firmware for active Puck')
+        self.button_10.SetToolTip('Browse for a new configuration file to upload')
+        self.choice_test.SetToolTip('Select control mode')
+        self.text_testvalue.SetToolTip('Input a command value for the control mode')
+        self.button_6.SetToolTip('Send the command value to active Puck')
+        self.Dial.SetToolTip('Displays output position')
+        self.onoffpanel.SetToolTip('Turn ON/OFF ADC Monitor')
+        self.button_2.SetToolTip('Set new Puck ID')
+        self.text_id.SetToolTip('Input new Puck ID')
 
     #this may be unnecessary
     # def OnResize(self,event):
