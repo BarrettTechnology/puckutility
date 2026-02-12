@@ -25,6 +25,7 @@ import math
 import semver
 from threading import Thread
 import multiprocessing
+multiprocessing.freeze_support() 
 from canopen_runner import progressbar
 from flashp4 import progressbar
 import time

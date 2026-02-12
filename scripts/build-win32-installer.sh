@@ -3,6 +3,7 @@ cd ..
 python -m PyInstaller --clean puckutilityapp.py --name PuckUtilityApp --distpath build/win/PuckUtilityApp --onefile --hiddenimport can.interfaces.pcan --icon=images/BarrettIcon.ico 
 cp -r images build/win/PuckUtilityApp/
 cp -r config build/win/PuckUtilityApp/
+cp system-config.ini build/win/PuckUtilityApp/
 cp puck4.eds build/win/PuckUtilityApp/
 cp flashp4.py build/win/PuckUtilityApp/
 cp canopen_runner.py build/win/PuckUtilityApp/

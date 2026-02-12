@@ -4,6 +4,7 @@ pyinstaller --clean puckutilityapp.py --name PuckUtilityApp --onefile --distpath
 cp -r images/ build/lin/PuckUtilityApp/
 cp -r config/ build/lin/PuckUtilityApp/
 cp puck4.eds build/lin/PuckUtilityApp/
+cp setup-config.ini build/lin/PuckUtilityApp/
 cp flashloader.eds build/lin/PuckUtilityApp/
 cp scripts/reset_can.sh build/lin/PuckUtilityApp/
 cp scripts/60-can.rules build/lin/PuckUtilityApp/
