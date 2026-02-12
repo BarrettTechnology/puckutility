@@ -104,10 +104,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         dt = DropTarget(self)
         self.SetDropTarget(dt)
 
-        # self.LAUNCH = '2F.11.34.01.04.00.00.00'
-
         # Initialize self variables
-        # self.gearRatio = 1
         self.encoderResolution = 4096 # cts / revolution
         self.adcWasON = False
         self.lastMode = 0 
@@ -886,7 +883,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.adcWasON = True
 
         if path == False:
-            print('no path')
+            # print('no path')
             # File browser
             if platform.system() == "Windows":
                 directory = '../config'
@@ -912,7 +909,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         can_device = self.choice_port.GetStringSelection()
         node_id = self.choice_id.GetString(self.choice_id.GetSelection())
 
-        print("Writing OD entries")
+        print("Writing OD entries...")
         self.network.disconnect()
 
         # Using multithreading!
