@@ -5,6 +5,7 @@ import time
 import math
 import webbrowser
 import configparser
+import platform
 
 # TODO - added calibrate all pucks feature
 
@@ -12,6 +13,9 @@ class calibrate():
     def calibrate_all_pucks(self, event):
         print(self.network.scanner.nodes)
         starting_id = self.getID()
+        if len(self.network.scanner.nodes) == 0:
+            print("No active puck")
+            return False
         for i in self.network.scanner.nodes:
             print(i)
             indexID = self.network.scanner.nodes.index(i)
@@ -666,7 +670,32 @@ class calibrate():
         return "{0}.{1}.{2}".format(
             (vers >> 24) & 0xFF, (vers >> 8) & 0xFFFF, (vers & 0xFF))
 
-    def system_config(self, event, filepath):
+    def system_config(self, event, filepath=False):
+        if filepath == False:
+          # File browser
+          if platform.system() == "Windows":
+              directory = '../'
+          else:
+              directory = ''
+
+          # File browser
+          with wx.FileDialog(self, "Select firmware file", directory, wildcard="Configu files (*.ini|*.ini",
+                        style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST) as fileDialog:
+              if fileDialog.ShowModal() == wx.ID_CANCEL:
+                  # Transmit an NMT reboot command to this node
+                  # print("Rebooting puck")
+                  # self.network.send_message(0x0, [0x81, int(self.node_id)])
+                  # time.sleep(0.5) # wait for puck to reboot (avoids loss of communication)
+                  # self.network.send_message(0x4, [self.LAUNCH, int(node_id)])
+                  # self.configure_Puck()
+                  # if self.adcWasON == True:
+                  #     self.on_off_adc(self)
+                  return     # the user changed their mind
+              # Proceed loading the file chosen by the user
+              filepath = fileDialog.GetPath()
+        else:
+            filepath = filepath
+    
         print("Reading config file...")
         config = configparser.ConfigParser()
         config.read(filepath)
@@ -702,6 +731,9 @@ class calibrate():
         else:
            pass
         dlg.Destroy()
+
+    # def upload_system_config(self,event):
+    #    print('uploading...')
 
     # def tune_gains(self, event):  # wxGlade: wxp3_frame.<event_handler>
     #     print("Event handler 'tune_gains' not implemented!")

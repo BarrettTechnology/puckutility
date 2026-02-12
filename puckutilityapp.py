@@ -138,7 +138,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
         # Setup Window + Icon
         self.SetIcon(wx.Icon('images/BarrettIcon.png'))
-        self.SetTitle("Puck Utility App - v1.1.5")
+        self.SetTitle("Puck Utility App - v1.1.5 DEV")
         self.button_6.SetBackgroundColour(self.gray) # Initialize with gray button in idle
         self.Bind(wx.EVT_KEY_DOWN,self.onKeyDown)
         self.Bind(wx.EVT_CLOSE, self.onCloseFrame)
@@ -290,7 +290,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         else:
             print('Invalid file...')
             # add a popup
-            msg = 'Invalid file type! \n\n\nExpected Extensions-\nFirmware: ".ebin"\nConfig: ".csv"'
+            msg = 'Invalid file type! \n\n\nExpected Extensions-\nFirmware: ".ebin"\nMotor Config: ".csv"\nSystem Config: ".ini"'
             dlg = wx.MessageDialog(None,msg,'Warning!', wx.ICON_WARNING)
             dlg.ShowModal()
             dlg.Destroy()
