@@ -97,6 +97,16 @@ class calibrate():
         a_bias = self.node.sdo['Alpha']['Bias'].raw
         b_bias = self.node.sdo['Beta']['Bias'].raw
 
+        # Set Mode to Idle (0)
+        print("Setting Mode = IDLE")
+        self.node.sdo["SetModeOfOperation"].raw = 0
+        # time.sleep(1) # Wait at least 75 ms for the filters to settle
+
+        self.frame_statusbar.SetStatusText("Ready", 1)
+        #self.text_ctrl_6.ChangeValue(str(self.node.sdo['Cal']['iSense1'].raw))
+        if self.ADC_ON == False and self.adcWasON == True:
+           self.on_off_adc(self)
+
         if a_bias > 2048 * (1 + error) or a_bias < 2048 * (1 - error) or b_bias > 2048 * (1 + error) or b_bias < 2048 * (1 - error) :
           print('iSense Bias out of bounds!')
           msg = "iSense Bias out of bounds!" \
@@ -115,16 +125,6 @@ class calibrate():
              return True
           if answer == wx.ID_NO:
              return False
-
-        # Set Mode to Idle (0)
-        print("Setting Mode = IDLE")
-        self.node.sdo["SetModeOfOperation"].raw = 0
-        # time.sleep(1) # Wait at least 75 ms for the filters to settle
-
-        self.frame_statusbar.SetStatusText("Ready", 1)
-        #self.text_ctrl_6.ChangeValue(str(self.node.sdo['Cal']['iSense1'].raw))
-        if self.ADC_ON == False and self.adcWasON == True:
-           self.on_off_adc(self)
 
     def calibrate_igainfactor(self, event, calAll=False):  # wxGlade: wxp3_frame.<event_handler>
         print("Event handler 'calibrate_igainfactor'")
@@ -164,9 +164,11 @@ class calibrate():
 
         # Read this motor's calibration current (mA)
         calibration_current = self.node.sdo['Calibration']['i_cal'].raw
+        print(calibration_current)
 
         # Read the motor.peak (mA)
         i_peak = self.node.sdo['Calibration']['i_peak'].raw
+        print(i_peak)
 
         time.sleep(1) # Wait at least 75 ms for the filters to settle
 
@@ -175,15 +177,16 @@ class calibrate():
         motor_ud = 0
         motor_id = self.node.sdo['Motor']['id'].raw
         while (motor_id < 1000 and self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak) < calibration_current and motor_ud < 32000:
+          self.node.sdo['Motor']['ud'].raw = motor_ud
           print("alpha = {0}, beta = {1}, id = {2}, iq = {3}, ud = {4}".format(
             self.node.sdo['Alpha']['Raw'].raw, 
             self.node.sdo['Beta']['Raw'].raw, 
             round(self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak, 2), 
             self.node.sdo['CurrentFeedback'].raw / 1000.0 * i_peak,
-            self.node.sdo['Motor']['ud'].raw))
+            motor_ud))
             #self.node.sdo['Amplifier']['Vref'].raw))
           motor_ud += 100
-          self.node.sdo['Motor']['ud'].raw = motor_ud
+          
           time.sleep(0.05)
 
         time.sleep(1) # Wait at least 75 ms for the filters to settle
