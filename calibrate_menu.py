@@ -18,10 +18,11 @@ class calibrate():
             self.choice_id.SetSelection(indexID) # Move to next ID for calibration
             self.select_id(None)
 
-            print("Running full calibration for Puck {}".format(self.getID()))
-            self.calibrate_ibias(None)
-            self.calibrate_igainfactor(None)
-            self.calibrate_enczero(None)
+            # print("Running full calibration for Puck {}".format(self.getID()))
+            self.calibrate_all(None)
+            # self.calibrate_ibias(None)
+            # self.calibrate_igainfactor(None)
+            # self.calibrate_enczero(None)
 
         indexID = self.network.scanner.nodes.index(starting_id)
         self.choice_id.SetSelection(indexID) # Return to starting ID after completion
@@ -203,7 +204,7 @@ class calibrate():
             round(self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak, 2), 
             self.node.sdo['CurrentFeedback'].raw / 1000.0 * i_peak,
             self.node.sdo['Motor']['ud'].raw))
-          motor_ud += 25 # was 100, then 50
+          motor_ud += 100 # 25 # was 100, then 50
           self.node.sdo['Motor']['ud'].raw = motor_ud
           time.sleep(0.05)
 
@@ -691,9 +692,16 @@ class calibrate():
                 break
             else:
                 print('Puck {} Not found...'.format(config_id))
-        # self.name = config[option]['NAME']
-        # self.gearRatio = int(config[option]['RATIO'])
 
+        # Should tell user calibration is required, and ask to perform 'calibrate all'
+        msg = "Calibration is required after configuration. Would you like to calibrate all Pucks?"
+        dlg = wx.MessageDialog(None,msg,'Warning!',wx.YES_NO | wx.ICON_WARNING)
+        answer = dlg.ShowModal()
+        if answer == wx.ID_YES:
+           self.calibrate_all_pucks(None)
+        else:
+           pass
+        dlg.Destroy()
 
     # def tune_gains(self, event):  # wxGlade: wxp3_frame.<event_handler>
     #     print("Event handler 'tune_gains' not implemented!")

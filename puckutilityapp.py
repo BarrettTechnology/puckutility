@@ -282,7 +282,11 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.file_to_p3(None,filepath)
         elif extension == '.ini':
             print('System Configuration Detected...')
+            start = time.time()
             self.system_config(None,filepath)
+            finish = time.time()
+            time_elapsed = round(finish - start,2)
+            print('System Configuration Complete! Time elapsed: {} seconds'.format(time_elapsed))
         else:
             print('Invalid file...')
             # add a popup
@@ -413,15 +417,19 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
     #     self.scan_pucks(None)
     #     self.Rescanning = False
 
-    def can_port(self,event):
+    def can_port(self,event,skipADC=False):
         #print("Event handler 'can_port'")
-        if(self.ADC_ON == True):
-            self.on_off_adc(self) # Turn off adc 
+        if skipADC == True:
+            pass
+        elif self.ADC_ON == True:
+            self.on_off_adc(self)
+            self.adcWasON = True
+        else:
+            self.adcWasON = False
+ 
         try:
             self.network.disconnect() # Close any open networks
-            # print('disconnected')
         except:
-            # print('unable to disconnect')
             pass
 
         print("Establishing a new network...")
@@ -458,13 +466,20 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             return False
         # We may need to wait a short while here to allow all nodes to respond
         time.sleep(0.05)
+        if skipADC == True:
+            pass
+        elif self.adcWasON == True:
+            self.on_off_adc(self)
+            self.adcWasON = False
         return True
 
-    def scan_pucks(self, event,selfCALL=False):  # wxGlade: wxp3_frame.<event_handler>
+    def scan_pucks(self, event,selfCALL=False,skipADC=False):  # wxGlade: wxp3_frame.<event_handler>
         #print("Event handler 'scan_pucks'")
         #print(str(datetime.datetime.now()) + " Event handler 'scan_pucks'")
         # Set Mode to IDLE in case test is active
-        if self.ADC_ON == True:
+        if skipADC == True:
+            pass
+        elif self.ADC_ON == True:
             self.on_off_adc(self)
             self.adcWasON = True
         else:
@@ -562,7 +577,9 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         #     self.adcWasON = False
         #     self.onoff1.SetValue(0)
 
-        if self.adcWasON == True:
+        if skipADC == True:
+            pass
+        elif self.adcWasON == True:
             self.on_off_adc(self)
             self.adcWasON = False
 
@@ -728,6 +745,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         if self.ADC_ON == True:
             self.on_off_adc(self)
             self.adcWasON = True
+        else:
+            self.adcWasON = False
 
         can_device = self.choice_port.GetStringSelection()
         node_id = self.choice_id.GetString(self.choice_id.GetSelection())
@@ -823,7 +842,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         # Using multithreading!
         self.OnStartTask(None) # need this to show!! 
 
-        # probs don't need eds??
         process = multiprocessing.Process(target=flashp4.start,args=(can_device, int(node_id),pathname,self.update_queue,))
         process.start()
         self.progress.Show()
@@ -851,20 +869,16 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         print(result)
 
         # Re-scan
-        self.can_port(None)
-        self.scan_pucks(None)
+        self.can_port(None,True)
+        self.scan_pucks(None,False,True)
         # timeFinish = round(time.time() - timeStart,2)
         # print('Time elapsed: {}'.format(timeFinish))
 
         time.sleep(0.5) # wait for puck to reboot (avoids loss of communication)
         self.frame_statusbar.SetStatusText("Ready", 1)
 
-        # print(self.ADC_ON)
-        # print(self.adcWasON)
-
-        if self.ADC_ON == False and self.adcWasON == True:
+        if self.adcWasON == True:
             self.on_off_adc(self)
-            self.adcWasON = False
 
     def file_to_p3(self, event, path=False):  # wxGlade: wxp3_frame.<event_handler>
         #print("Event handler 'file_to_p3'")
