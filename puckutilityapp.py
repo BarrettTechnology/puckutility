@@ -40,12 +40,12 @@ import wx.lib.agw.pygauge as PG
 # TODO
 # Look into possible issues with Pucks responding to sync messages when not in focus (this appears to be caused by COB ID only being updated when configuration is set)
 # If connection is lost, something needs to reset the on/off *** This is very annoying
+# 115 keeps showing up as a node in system config??
+# Add menu item for system config!!
 # SHOULD use RPDOs to handle control mode in the future and command values! This is the correct way to handle (needs an issue and addition for v1.1.5)
 # Do not clear tpdo 1 and 2, use these in the monitor / position
 # refresh looks awful on windows
-# Add nice set of tool tips!!!
 # Calibration steps individually still popup issue for multiple cal
-# Drag and drop .ini file for config?? Configure full robot at once
 # Firmware update to flashp4.py to program multiple pucks at once??
 # Sometimes the progress bar is blocking our status messages
 
