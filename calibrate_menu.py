@@ -641,6 +641,9 @@ class calibrate():
           pass
 
     def set_user_dir(self, event):  # wxGlade: wxp3_frame.<event_handler>
+        if self.check_for_node() == False: #len(self.network.scanner.nodes) == 0:
+          return False
+        
         print("Event handler 'set_user_dir'")
         
         self.node.sdo['EncoderConfig']['UserPolarity'].raw = 1 # Assume positive to start
@@ -752,8 +755,11 @@ class calibrate():
 
     def check_for_node(self):
       #  print('Checking')
-       print('No Active Puck! Ending process...')
-       return False
+      if len(self.network.scanner.nodes) == 0:
+        print('No Active Puck! Ending process...')
+        return False
+      else:
+        return True
 
     # def upload_system_config(self,event):
     #    print('uploading...')

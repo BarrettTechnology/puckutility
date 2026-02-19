@@ -591,6 +591,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         wx.Yield()
 
     def select_id(self, event):  # wxGlade: wxp3_frame.<event_handler>
+        if self.check_for_node() == False:
+            return False
         #print("Event handler 'select_id'")
         if self.firstRun:
             active = MyApp.getPucks(self)
@@ -677,6 +679,9 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         self.configure_Puck() # This makes sure all pucks are configured to remove bug with first round adc on turning puck idle
 
     def set_id(self, event):  # wxGlade: wxp3_frame.<event_handler>
+        if self.check_for_node() == False:
+            return
+        
         if self.ADC_ON == True:
             self.on_off_adc(self)
             self.adcWasON = True
@@ -735,6 +740,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
     def browse_fw(self, event, path=False):  # wxGlade: wxp3_frame.<event_handler>
         #print("Event handler 'browse_fw'")
+        if self.check_for_node() == False:
+            return
 
         quick_test = self.choice_test.GetSelection()
         if quick_test != 0:
@@ -884,6 +891,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.on_off_adc(self)
 
     def file_to_p3(self, event, path=False):  # wxGlade: wxp3_frame.<event_handler>
+        if self.check_for_node() == False:
+            return
         #print("Event handler 'file_to_p3'")
         # If motor is not idled, idle
         quick_test = self.choice_test.GetSelection()
