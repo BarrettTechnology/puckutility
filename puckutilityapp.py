@@ -41,6 +41,8 @@ import wx.lib.agw.pygauge as PG
 # TODO
 # Look into possible issues with Pucks responding to sync messages when not in focus (this appears to be caused by COB ID only being updated when configuration is set)
 # If connection is lost, something needs to reset the on/off *** This is very annoying
+# Need to make sure calibration idles if failed (doesn't wait for display choice)
+# Cal should not run (or at least not crash program in event there is no puck connected)
 # 115 keeps showing up as a node in system config??
 # Add menu item for system config!!
 # SHOULD use RPDOs to handle control mode in the future and command values! This is the correct way to handle (needs an issue and addition for v1.1.5)

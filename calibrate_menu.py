@@ -13,8 +13,8 @@ class calibrate():
     def calibrate_all_pucks(self, event):
         print(self.network.scanner.nodes)
         starting_id = self.getID()
-        if len(self.network.scanner.nodes) == 0:
-            print("No active puck")
+        if self.check_for_node() == False: #len(self.network.scanner.nodes) == 0:
+            # print("No active puck")
             return False
         for i in self.network.scanner.nodes:
             print(i)
@@ -34,6 +34,9 @@ class calibrate():
 
     def calibrate_all(self, event):  # wxGlade: wxp3_frame.<event_handler>
         # Try to add calibrate all step!
+        if self.check_for_node() == False: #len(self.network.scanner.nodes) == 0:
+            # print("No active puck")
+            return False
         print("Running full calibration for Puck {}".format(self.getID()))
         continueCal = self.test_encoder(None, True)
         self.Disable()
@@ -62,6 +65,8 @@ class calibrate():
     def calibrate_ibias(self, event, calAll=False):  # wxGlade: wxp3_frame.<event_handler>
         # print("Event handler 'calibrate_ibias'")
         if calAll==False:
+          if self.check_for_node() == False: #len(self.network.scanner.nodes) == 0:
+            return False
           self.Disable()
         quick_test = self.choice_test.GetSelection()
         if quick_test != 0:
@@ -112,6 +117,11 @@ class calibrate():
         a_bias = self.node.sdo['Alpha']['Bias'].raw
         b_bias = self.node.sdo['Beta']['Bias'].raw
 
+        # Set Mode to Idle (0)
+        print("Setting Mode = IDLE")
+        self.node.sdo["SetModeOfOperation"].raw = 0
+        # time.sleep(1) # Wait at least 75 ms for the filters to settle
+
         if a_bias > 2048 * (1 + error) or a_bias < 2048 * (1 - error) or b_bias > 2048 * (1 + error) or b_bias < 2048 * (1 - error) :
           print('iSense Bias out of bounds!')
           msg = "iSense Bias out of bounds!" \
@@ -126,11 +136,6 @@ class calibrate():
           answer = dlg.ShowModal()
           dlg.Destroy()
           print("Encoder readings unstable...")
-
-        # Set Mode to Idle (0)
-        print("Setting Mode = IDLE")
-        self.node.sdo["SetModeOfOperation"].raw = 0
-        # time.sleep(1) # Wait at least 75 ms for the filters to settle
 
         self.frame_statusbar.SetStatusText("Ready", 1)
         #self.text_ctrl_6.ChangeValue(str(self.node.sdo['Cal']['iSense1'].raw))
@@ -149,6 +154,8 @@ class calibrate():
     def calibrate_igainfactor(self, event, calAll=False):  # wxGlade: wxp3_frame.<event_handler>
         # print("Event handler 'calibrate_igainfactor'")
         if calAll==False:
+          if self.check_for_node() == False: #len(self.network.scanner.nodes) == 0:
+            return False
           self.Disable() 
         quick_test = self.choice_test.GetSelection()
         if quick_test != 0:
@@ -290,6 +297,8 @@ class calibrate():
     def calibrate_enczero(self, event, calAll=False):  # wxGlade: wxp3_frame.<event_handler>
         # print("Event handler 'calibrate_enczero'")
         if calAll==False:
+          if self.check_for_node() == False: #len(self.network.scanner.nodes) == 0:
+            return False
           self.Disable()
         quick_test = self.choice_test.GetSelection()
         if quick_test != 0:
@@ -446,11 +455,7 @@ class calibrate():
         event.Skip()
 
     def calibrate_enclag(self, event,calAll=False):  # wxGlade: wxp3_frame.<event_handler>
-        print("Event handler 'calibrate_enclag'")
-
-        self.frame_statusbar.SetStatusText("Calibrating Encoder Lag...", 1)
-        self.frame_statusbar.Update()
-        wx.Yield()
+        # print("Event handler 'calibrate_enclag'")
 
         if self.ADC_ON == True:
             self.adcWasON = True
@@ -459,7 +464,13 @@ class calibrate():
             self.adcWasON = False
 
         if calAll==False:
+          if self.check_for_node() == False: #len(self.network.scanner.nodes) == 0:
+            return False
           self.Disable()
+
+        self.frame_statusbar.SetStatusText("Calibrating Encoder Lag...", 1)
+        self.frame_statusbar.Update()
+        wx.Yield()
 
         # Set Mode to Idle (0)
         print("Setting Mode = IDLE")
@@ -570,8 +581,11 @@ class calibrate():
           self.Enable()
 
     def test_encoder(self,event,calAll=False):
-        print("Testing Encoder...")
+        # print("Testing Encoder...")
         if calAll==False:
+          if self.check_for_node() == False: #len(self.network.scanner.nodes) == 0:
+            # print("No active puck")
+            return False
           self.Disable()
         self.frame_statusbar.SetStatusText("Testing Encoder...", 1)
         self.frame_statusbar.Update()
@@ -651,6 +665,8 @@ class calibrate():
 
     def update_all(self, event):
         print('Updating all Pucks...')
+        if self.check_for_node() == False: #len(self.network.scanner.nodes) == 0:
+            return False
         print(self.network.scanner.nodes)
         starting_id = self.getID()
         for i in self.network.scanner.nodes:
@@ -670,7 +686,9 @@ class calibrate():
         return "{0}.{1}.{2}".format(
             (vers >> 24) & 0xFF, (vers >> 8) & 0xFFFF, (vers & 0xFF))
 
-    def system_config(self, event, filepath=False):
+    def system_config(self, event, filepath=False): 
+        if self.check_for_node() == False: #len(self.network.scanner.nodes) == 0:
+            return False
         if filepath == False:
           # File browser
           if platform.system() == "Windows":
@@ -731,6 +749,11 @@ class calibrate():
         else:
            pass
         dlg.Destroy()
+
+    def check_for_node(self):
+      #  print('Checking')
+       print('No Active Puck! Ending process...')
+       return False
 
     # def upload_system_config(self,event):
     #    print('uploading...')
