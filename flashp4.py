@@ -164,7 +164,7 @@ def start(can_device, can_id, firmfile,progress):
 
     # THIS IS WHERE WE ARE RUNNING IT FROM
     result = flash(can_device, can_id, firmfile, progress)
-    print(result)
+    # print(result)
     # print("Number of errors: {}".format(errors))
     # network.disconnect()
     progressbar(progress, 100)

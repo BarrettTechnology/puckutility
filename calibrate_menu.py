@@ -98,7 +98,7 @@ class calibrate():
         # Set Mode to Voltage
         print("Setting Mode = VOLTAGE MODE")
         self.node.sdo["SetModeOfOperation"].raw = 12
-        time.sleep(2) # Wait at least 75 ms for the filters to settle (2 seconds seems to be the sweet spot)
+        time.sleep(1) # Wait at least 75 ms for the filters to settle (2 seconds seems to be the sweet spot)
 
         # Calibrate iSense
         for channel in ['Alpha', 'Beta']:

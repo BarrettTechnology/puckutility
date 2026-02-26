@@ -39,6 +39,7 @@ import threading
 import wx.lib.agw.pygauge as PG
 
 # TODO
+# update all firmware shouldn't ask for the file each time??
 # Look into possible issues with Pucks responding to sync messages when not in focus (this appears to be caused by COB ID only being updated when configuration is set)
 # If connection is lost, something needs to reset the on/off *** This is very annoying
 # Need to make sure calibration idles if failed (doesn't wait for display choice)
