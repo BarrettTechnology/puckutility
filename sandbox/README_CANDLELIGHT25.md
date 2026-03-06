@@ -18,8 +18,10 @@ instead of WinUSB/libusb.
 
 The CANable 2.5 [Candlelight firmware by Elmue](https://github.com/Elmue/CANable-2.5-firmware-Slcan-and-Candlelight)
 exposes a well-documented USB protocol (the *Elmüsoft protocol*) over WinUSB.
-`test_fd.py` implements that protocol directly in Python using `pyusb` with the
-`libusb-1.0.dll` backend — no compilation required, no python-can dependency.
+`candlelight_bus.py` implements that protocol directly via `pyusb` and wraps it
+as a `python-can` `BusABC` — no compilation required, works with any `python-can`
+consumer (canopen, etc.).  `test_fd.py` is a demo script that imports
+`CandlelightBus` from `candlelight_bus.py` and uses standard `can.Message` objects.
 
 ## Requirements
 
@@ -27,12 +29,13 @@ exposes a well-documented USB protocol (the *Elmüsoft protocol*) over WinUSB.
 |---|---|
 | Python | 3.12+ |
 | pyusb | any recent (e.g. 1.3.1) |
+| python-can | any recent (e.g. 4.6.1) |
 | libusb-1.0.dll | 1.0.29 — place in script directory or on `PATH` |
 | Firmware | CANable 2.5 with Candlelight firmware |
 | Windows driver | WinUSB (install via [Zadig](https://zadig.akeo.ie/)) |
 
 ```
-pip install pyusb
+pip install pyusb python-can
 ```
 
 ## Quick Start
@@ -44,24 +47,18 @@ python test_fd.py
 Expected output (with a second node or `LOOPBACK = True`):
 
 ```
-Firmware version  sw=0x01020000  hw=0x00010000  ch=1
-fclk_nominal = 160.0 MHz  features = 0x0FFF
-fclk_data    = 160.0 MHz  features_fd = 0x0FFF
-
 ── Classic CAN @ 1 Mbps ────────────────────────────────────────────────
-  nominal: 1.000 Mbps  SP=75.0%  brp=2  seg1=59  seg2=20  sjw=20
-  Started  Classic CAN
-TX: CanMessage(id=0x123, dlc=8, data=01 02 03 04 05 06 07 08)
-RX: CanMessage(id=0x123, dlc=8, data=01 02 03 04 05 06 07 08)
+TX: Timestamp: 1700000000.000  ID: 067f    S Len: 004 Data: 40 41 60 00
+RX: Timestamp: 1700000000.002  ID: 067f    S Len: 004 Data: 40 41 60 00
 
 ── CAN FD @ 1 Mbps nominal / 5 Mbps data ──────────────────────────────
-  nominal: 1.000 Mbps  SP=75.0%  brp=2  seg1=59  seg2=20  sjw=20
-  FD data: 5.000 Mbps  SP=75.0%  brp=2  seg1=11  seg2=4   sjw=4
-  Started  CAN FD
-TX: CanMessage(id=0x123 FD+BRS, dlc=64, data=00 01 02 … 3f)
-RX: CanMessage(id=0x123 FD+BRS, dlc=64, data=00 01 02 … 3f)
-Closed.
+TX: Timestamp: 1700000000.101  ID: 067f    S  FD BRS Len: 004 Data: 40 41 60 00
+RX: Timestamp: 1700000000.103  ID: 067f    S  FD BRS Len: 004 Data: 40 41 60 00
 ```
+
+Driver diagnostics (firmware version, fclk, bit timing) are emitted via the
+standard Python `logging` module at `INFO` level and are silent by default.
+To enable them: `logging.basicConfig(level=logging.INFO)`
 
 Set `LOOPBACK = True` at the top of `test_fd.py` to receive your own
 transmissions on the same adapter (no second node needed for testing).
@@ -109,24 +106,21 @@ success; anything else raises an exception.
 
 ### Startup Sequence
 
+Everything happens in `CandlelightBus.__init__`:
+
 ```
-open()
+CandlelightBus(channel=0, bitrate=1_000_000, fd=True, data_bitrate=5_000_000)
   │
-  ├─ ctrl_out  REQ_SET_MODE     (reset)          → confirm feedback
-  ├─ ctrl_in   REQ_GET_VERSION                   → print fw version
-  ├─ ctrl_in   REQ_GET_CAPABILITIES              → read fclk_nominal
-  ├─ ctrl_in   REQ_GET_CAPS_FD                   → read fclk_data
-  └─ start background RX thread
-
-set_bitrate(1_000_000)
-  └─ ctrl_out  REQ_SET_BITTIMING   (kBitTiming)  → confirm feedback
-
-set_bitrate(5_000_000, fd_data=True)             (FD mode only)
-  └─ ctrl_out  REQ_SET_BITTIMING_FD (kBitTiming) → confirm feedback
-
-start(fd=True)
-  └─ ctrl_out  REQ_SET_MODE     (start + flags)  → confirm feedback
+  ├─ ctrl_out  REQ_SET_MODE          (reset)           → confirm feedback
+  ├─ ctrl_in   REQ_GET_VERSION                         → log fw version
+  ├─ ctrl_in   REQ_GET_CAPABILITIES                    → read fclk_nominal
+  ├─ ctrl_in   REQ_GET_CAPS_FD                         → read fclk_data
+  ├─ ctrl_out  REQ_SET_BITTIMING     (nominal timing)  → confirm feedback
+  ├─ ctrl_out  REQ_SET_BITTIMING_FD  (data timing)     → confirm feedback (FD only)
+  └─ ctrl_out  REQ_SET_MODE          (start + flags)   → confirm feedback
 ```
+
+Receiving is handled by python-can's `BusABC` machinery via `_recv_internal()`.
 
 ### Bit Timing
 
@@ -145,6 +139,8 @@ Example results at `fclk = 160 MHz`:
 |---|---|---|---|---|---|---|
 | 1 Mbps nominal | 2 | 59 | 20 | 20 | 1.000 Mbps | 75.0% |
 | 5 Mbps data    | 2 | 11 | 4  | 4  | 5.000 Mbps | 75.0% |
+
+`test_fd.py` uses `sample_point=0.75` (75%) for both phases.
 
 ### `kBitTiming` Struct (20 bytes, little-endian)
 
@@ -232,10 +228,10 @@ The firmware can also send these message types on the bulk IN endpoint:
 ### Background Receive Thread
 
 The C++ driver notes that WinUSB has no internal RX buffer — packets are lost
-if the host does not read fast enough.  `test_fd.py` runs a daemon thread at
-normal priority that bulk-reads `EP_IN` in a tight loop (500 ms timeout) and
-pushes parsed `CanMessage` objects into a `queue.Queue`.  The main thread
-calls `bus.recv(timeout=...)` to dequeue them.
+if the host does not read fast enough.  `CandlelightBus` implements
+`_recv_internal()`, and python-can's `BusABC` calls it from a background
+`Notifier` thread (or directly from `bus.recv()`).  Each bulk read on `EP_IN`
+uses a 500 ms timeout; USB timeout errors are silently retried.
 
 ---
 
@@ -267,11 +263,13 @@ for d in usb.core.find(find_all=True):
     print(f"{d.idVendor:04X}:{d.idProduct:04X}  {d.manufacturer}  {d.product}")
 ```
 
-Then update `VID` and `PID` at the top of `test_fd.py`.
+Then update `VID` and `PID` at the top of `candlelight_bus.py`, or pass them
+as `vid=` / `pid=` keyword arguments to `CandlelightBus()`.
 
 ## Switching Between Classic CAN and CAN FD
 
-The adapter must be reset between mode changes.  `Candlelight.reset()` sends
-`REQ_SET_MODE` with `MODE_RESET` and drains the RX queue.  After reset, call
-`set_bitrate()` and `start()` again for the new mode.  `test_fd.py` does this
-between the two demo functions.
+Each `CandlelightBus` instance resets the adapter on construction and starts it
+with the requested mode.  To switch modes, close the current bus and open a new
+one.  `test_fd.py` does this implicitly — `demo_classic_can()` and
+`demo_can_fd()` each open and close their own `CandlelightBus` via a `with`
+block, so the adapter is cleanly reset between the two demos.
