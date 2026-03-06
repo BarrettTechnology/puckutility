@@ -431,7 +431,8 @@ def demo_classic_can(bus: Candlelight, loopback: bool = False):
     bus.set_bitrate(1_000_000)
     bus.start(fd=False, loopback=loopback)
 
-    tx = CanMessage(0x123, bytes([0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]))
+    payload = bytes([0x40,0x41,0x60,0x00])
+    tx = CanMessage(0x67F, payload)
     print(f"TX: {tx}")
     bus.send(tx)
 
@@ -445,8 +446,8 @@ def demo_can_fd(bus: Candlelight, loopback: bool = False):
     bus.set_bitrate(5_000_000, fd_data=True)
     bus.start(fd=True, loopback=loopback)
 
-    payload = bytes(range(64))   # 64-byte FD frame
-    tx = CanMessage(0x123, payload, is_fd=True, bitrate_switch=True)
+    payload = bytes([0x40,0x41,0x60,0x00])
+    tx = CanMessage(0x67F, payload, is_fd=True, bitrate_switch=True)
     print(f"TX: {tx}")
     bus.send(tx)
 
