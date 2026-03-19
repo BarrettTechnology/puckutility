@@ -39,6 +39,7 @@ import threading
 import wx.lib.agw.pygauge as PG
 
 # TODO
+# Add hotkeys for scan / cal etc.
 # update all firmware shouldn't ask for the file each time??
 # Look into possible issues with Pucks responding to sync messages when not in focus (this appears to be caused by COB ID only being updated when configuration is set)
 # If connection is lost, something needs to reset the on/off *** This is very annoying
@@ -1231,9 +1232,11 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             #motorTemp = int.from_bytes(motorTempbyte, byteorder='little', signed='signed')
             motorTempString = str(motorTemp) + "C"
             if True: # adding automatic N/A for Dev Kit App #motorTempString != self.MTemp.GetLabel() and motorTemp != 0 and motorTemp != -8 and motorTemp != -9 and motorTemp < ampTemp + 15:
-                self.MTemp.SetLabel(motorTempString)
                 #Colour Setting
-                if motorTemp >= 100:
+                if motorTemp == -273:
+                    self.MTemp.SetForegroundColour(wx.Colour(0,0,0))
+                    motorTempString = 'N/A'
+                elif motorTemp >= 100:
                     self.MTemp.SetForegroundColour(wx.Colour(245,16,0))
                 elif 75 <= motorTemp < 100:
                     self.MTemp.SetForegroundColour(wx.Colour(255,132,0))
@@ -1241,6 +1244,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                     self.MTemp.SetForegroundColour(wx.Colour(115,155,208))
                 else:
                     self.MTemp.SetForegroundColour(wx.Colour(0,0,0))
+                self.MTemp.SetLabel(motorTempString)
             # elif motorTemp == 0 or motorTemp == -8 or motorTemp == -9 or motorTemp > ampTemp + 15: # Handles case of no motor thermistor present
             #     self.MTemp.SetLabel('N/A')
             #     self.MTemp.SetForegroundColour(wx.Colour(0,0,0))
