@@ -672,6 +672,23 @@ class calibrate():
             return False
         print(self.network.scanner.nodes)
         starting_id = self.getID()
+
+        # File browser
+        with wx.FileDialog(self, "Select firmware file", directory, wildcard="BIN files (*.bin;*.ebin)|*.bin;*.ebin",
+                      style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST) as fileDialog:
+            if fileDialog.ShowModal() == wx.ID_CANCEL:
+                # Transmit an NMT reboot command to this node
+                print("Rebooting puck")
+                self.network.send_message(0x0, [0x81, int(node_id)])
+                time.sleep(0.5) # wait for puck to reboot (avoids loss of communication)
+                # self.network.send_message(0x4, [self.LAUNCH, int(node_id)])
+                self.configure_Puck()
+                if self.adcWasON == True:
+                    self.on_off_adc(self)
+                return     # the user changed their mind
+            # Proceed loading the file chosen by the user
+            pathname = fileDialog.GetPath()
+
         for i in self.network.scanner.nodes:
             print(i)
             indexID = self.network.scanner.nodes.index(i)
@@ -679,7 +696,7 @@ class calibrate():
             self.select_id(None)
 
             print("Updating firmware for Puck {}".format(self.getID()))
-            self.browse_fw(self)
+            self.browse_fw(self,pathname)
 
         indexID = self.network.scanner.nodes.index(starting_id)
         self.choice_id.SetSelection(indexID) # Return to starting ID after completion
