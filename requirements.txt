@@ -6,6 +6,7 @@ pyinstaller==6.11.1
 pyinstaller-hooks-contrib==2024.11
 python-can==4.5.0
 python-config==0.1.2
+pyusb=1.3.1
 semver==3.0.2
 setuptools==75.3.0
 six==1.17.0
