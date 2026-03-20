@@ -141,11 +141,14 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
         self.peak_factor = 0.75 # % Peak for Current Colors
 
+        self.ctrlKey = False
+
         # Setup Window + Icon
         self.SetIcon(wx.Icon('images/BarrettIcon.png'))
         self.SetTitle("Puck Utility App - v1.1.5 DEV")
         self.button_6.SetBackgroundColour(self.gray) # Initialize with gray button in idle
         self.Bind(wx.EVT_KEY_DOWN,self.onKeyDown)
+        self.Bind(wx.EVT_KEY_UP,self.onKeyUp)
         self.Bind(wx.EVT_CLOSE, self.onCloseFrame)
         self.backgroundBMP = wx.Bitmap("images/Background.png") # recreating the BMP each rewrite causes massive lagging this is much better!
         # Bind backgound function to assign bitmap
@@ -311,11 +314,24 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         dc.Clear()
         dc.DrawBitmap(self.backgroundBMP, 0, 0)
 
+    def onKeyUp(self,event):
+        if event.GetKeyCode() == 308:
+            self.ctrlKey = False
+        else:
+            event.Skip()
+
     def onKeyDown(self,event):
         event.Skip()
         # print(event.GetKeyCode())
         if event.GetKeyCode() == 27: # ESC
             self.onCloseFrame(None)
+        if event.GetKeyCode() == 308: # CTRL 
+            self.ctrlKey = True
+        elif self.ctrlKey == True and event.GetKeyCode() == 67: # This is looping??
+            self.calibrate_all(None)
+        else:
+            event.Skip()
+        # Add ctrl C, ctrl S, 
             return
     
     def setID(self,i):
@@ -787,12 +803,12 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             version = get_version(1 << 24) # Assume version 1.0.0
 
         print("Found bootloader version: {0}".format(version))
-
-        if semver.match(version, '==1.0.0') and platform.system() != "Windows":
-            msg = "To update firmware, please run this program under Windows."
-            print(msg)
-            wx.MessageBox(msg, 'Info', wx.OK | wx.ICON_INFORMATION)
-            return
+        # Not necessary anymore
+        # if semver.match(version, '==1.0.0') and platform.system() != "Windows":
+        #     msg = "To update firmware, please run this program under Windows."
+        #     print(msg)
+        #     wx.MessageBox(msg, 'Info', wx.OK | wx.ICON_INFORMATION)
+        #     return
         if path == False:
             # File browser
             if platform.system() == "Windows":
@@ -1378,6 +1394,7 @@ class MyApp(wx.App):
 
         result = self.frame.can_port(None)
         self.Bind(wx.EVT_KEY_DOWN,self.frame.onKeyDown)
+        self.Bind(wx.EVT_KEY_UP,self.frame.onKeyUp)
 
         self.frame.set_tool_tips(None)
 
