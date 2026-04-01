@@ -327,7 +327,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.onCloseFrame(None)
         if event.GetKeyCode() == 308: # CTRL 
             self.ctrlKey = True
-        elif self.ctrlKey == True and event.GetKeyCode() == 67: # This is looping??
+        elif self.ctrlKey == True and event.GetKeyCode() == 67: # This is looping?? 
             self.calibrate_all(None)
         else:
             event.Skip()
@@ -1130,6 +1130,11 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             if ctspersec > self.peak_velocity:
                 print('Target Velocity Higher than peak motor velocity. Limiting to maximum velocity...')
                 ctspersec = self.peak_velocity
+                cmd_value = round(ctspersec / 4096 * 60 / self.gearRatio)
+                self.text_testvalue.SetValue(str(cmd_value)) 
+            elif ctspersec < -self.peak_velocity:
+                print('Target Velocity Higher than peak motor velocity. Limiting to maximum velocity...')
+                ctspersec = -self.peak_velocity
                 cmd_value = round(ctspersec / 4096 * 60 / self.gearRatio)
                 self.text_testvalue.SetValue(str(cmd_value)) 
             print("Set TargetVelocity = {0}".format(cmd_value) + " RPM")

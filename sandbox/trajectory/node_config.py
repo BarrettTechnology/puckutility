@@ -4,7 +4,7 @@ NODE_CONFIG = {
     3: {
         "joint_name": "flj1",
         "invert_position": False,
-        "tk_per_rev": 4096 * ((1 + 55 / 17) ** 2),  # 18:1 gearbox
+        "tk_per_rev": 4096 * ((1 + 58/14) ** 2) ,  # 26:1 gearbox
         "Position_Kp": 30,
         "Velocity_Kp": 0.0025,
         "Velocity_Ki": 0.0,
@@ -13,7 +13,7 @@ NODE_CONFIG = {
     13: {
         "joint_name": "flj2",
         "invert_position": False,
-        "tk_per_rev": 4096 * ((1 + 55 / 17) ** 2),  # 18:1 gearbox
+        "tk_per_rev": 4096 * ((1 + 58/14) ** 2) ,  # 26:1 gearbox
         "Position_Kp": 30,
         "Velocity_Kp": 0.0025,
         "Velocity_Ki": 0.0,
@@ -22,7 +22,7 @@ NODE_CONFIG = {
     14: {
         "joint_name": "flj3",
         "invert_position": False,
-        "tk_per_rev": 4096 * ((1 + 55 / 17) ** 2),  # 18:1 gearbox
+        "tk_per_rev": 4096 * ((1 + 58/14) ** 2) ,  # 26:1 gearbox
         "Position_Kp": 30,
         "Velocity_Kp": 0.0025,
         "Velocity_Ki": 0.0,

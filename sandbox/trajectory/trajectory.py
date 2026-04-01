@@ -254,6 +254,7 @@ def return_to_start_position(nodes, first_node, positions):
     # Allow the final CSP position to be transmitted repeatedly for a few cycles.
     # This drops the interpolator's calculated velocity to 0, preventing the
     # motor from extrapolating and "drifting" when we stop the RPDO.
+    return
     import time
     time.sleep(0.2)
 
