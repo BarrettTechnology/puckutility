@@ -39,20 +39,18 @@ import threading
 import wx.lib.agw.pygauge as PG
 
 # TODO
-# Add hotkeys for scan / cal etc.
-# update all firmware shouldn't ask for the file each time??
+# Add hotkeys to help guide!
 # Look into possible issues with Pucks responding to sync messages when not in focus (this appears to be caused by COB ID only being updated when configuration is set)
 # If connection is lost, something needs to reset the on/off *** This is very annoying
 # Need to make sure calibration idles if failed (doesn't wait for display choice)
 # Cal should not run (or at least not crash program in event there is no puck connected)
-# 115 keeps showing up as a node in system config??
-# Add menu item for system config!!
 # SHOULD use RPDOs to handle control mode in the future and command values! This is the correct way to handle (needs an issue and addition for v1.1.5)
-# Do not clear tpdo 1 and 2, use these in the monitor / position
+# Do not clear tpdo 1 and 2, use these in the monitor / position # THIS WOULD BE LOVELY
 # refresh looks awful on windows
 # Calibration steps individually still popup issue for multiple cal
-# Firmware update to flashp4.py to program multiple pucks at once??
-# Sometimes the progress bar is blocking our status messages
+# Firmware update to flashp4.py to program multiple pucks at once?? - nice to have 
+# Sometimes the progress bar is blocking our status messages - fix??
+# Need to update menu bar to include hotkeys
 
 def get_version(vers): # Convert uint32_t to semantic version: Major.Minor.Patch
     return "{0}.{1}.{2}".format(
@@ -314,6 +312,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         dc.Clear()
         dc.DrawBitmap(self.backgroundBMP, 0, 0)
 
+    # HOTKEYS
+
     def onKeyUp(self,event):
         if event.GetKeyCode() == 308:
             self.ctrlKey = False
@@ -321,15 +321,26 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             event.Skip()
 
     def onKeyDown(self,event):
-        # event.Skip()
-        # print(event.GetKeyCode())
+        # https://archie-adams.github.io/keyboard-shortcut-map-maker/ to make map!
+        # print(event.GetKeyCode())# Use to print key code
         if event.GetKeyCode() == 27: # ESC
             self.onCloseFrame(None)
         elif event.GetKeyCode() == 308: # CTRL 
             self.ctrlKey = True
-        elif self.ctrlKey == True and event.GetKeyCode() == 67: # This is looping?? 
-            print('hotkey!')
+        elif self.ctrlKey == True and event.GetKeyCode() == 67: # CTRL-C = Cal
             self.calibrate_all(None)
+        elif self.ctrlKey == True and event.GetKeyCode() == 85: # CTRL-U = Update # allow .ini system config files?
+            self.update_all(None)
+        elif self.ctrlKey == True and event.GetKeyCode() == 83: # CTRL-S = Scan 
+            self.scan_pucks(None)
+        elif self.ctrlKey == True and event.GetKeyCode() == 80: # CTRL-P = Play/Pause ADC Monitor
+            # Trigger button 
+            if self.ADC_ON == False:
+                self.onoff1.SetValue(1)
+            elif self.ADC_ON == True:
+                self.onoff1.SetValue(0)
+            # ON/OFF 
+            self.on_off_adc(self)
         else:
             event.Skip()
             return
@@ -779,6 +790,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         can_device = self.choice_port.GetStringSelection()
         node_id = self.choice_id.GetString(self.choice_id.GetSelection())
 
+        # LET flash program handle version!!
+
         # Determine bootloader version
         # 1 = Windows blhost.exe
         # 2 = Win/Lin flashp3.py
@@ -795,14 +808,14 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         # - RSF5 firmware = RESET
         # - CANopen firmware = RESET
 
-        self.network.send_message(int(node_id), [0x5A, 0xA6]) # Ping command
-        time.sleep(0.2) # Wait for reboot
-        try:
-            version = get_version(self.node.sdo['MfgSoftwareVersion'].raw)
-        except:
-            version = get_version(1 << 24) # Assume version 1.0.0
+        # self.network.send_message(int(node_id), [0x5A, 0xA6]) # Ping command
+        # time.sleep(0.2) # Wait for reboot
+        # try:
+        #     version = get_version(self.node.sdo['MfgSoftwareVersion'].raw)
+        # except:
+        #     version = get_version(1 << 24) # Assume version 1.0.0
 
-        print("Found bootloader version: {0}".format(version))
+        # print("Found bootloader version: {0}".format(version))
         # Not necessary anymore
         # if semver.match(version, '==1.0.0') and platform.system() != "Windows":
         #     msg = "To update firmware, please run this program under Windows."
@@ -821,11 +834,11 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                           style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST) as fileDialog:
                 if fileDialog.ShowModal() == wx.ID_CANCEL:
                     # Transmit an NMT reboot command to this node
-                    print("Rebooting puck")
-                    self.network.send_message(0x0, [0x81, int(node_id)])
-                    time.sleep(0.5) # wait for puck to reboot (avoids loss of communication)
-                    # self.network.send_message(0x4, [self.LAUNCH, int(node_id)])
-                    self.configure_Puck()
+                    # print("Rebooting puck")
+                    # self.network.send_message(0x0, [0x81, int(node_id)])
+                    # time.sleep(0.5) # wait for puck to reboot (avoids loss of communication)
+                    # # self.network.send_message(0x4, [self.LAUNCH, int(node_id)])
+                    # self.configure_Puck()
                     if self.adcWasON == True:
                         self.on_off_adc(self)
                     return     # the user changed their mind

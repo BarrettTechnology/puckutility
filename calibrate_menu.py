@@ -7,7 +7,7 @@ import webbrowser
 import configparser
 import platform
 
-# TODO - added calibrate all pucks feature
+# TODO - No active issues
 
 class calibrate():
     def calibrate_all_pucks(self, event):
@@ -683,12 +683,12 @@ class calibrate():
         with wx.FileDialog(self, "Select firmware file", directory, wildcard="BIN files (*.bin;*.ebin)|*.bin;*.ebin",
                       style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST) as fileDialog:
             if fileDialog.ShowModal() == wx.ID_CANCEL:
-                # Transmit an NMT reboot command to this node
-                print("Rebooting puck")
-                self.network.send_message(0x0, [0x81, int(node_id)])
-                time.sleep(0.5) # wait for puck to reboot (avoids loss of communication)
-                # self.network.send_message(0x4, [self.LAUNCH, int(node_id)])
-                self.configure_Puck()
+                # Transmit an NMT reboot command to this node - No need for reboot! 
+                # print("Rebooting puck")
+                # self.network.send_message(0x0, [0x81, int(self.node_id)])
+                # time.sleep(0.5) # wait for puck to reboot (avoids loss of communication)
+                # # self.network.send_message(0x4, [self.LAUNCH, int(node_id)])
+                # self.configure_Puck()
                 if self.adcWasON == True:
                     self.on_off_adc(self)
                 return     # the user changed their mind
