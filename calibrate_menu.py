@@ -674,6 +674,12 @@ class calibrate():
         starting_id = self.getID()
 
         # File browser
+        if platform.system() == "Windows":
+            directory = '../firmware'
+        else:
+            directory = 'firmware/'
+
+        # File browser
         with wx.FileDialog(self, "Select firmware file", directory, wildcard="BIN files (*.bin;*.ebin)|*.bin;*.ebin",
                       style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST) as fileDialog:
             if fileDialog.ShowModal() == wx.ID_CANCEL:

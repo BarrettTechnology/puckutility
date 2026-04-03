@@ -321,17 +321,17 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             event.Skip()
 
     def onKeyDown(self,event):
-        event.Skip()
+        # event.Skip()
         # print(event.GetKeyCode())
         if event.GetKeyCode() == 27: # ESC
             self.onCloseFrame(None)
-        if event.GetKeyCode() == 308: # CTRL 
+        elif event.GetKeyCode() == 308: # CTRL 
             self.ctrlKey = True
         elif self.ctrlKey == True and event.GetKeyCode() == 67: # This is looping?? 
+            print('hotkey!')
             self.calibrate_all(None)
         else:
             event.Skip()
-        # Add ctrl C, ctrl S, 
             return
     
     def setID(self,i):
