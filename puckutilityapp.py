@@ -51,6 +51,7 @@ import wx.lib.agw.pygauge as PG
 # Firmware update to flashp4.py to program multiple pucks at once?? - nice to have 
 # Sometimes the progress bar is blocking our status messages - fix??
 # Need to update menu bar to include hotkeys
+# WIDEN ERROR BOUNDS FOR CAL
 
 def get_version(vers): # Convert uint32_t to semantic version: Major.Minor.Patch
     return "{0}.{1}.{2}".format(
@@ -1140,16 +1141,17 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             ctspersec = cmd_value * 4096 / 60 * self.gearRatio
             print("Set Target Velocity = {0}".format(cmd_value) + " RPM")
             # print('Ctspersec: {}'.format(ctspersec))
-            if ctspersec > self.peak_velocity:
-                print('Target Velocity Higher than peak motor velocity. Limiting to maximum velocity...')
-                ctspersec = self.peak_velocity
-                cmd_value = round(ctspersec / 4096 * 60 / self.gearRatio)
-                self.text_testvalue.SetValue(str(cmd_value)) 
-            elif ctspersec < -self.peak_velocity:
-                print('Target Velocity Higher than peak motor velocity. Limiting to maximum velocity...')
-                ctspersec = -self.peak_velocity
-                cmd_value = round(ctspersec / 4096 * 60 / self.gearRatio)
-                self.text_testvalue.SetValue(str(cmd_value)) 
+            # Used to fix old max velocity bug! No longer relevant
+            # if ctspersec > self.peak_velocity:
+            #     print('Target Velocity Higher than peak motor velocity. Limiting to maximum velocity...')
+            #     ctspersec = self.peak_velocity
+            #     cmd_value = round(ctspersec / 4096 * 60 / self.gearRatio)
+            #     self.text_testvalue.SetValue(str(cmd_value)) 
+            # elif ctspersec < -self.peak_velocity:
+            #     print('Target Velocity Higher than peak motor velocity. Limiting to maximum velocity...')
+            #     ctspersec = -self.peak_velocity
+            #     cmd_value = round(ctspersec / 4096 * 60 / self.gearRatio)
+            #     self.text_testvalue.SetValue(str(cmd_value)) 
             print("Set TargetVelocity = {0}".format(cmd_value) + " RPM")
             self.node.sdo["TargetVelocity"].raw = ctspersec # Send
 

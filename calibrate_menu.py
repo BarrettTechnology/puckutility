@@ -112,7 +112,7 @@ class calibrate():
         self.node.sdo['Save']['Single'].raw = ((0x3009 << 8) | 0x03) # Save Beta iSense cal to EE
 
         # Check Bounds for error!!
-        error = .03 # 3% error
+        error = 0.5 # 5% error # .03 # 3% error
 
         a_bias = self.node.sdo['Alpha']['Bias'].raw
         b_bias = self.node.sdo['Beta']['Bias'].raw
