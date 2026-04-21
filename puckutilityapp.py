@@ -39,19 +39,19 @@ import threading
 import wx.lib.agw.pygauge as PG
 
 # TODO
+# If gainfactor is 0 don't run calc and fail
 # Add logging that outputs all text to .log file w/ 10 files backup
 # Set cal / config required flag if going from v3 -> v4 or reverse
 # Setup confirmation of Puck type prior to configuring and raise error if not a match
 # Auto focus when coming out of disabled??
-# Add hotkeys to help guide!
+# Add hotkeys to help guide! ******************************
 # Look into possible issues with Pucks responding to sync messages when not in focus (this appears to be caused by COB ID only being updated when configuration is set)
-# If connection is lost, something needs to reset the on/off *** This is very annoying
+# SET FLAG ^^ IF ID is changed so that config must be reuploaded
 # SHOULD use RPDOs to handle control mode in the future and command values! This is the correct way to handle (needs an issue and addition for v1.1.5)
-# Do not clear tpdo 1 and 2, use these in the monitor / position # THIS WOULD BE LOVELY
-# refresh looks awful on windows
+# Do not clear tpdo 1 and 2, use these in the monitor / position # THIS WOULD BE LOVELY *************
+# Refresh looks awful on windows # ehhh not much we can do here
 # Calibration steps individually still popup issue for multiple cal
 # Firmware update to flashp4.py to program multiple pucks at once?? - nice to have 
-# Sometimes the progress bar is blocking our status messages - fix??
 # Need to update menu bar to include hotkeys
 # WIDEN ERROR BOUNDS FOR CAL
 
@@ -134,6 +134,10 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
         self.progressbar_EN = True # False
         self.update = []
+
+        # Extra Safety Flags
+        self.requireCal = False
+        self.requireConfig = False
 
         # Barrett colors
         self.blue = '#253B92'
@@ -520,6 +524,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         else:
             self.adcWasON = False
 
+        self.progress.Hide()
+
         self.frame_statusbar.SetStatusText("Scanning Pucks...", 1)
         self.frame_statusbar.Update()
         wx.Yield()
@@ -578,6 +584,12 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                             dlg = wx.MessageDialog(None,msg)
                             dlg.ShowModal()
                             dlg.Destroy()
+                            # Set ADC Monitor Button Off after lost connection
+                            self.ADC_ON == False
+                            self.onoff1.SetValue(0) # Only sets button off
+                            # Reset MyApp nodes
+                            MyApp.updateNodes(self, self.network.scanner.nodes)
+
                 except:
                     # print('No Pucks Found') # Establish error for no pucks
                     # msg = 'No Pucks Found! \nDebug:\nPower Connection\nCAN Connection\n\nVerify Connection and Retry'
@@ -604,13 +616,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                         self.scan_pucks(None)
                 except:
                     pass
-
-        # THESE ARE NOT PROPERLY DIFFERENTIATING BETWEEN CAN DEVICE FAIL AND NO PUCKS
-        # May want to try to initialize can_port if scan_pucks is run with no active device!!         # Set adcon off and button off automatically
-        # if self.adcWasON == True:
-        #     print('Turning off ADC Monitor...')
-        #     self.adcWasON = False
-        #     self.onoff1.SetValue(0)
 
         if skipADC == True:
             pass
@@ -736,7 +741,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             dlg.ShowModal()
             dlg.Destroy()
             return
-        if int(self.text_id.GetValue()) > 127 or int(self.text_id.GetValue()) < 1:
+        if int(self.text_id.GetValue()) < 1: # or int(self.text_id.GetValue()) > 127: # Try to stop 127 loop
             # Error message - resets ID to active if error
             indexID = self.network.scanner.nodes.index(self.getID())
             self.text_id.ChangeValue(str(self.getID()))
@@ -1056,6 +1061,9 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             dlg.ShowModal()
             dlg.Destroy()
             return
+        elif self.requireCal or self.requireConfig:
+            print('Needs cal or config...')
+            return
         
         quick_test = self.choice_test.GetSelection()
         if quick_test == 0:
@@ -1359,13 +1367,16 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
     def on_off_adc(self,event):
         try:
             if len(MyApp.getNodes(self)) > 0:
+                # print(event.GetId())
                 if self.ADC_ON == False:
                     print('Turning on ADC Monitor...')
                     # Start sync transmission
                     self.network.sync.start(0.01)
                     #Turn on ADC Monitoring
                     self.ADC_ON = True
-                    # self.onoff1.SetValue(1)
+                    # if event.getId() == '-31989':
+                    #     print('yes')
+                    #     self.onoff1.SetValue(1)
 
                 elif self.ADC_ON == True:
                     print('Turning off ADC Monitor...')
@@ -1389,6 +1400,9 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
                     img = wx.Image('images/dialnobgcroppedscaled.png')
                     self.Dial.SetBitmap(img)
+                    # if event.getId() == '-31989':
+                    #     print('yes')
+                    #     self.onoff1.SetValue(0)
                     # self.onoff1.SetValue(0)
             else:
                 print('No Puck Connected -')
