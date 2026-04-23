@@ -41,7 +41,6 @@ import argparse
 import configparser
 
 # TODO
-# When a file is dropped, the icon hangs??
 # Need to detect faults and automatically setup the app back into idle!
 # If gainfactor is 0 don't run calc and fail
 # Set cal / config required flag if going from v3 -> v4 or reverse
@@ -1050,7 +1049,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         if self.adcWasON == True:
             self.on_off_adc(self)
             self.adcWasON = False
-    
+
     def select_test(self, event):  # wxGlade: wxp3_frame.<event_handler>
         #print("Event handler 'select_test'")
         
