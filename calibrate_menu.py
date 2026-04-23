@@ -7,6 +7,11 @@ import webbrowser
 import configparser
 import platform
 
+def _strip_ini_quotes(value):
+    if value and len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+        return value[1:-1]
+    return value if value else value
+
 # TODO - No active issues
 
 class calibrate():
@@ -744,22 +749,22 @@ class calibrate():
         config = configparser.ConfigParser()
         config.read(filepath)
         options = config.sections()
-        fw_version = config['DEFAULT']['fw_version']
-        fwpath = config['DEFAULT']['fw']
         for option in options:
             print(option)
             config_id = int(config[option]['ID'])
+            fw_version = config[option].get('fw_version')
+            fwpath = _strip_ini_quotes(config[option].get('fw'))
             if config_id == self.ID: # Check if config_id is in getNodes()
                 print("Found defaults for Puck {}!".format(config_id))
                 # firmware
                 version = self.get_version(self.node.sdo['MfgSoftwareVersion'].raw)
                 # print(version)
-                if version != fw_version:
+                if fw_version and fwpath and version != fw_version:
                   print('Version {} found. Updating firmware to {}'.format(version, fw_version))
                   self.browse_fw(None, fwpath)
                 else:
                   print('Version {} found.'.format(version))
-                csvpath = config[option]['CSV']
+                csvpath = _strip_ini_quotes(config[option]['CSV'])
                 # print(csvpath)
                 self.file_to_p3(None, csvpath)
                 break

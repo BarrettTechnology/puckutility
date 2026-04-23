@@ -41,6 +41,7 @@ import argparse
 import configparser
 
 # TODO
+# When a file is dropped, the icon hangs??
 # Need to detect faults and automatically setup the app back into idle!
 # If gainfactor is 0 don't run calc and fail
 # Set cal / config required flag if going from v3 -> v4 or reverse
@@ -84,9 +85,8 @@ class DropTarget(wx.FileDropTarget):
         self.window = window
 
     def OnDropFiles(self,x,y,filenames):
-        # print('you dropped it!!!!!')
         for filepath in filenames:
-            self.window.ProcessDroppedFile(filepath)
+            wx.CallAfter(self.window.ProcessDroppedFile, filepath)
         return True
 
 # Build class, then set drop target as frame
@@ -1759,11 +1759,15 @@ def _cli_calibrate_all(node):
     print("  Calibration complete!")
     return True
 
+def _ini_path(value):
+    """Strip optional surrounding quotes from an INI path value."""
+    if value and len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+        return value[1:-1]
+    return value
+
 def _cli_system_config(can_device, ini_path):
     cfg = configparser.ConfigParser()
     cfg.read(ini_path)
-    fw_version = cfg['DEFAULT']['fw_version']
-    fw_path = cfg['DEFAULT']['fw']
 
     network, found_ids = _cli_connect(can_device)
     network.disconnect()
@@ -1771,24 +1775,26 @@ def _cli_system_config(can_device, ini_path):
     configured_ids = []
     for section in cfg.sections():
         node_id = int(cfg[section]['ID'])
-        csv_path = cfg[section]['CSV']
+        csv_path = _ini_path(cfg[section]['CSV'])
+        fw_version = cfg[section].get('fw_version')
+        fw_path = _ini_path(cfg[section].get('fw'))
         if node_id not in found_ids:
             print(f"Node {node_id} ({section}) not found on bus, skipping.")
             continue
         print(f"\n--- Configuring node {node_id} ({section}) ---")
-        # Check firmware version before uploading config
-        ver_net = _cli_make_network(can_device)
-        ver_node = ver_net.add_node(node_id, 'puck4.eds')
-        version = get_version(ver_node.sdo['MfgSoftwareVersion'].raw)
-        ver_net.disconnect()
-        if version != fw_version:
-            print(f"  Firmware {version} → updating to {fw_version}...")
-            time.sleep(0.2)
-            if not _cli_flash(can_device, node_id, fw_path):
-                print(f"  Skipping config for node {node_id} due to flash failure.")
-                continue
-        else:
-            print(f"  Firmware {version} up to date.")
+        if fw_version and fw_path:
+            ver_net = _cli_make_network(can_device)
+            ver_node = ver_net.add_node(node_id, 'puck4.eds')
+            version = get_version(ver_node.sdo['MfgSoftwareVersion'].raw)
+            ver_net.disconnect()
+            if version != fw_version:
+                print(f"  Firmware {version} → updating to {fw_version}...")
+                time.sleep(0.2)
+                if not _cli_flash(can_device, node_id, fw_path):
+                    print(f"  Skipping config for node {node_id} due to flash failure.")
+                    continue
+            else:
+                print(f"  Firmware {version} up to date.")
         _cli_config(can_device, node_id, csv_path)
         configured_ids.append(node_id)
 
