@@ -41,8 +41,8 @@ import argparse
 import configparser
 
 # TODO
+# Need to detect faults and automatically setup the app back into idle!
 # If gainfactor is 0 don't run calc and fail
-# Add logging that outputs all text to .log file w/ 10 files backup
 # Set cal / config required flag if going from v3 -> v4 or reverse
 # Setup confirmation of Puck type prior to configuring and raise error if not a match
 # Auto focus when coming out of disabled??
@@ -1479,6 +1479,53 @@ class MyApp(wx.App):
     def getNodes(self):
         return wx.App.Nodes
 
+# ---- Logging ----------------------------------------------------------------
+
+def _setup_logging():
+    """Tee stdout/stderr to a timestamped log file. Keeps the 10 most recent logs."""
+    log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
+    os.makedirs(log_dir, exist_ok=True)
+
+    # Rotate: remove oldest logs until fewer than 10 exist (making room for this one)
+    existing = sorted(
+        f for f in os.listdir(log_dir) if f.startswith('puck_') and f.endswith('.log')
+    )
+    while len(existing) >= 10:
+        os.remove(os.path.join(log_dir, existing.pop(0)))
+
+    timestamp = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+    log_path = os.path.join(log_dir, f'puck_{timestamp}.log')
+
+    try:
+        log_file = open(log_path, 'w', buffering=1)
+    except OSError as e:
+        print(f"Warning: could not open log file {log_path}: {e}")
+        return
+
+    log_file.write(f"=== Puck Utility App ===\n")
+    log_file.write(f"Started : {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+    log_file.write(f"Command : {' '.join(sys.argv)}\n")
+    log_file.write(f"{'=' * 23}\n\n")
+    log_file.flush()
+
+    class _Tee:
+        def __init__(self, original, log):
+            self._original = original
+            self._log = log
+        def write(self, data):
+            self._original.write(data)
+            self._log.write(data)
+        def flush(self):
+            self._original.flush()
+            self._log.flush()
+        def fileno(self):
+            return self._original.fileno()
+        def isatty(self):
+            return self._original.isatty()
+
+    sys.stdout = _Tee(sys.stdout, log_file)
+    sys.stderr = _Tee(sys.stderr, log_file)
+
 # ---- CLI helpers (no wx dependency) ----------------------------------------
 
 class CLIProgress:
@@ -1758,6 +1805,8 @@ def _cli_system_config(can_device, ini_path):
 # ---- Entry point ------------------------------------------------------------
 
 if __name__ == "__main__":
+    _setup_logging()
+
     parser = argparse.ArgumentParser(
         prog='puckutilityapp.py',
         description='Puck Utility App — launches GUI when run with no arguments, '
@@ -1791,6 +1840,8 @@ Examples:
                         help='Scan the bus and apply operation to all discovered pucks')
 
     ops = parser.add_mutually_exclusive_group()
+    ops.add_argument('--scan', action='store_true',
+                     help='Scan the CAN bus and print all discovered node IDs')
     ops.add_argument('--flash', metavar='FIRMWARE',
                      help='Path to firmware file (.bin or .ebin)')
     ops.add_argument('--config', metavar='CSV',
@@ -1808,32 +1859,48 @@ Examples:
         app.MainLoop()
         sys.exit(0)
 
+    # All operations require --can
+    if not args.can:
+        parser.error('--can is required')
+
+    # --scan: list nodes on the bus and exit
+    if args.scan:
+        net, found = _cli_connect(args.can)
+        net.disconnect()
+        sys.exit(0)
+
     # --system-config is self-contained; --id/--all are not used with it
     if args.system_config:
-        if not args.can:
-            parser.error('--can is required with --system-config')
         _cli_system_config(args.can, args.system_config)
         sys.exit(0)
 
-    # All other operations need --can and (--id or --all)
-    if not args.can:
-        parser.error('--can is required')
+    # Remaining operations need an explicit target
     if not args.id and not args.all:
         parser.error('specify target nodes with --id or use --all to scan')
     if not (args.flash or args.config or args.calibrate):
-        parser.error('specify an operation: --flash, --config, --calibrate, or --system-config')
+        parser.error('specify an operation: --scan, --flash, --config, --calibrate, or --system-config')
 
-    # Resolve node list
+    # Always scan first so we can validate requested IDs against the live bus
+    scan_net, found_ids = _cli_connect(args.can)
+    scan_net.disconnect()
+    if not found_ids:
+        print("No nodes found on bus.")
+        sys.exit(1)
+
     if args.all:
-        scan_net, node_ids = _cli_connect(args.can)
-        scan_net.disconnect()
-        if not node_ids:
-            print("No nodes found on bus.")
-            sys.exit(1)
+        node_ids = found_ids
     else:
-        node_ids = args.id
+        node_ids = []
+        for nid in args.id:
+            if nid in found_ids:
+                node_ids.append(nid)
+            else:
+                print(f"Warning: node {nid} not found on bus, skipping.")
+        if not node_ids:
+            print("None of the requested nodes are present on the bus.")
+            sys.exit(1)
 
-    # Execute operation across all target nodes
+    # Execute operation across all validated target nodes
     if args.calibrate:
         cal_net = _cli_make_network(args.can)
     for node_id in node_ids:
