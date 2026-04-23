@@ -153,7 +153,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
         # Setup Window + Icon
         self.SetIcon(wx.Icon('images/BarrettIcon.png'))
-        self.SetTitle("Puck Utility App - v1.1.5 DEV")
+        self.SetTitle("Puck Utility App - v1.2.0 DEV")
         self.button_6.SetBackgroundColour(self.gray) # Initialize with gray button in idle
         self.Bind(wx.EVT_KEY_DOWN,self.onKeyDown)
         self.Bind(wx.EVT_KEY_UP,self.onKeyUp)
