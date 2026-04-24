@@ -42,7 +42,7 @@ import argparse
 import configparser
 
 # TODO
-# Need to detect faults and automatically setup the app back into idle!
+# Need to detect faults and automatically setup the app back into idle! This may go in monitor?
 # If gainfactor is 0 don't run calc and fail
 # Set cal / config required flag if going from v3 -> v4 or reverse
 # Setup confirmation of Puck type prior to configuring and raise error if not a match
@@ -437,42 +437,84 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.node.tpdo.read()
             self.node.rpdo.read()
         except:
+            print('Failed to read PDOs...')
             pass
 
+        if self.node.rpdo[1].cob_id is None:
+            self.node.rpdo[1].cob_id = 0x200 + node_id
+        if self.node.rpdo[2].cob_id is None:
+            self.node.rpdo[2].cob_id = 0x300 + node_id
+
+        # Original
+
         # CLear the local copy of the PDO Configs
-        print("Clearing PDOs...")
-        for i in (1,2,3,4):
-            self.node.tpdo[i].clear()
-            self.node.rpdo[i].clear()
+        # print("Clearing PDOs...")
+        # for i in (1,2,3,4):
+        #     self.node.tpdo[i].clear()
+        #     self.node.rpdo[i].clear()
 
         # 8-bytes (64 bits) per PDO - make sure there is space for each data type || split PDOs to fit (can change sync timing per PDO as well)
-        print("Configuring TPDO3 and TPDO4 for ADC Monitor...") 
-        self.node.tpdo[2].add_variable('i2t','Value') # (0x3025,1) i2t Value - "Value" (16 bit)
-        self.node.tpdo[3].add_variable('CurrentFeedback') # Iq - "CurrentFeedback" (16 bit)
-        self.node.tpdo[3].add_variable('Amplifier','Temperature') # (0x3000,2) Puck Temp - "Temperature" (16 bit)
-        self.node.tpdo[3].add_variable('Motor','Therm') # (0x3010,3) Motor Temp - "Therm" (16 bit)
-        self.node.tpdo[4].add_variable('PositionFeedback') # (0x6064, 0) Position - "PositionFeedback" (32 bit)
-        self.node.tpdo[4].add_variable('VelocityFeedback')# (0x606C,0) Velocity - "VelocityFeedback" (32 bit)
-        self.node.tpdo[2].trans_type = 10 # TX on every 10th sync
-        self.node.tpdo[2].enabled = True
-        self.node.tpdo[3].trans_type = 10 # TX on every 10th sync
-        self.node.tpdo[3].enabled = True
-        self.node.tpdo[4].trans_type = 0 # TX on every sync
-        self.node.tpdo[4].enabled = True
+        # print("Configuring TPDO3 and TPDO4 for ADC Monitor...") 
+        # self.node.tpdo[2].add_variable('i2t','Value') # (0x3025,1) i2t Value - "Value" (16 bit)
+        # self.node.tpdo[3].add_variable('CurrentFeedback') # Iq - "CurrentFeedback" (16 bit)
+        # self.node.tpdo[3].add_variable('Amplifier','Temperature') # (0x3000,2) Puck Temp - "Temperature" (16 bit)
+        # self.node.tpdo[3].add_variable('Motor','Therm') # (0x3010,3) Motor Temp - "Therm" (16 bit)
+        # self.node.tpdo[4].add_variable('PositionFeedback') # (0x6064, 0) Position - "PositionFeedback" (32 bit)
+        # self.node.tpdo[4].add_variable('VelocityFeedback')# (0x606C,0) Velocity - "VelocityFeedback" (32 bit)
+        # self.node.tpdo[2].trans_type = 10 # TX on every 10th sync
+        # self.node.tpdo[2].enabled = True
+        # self.node.tpdo[3].trans_type = 10 # TX on every 10th sync
+        # self.node.tpdo[3].enabled = True
+        # self.node.tpdo[4].trans_type = 0 # TX on every sync
+        # self.node.tpdo[4].enabled = True
+
+        # NEW
+
+        print("Configuring TPDOs...")
+        try:
+            # Use self.node consistently
+            self.node.tpdo.read() 
+            
+            # Configure TPDO 3
+            self.node.tpdo[3].clear()
+            self.node.tpdo[3].add_variable('Amplifier', 'Temperature')
+            self.node.tpdo[3].add_variable('Motor', 'Therm')
+            self.node.tpdo[3].trans_type = 10 
+            self.node.tpdo[3].enabled = True
+            
+            # Apply changes to the hardware
+            self.node.tpdo.save()
+            
+        except Exception as e:
+            print(f"Failed to set up TPDOs: {e}")
+
+        # 2. Assign Callbacks
+        self.node.tpdo[1].add_callback(self.tpdo1_callback)
+        self.node.tpdo[2].add_callback(self.tpdo2_callback)
+        self.node.tpdo[3].add_callback(self.tpdo3_callback)
+
+        # node.tpdo[3].clear()
+        # node.tpdo[3].add_variable('Amplifier', 'Temperature')
+        # node.tpdo[3].add_variable('Motor', 'Therm')
+        # node.tpdo[3].trans_type = 10 
+        # node.tpdo[3].enabled = True
+
+        ###
 
         print("Writing TPDO's...")
         try:
             self.node.tpdo.save()
             # Write the new (empty) RPDO config to the device
             self.node.rpdo.save()
-        except:
-            print("Failed to set up TPDO's. Disabling monitor...")
+        except Exception as e:
+            print(f"Failed to set up TPDO's. Error: {e}\nDisabling monitor...")
             pass
 
         # Each time we receive this PDO from the puck, execute a callback
-        self.node.tpdo[2].add_callback(self.tpdo2_callback)
-        self.node.tpdo[3].add_callback(self.tpdo3_callback)
-        self.node.tpdo[4].add_callback(self.tpdo4_callback)
+        # node.tpdo[1].add_callback(self.tpdo1_callback)
+        # node.tpdo[2].add_callback(self.tpdo2_callback)
+        # node.tpdo[3].add_callback(self.tpdo3_callback)
+        # self.node.tpdo[4].add_callback(self.tpdo4_callback)
 
         self.node.sdo["HeartbeatPeriod"].raw = 0
 
@@ -1126,6 +1168,13 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             # Set Go Color to Orange
             self.button_6.SetBackgroundColour(self.orange)
 
+        # Verify state (Optional but recommended)
+        status = self.node.sdo["StatusWord"].raw
+        if (status & 0x6F) == 0x27:
+            print("Drive is ENABLED and ready.")
+        else:
+            print(f"Drive NOT enabled. StatusWord: {hex(status)}")
+
         if quick_test == 1: # Torque
             # Set Mode to Torque (4)
             print("Setting Mode = TORQUE")
@@ -1137,8 +1186,10 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         elif quick_test == 3: # Position
             # Set Mode to Position (1)
             print("Setting Mode = POSITION")
-            self.node.sdo["SetModeOfOperation"].raw = 1
-            self.node.sdo["ControlWord"].raw = 0x2F # Immediate position mode (not buffered)
+            self.node.rpdo[1]["SetModeOfOperation"].raw = 1
+            # self.node.rpdo[1].transmit()
+            self.node.rpdo[1]["ControlWord"].raw = 0x2F # Immediate position mode (not buffered)
+            self.node.rpdo[1].transmit()
             # making Profile Velocity an even RPM to make debugging easier
             # 100 RPM * 4096 cts/sec / 60 sec
             self.node.sdo["ProfileVelocity"].raw = 130000 # cts/s (default)
@@ -1189,7 +1240,10 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             # Needs scaling for accurate gear ratio based torque!!!
             print("Set TargetTorque = {0}".format(cmd_value) + " mNm ({0}".format(round(trq_value/10,2)) + "% max)") # show mNm & percent max
             print("Command CAN value - {}".format(trq_value))
+            # Original
             self.node.sdo["TargetTorque"].raw = trq_value # Send
+            # New
+            # self.node.rpdo[1]["TargetTorque"].raw = trq_value # Send
 
         elif quick_test == 2: # Velocity
             ctspersec = cmd_value * 4096 / 60 * self.gearRatio
@@ -1214,25 +1268,33 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             # Set waypoint entries
             #  607A Target, 6081 Profile Velocity, 6082 Final Velocity, 6083 Accel, 6084 Decel (positive)
             # cmd_value is in degree = 19.1 gear ratio 4096 cts 360 degrees
+            
+            
             ctsvalue = cmd_value / 360 * 4096 * self.gearRatio #* 19.1 # 19.1 for Dev Kit gear ratio 
             print("Set Target Position += {0}".format(cmd_value) + " degrees")
-            self.node.sdo["TargetPosition"].raw = self.node.sdo["PositionFeedback"].raw + ctsvalue # Send
-
+            # original
+            # self.node.sdo["TargetPosition"].raw = self.node.sdo["PositionFeedback"].raw + ctsvalue # Send
+            # New
+            self.node.rpdo[2]["TargetPosition"].raw = self.node.tpdo[1]["PositionFeedback"].raw + ctsvalue # Send
+            self.node.rpdo[2].transmit()
             # Wait for StatusWord[12] == 0 (ready to receive new waypoint)
             while self.node.sdo["StatusWord"].raw & 0x1000:
                 time.sleep(0.01)
             
             # Set ControlWord to 0x3F (Immediate position, New setpoint)
-            self.node.sdo["ControlWord"].raw = 0x3F # Raise new setpoint flag, motor should begin moving
+            self.node.rpdo[1]["ControlWord"].raw = 0x3F # Raise new setpoint flag, motor should begin moving
+            self.node.rpdo[1].transmit()
 
             # Wait for StatusWord[12] == 1 (setpoint acknowledged)
             while not (self.node.sdo["StatusWord"].raw & 0x1000):
+                print('wating for 1')
                 time.sleep(0.01)
 
             # Set ControlWord to 0x2F (clear new setpoint flag)
-            self.node.sdo["ControlWord"].raw = 0x2F
+            self.node.rpdo[1]["ControlWord"].raw = 0x2F
+            self.node.rpdo[1].transmit()
 
-        elif quick_test == 4: # Position step
+        elif quick_test == 4: # Homing
             self.node.sdo["HomingOffset"].raw = int(cmd_value)
             # start homing
             self.node.sdo["ControlWord"].raw |= 0x0010
@@ -1296,7 +1358,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
             # Read ADC for Bus Voltage, format properly, and update Frame
             #currentbyte = self.node.sdo.upload(0x3000,1)
-            current = self.node.tpdo[3]['CurrentFeedback'].raw
+            current = self.node.tpdo[2]['CurrentFeedback'].raw
             current = (current / 1000 * self.i_peak) * 1/math.sqrt(2) / 1000
             currentString = str(round(current,1)) + "A"
             # If current is 0 remove negative sign (if present)
@@ -1339,7 +1401,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
     def getPosition(self): #Get RPM + Update every 10th cycle for 10Hz
         try:
-            encPos = self.node.tpdo[4]['PositionFeedback'].raw
+            encPos = self.node.tpdo[1]['PositionFeedback'].raw
             currentSysTime = time.time() # Get Current System time for accurate calc
             
             encPosRad = encPos * 2.0 * math.pi / self.encoderResolution / self.gearRatio # * 0.0015339 / self.gearRatio # added division by gear ratio 
@@ -1356,7 +1418,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
             #if True: #self.firstRun != True:
                
-            PVel = self.node.tpdo[4]['VelocityFeedback'].raw
+            PVel = self.node.tpdo[2]['VelocityFeedback'].raw
             RPM = PVel * 60 / 4096 / self.gearRatio 
             RPM = round(RPM / 10, 1)
             RPM = abs(round(RPM *10))
