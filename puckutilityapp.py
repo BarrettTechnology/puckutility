@@ -1135,194 +1135,151 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.adcWasON = False
 
     def select_test(self, event):  # wxGlade: wxp3_frame.<event_handler>
-        #print("Event handler 'select_test'")
-        
         if len(self.network.scanner.nodes) == 0:
-            # Error message if no Bus
-            # reset selection
             self.choice_test.SetSelection(0)
             print('No active node!')
             msg = ('No active node!')
-            dlg = wx.MessageDialog(None,msg)
+            dlg = wx.MessageDialog(None, msg)
             dlg.ShowModal()
             dlg.Destroy()
             return
         elif self.requireCal or self.requireConfig:
             print('Needs cal or config...')
             return
-        
+
         quick_test = self.choice_test.GetSelection()
         if quick_test == 0:
-            self.lastMode = 0 # Reset lastMode
+            self.lastMode = 0
             print("Setting Mode = IDLE")
-            self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
-            # Set Go Color to Gray
+            self.node.sdo["SetModeOfOperation"].raw = 0
             self.button_6.SetBackgroundColour(self.gray)
             return
-        else:
-            # Clear faults, RTSO, OpEnabled
-            print("Going OpEnabled")
-            self.node.sdo["ControlWord"].raw = 0x80
-            self.node.sdo["ControlWord"].raw = 0x06
-            self.node.sdo["ControlWord"].raw = 0x0F
-            # Set Go Color to Orange
-            self.button_6.SetBackgroundColour(self.orange)
 
-        # Verify state
+        # Clear faults, RTSO, OpEnabled
+        print("Going OpEnabled")
+        self.node.sdo["ControlWord"].raw = 0x80
+        self.node.sdo["ControlWord"].raw = 0x06
+        self.node.sdo["ControlWord"].raw = 0x0F
+        self.button_6.SetBackgroundColour(self.orange)
+
         status = self.node.sdo["StatusWord"].raw
         if (status & 0x6F) == 0x27:
             print("Drive is ENABLED and ready.")
         else:
             print(f"Drive NOT enabled. StatusWord: {hex(status)}")
 
-        if quick_test == 1: # Torque
-            # Set Mode to Torque (4)
+        if quick_test == 1:  # Torque
             print("Setting Mode = TORQUE")
-            # self.node.sdo["SetModeOfOperation"].raw = 4
             self.node.rpdo[1]["SetModeOfOperation"].raw = 4
+            self.node.rpdo[1]["ControlWord"].raw = 0x0F
             self.node.rpdo[1].transmit()
-            self.node.network.sync.transmit()  
-            # Read back from the 'Display' index to ensure the motor switched
+            self.node.network.sync.transmit()
             if self.node.sdo[0x6061].raw == 4:
                 print("Mode Confirmed")
             else:
-                print("Mode was not properly set...")
-                print(self.node.sdo[0x6061].raw)
+                print(f"Mode was not properly set... (got {self.node.sdo[0x6061].raw})")
 
-        elif quick_test == 2: # Velocity
-            # Set Mode to Velocity (3)
+        elif quick_test == 2:  # Velocity
             print("Setting Mode = VELOCITY")
-            # self.node.sdo["SetModeOfOperation"].raw = 3
             self.node.rpdo[1]["SetModeOfOperation"].raw = 3
+            self.node.rpdo[1]["ControlWord"].raw = 0x0F
             self.node.rpdo[1].transmit()
-            self.node.network.sync.transmit() 
-            # Read back from the 'Display' index to ensure the motor switched
+            self.node.network.sync.transmit()
             if self.node.sdo[0x6061].raw == 3:
                 print("Mode Confirmed")
             else:
-                print("Mode was not properly set...")
-                print(self.node.sdo[0x6061].raw)
+                print(f"Mode was not properly set... (got {self.node.sdo[0x6061].raw})")
 
-        elif quick_test == 3: # Position
-            # Set Mode to Position (1)
+        elif quick_test == 3:  # Position
             print("Setting Mode = POSITION")
-            # 100 RPM * 4096 cts/sec / 60 sec
-            self.node.sdo["ProfileVelocity"].raw = 130000 # cts/s (default)
-            # self.node.sdo["SetModeOfOperation"].raw = 1
-            # self.node.sdo["ControlWord"].raw = 0x2F # Immediate position mode (not buffered)
+            self.node.sdo["ProfileVelocity"].raw = 130000  # 100 RPM default
             self.node.rpdo[1]["SetModeOfOperation"].raw = 1
-            self.node.rpdo[1]["ControlWord"].raw = 0x2F # Immediate position mode (not buffered)
+            self.node.rpdo[1]["ControlWord"].raw = 0x2F  # Immediate position mode
             self.node.rpdo[1].transmit()
-            # The SYNC message tells the Puck to process the data NOW
-            self.node.network.sync.transmit()   
-            # Read back from the 'Display' index to ensure the motor switched
+            self.node.network.sync.transmit()
             if self.node.sdo[0x6061].raw == 1:
                 print("Mode Confirmed")
             else:
-                print("Mode was not properly set...")
-                print(self.node.sdo[0x6061].raw)
+                print(f"Mode was not properly set... (got {self.node.sdo[0x6061].raw})")
 
-        elif quick_test == 4: # Homing
-            print ("Setting Mode = HOMING")
+        elif quick_test == 4:  # Homing
+            print("Setting Mode = HOMING")
             self.node.sdo["SetModeOfOperation"].raw = 6
-            # set text box value to 0
             self.text_testvalue.SetValue("0")
 
     def run_test(self, event):  # wxGlade: wxp3_frame.<event_handler>
-        #print("Event handler 'run_test'")
         if len(self.network.scanner.nodes) == 0:
-            # Error message if no Bus
             print('No active node!')
             msg = ('No active node!')
-            dlg = wx.MessageDialog(None,msg)
+            dlg = wx.MessageDialog(None, msg)
             dlg.ShowModal()
             dlg.Destroy()
             return
-        
-        if len(self.text_testvalue.GetValue()) == 0: 
-            # Error message if no input value
+
+        if len(self.text_testvalue.GetValue()) == 0:
             print('No input value!')
             msg = ('No input value!')
-            dlg = wx.MessageDialog(None,msg)
+            dlg = wx.MessageDialog(None, msg)
             dlg.ShowModal()
             dlg.Destroy()
             return
-        
+
         quick_test = self.choice_test.GetSelection()
         cmd_value = float(self.text_testvalue.GetValue())
 
         if quick_test == 0:
-            # Error Message
             print('No mode selected!')
             msg = ('No mode selected!')
-            dlg = wx.MessageDialog(None,msg)
+            dlg = wx.MessageDialog(None, msg)
             dlg.ShowModal()
             dlg.Destroy()
 
-        elif quick_test == 1: # Torque
+        elif quick_test == 1:  # Torque
             rated_torque = self.node.sdo["RatedTorque"].raw
             if abs(cmd_value / self.gearRatio) > rated_torque:
-                cmd_value = math.copysign(rated_torque * self.gearRatio, cmd_value) # Saturate
-            trq_value = round(cmd_value * 1000 / (rated_torque * self.gearRatio)) # Scale
-            # Needs scaling for accurate gear ratio based torque!!!
-            print("Set TargetTorque = {0}".format(cmd_value) + " mNm ({0}".format(round(trq_value/10,2)) + "% max)") # show mNm & percent max
-            print("Command CAN value - {}".format(trq_value))
-            # Original
-            # self.node.sdo["TargetTorque"].raw = trq_value # Send
-            # New
-            self.node.rpdo[1]["TargetTorque"].raw = trq_value # Send
-
-        elif quick_test == 2: # Velocity
-            ctspersec = cmd_value * 4096 / 60 * self.gearRatio
-            print("Set Target Velocity = {0}".format(cmd_value) + " RPM") 
-            print("Set TargetVelocity = {0}".format(cmd_value) + " RPM")
-            # self.node.sdo["TargetVelocity"].raw = ctspersec # Send
-            self.node.rpdo[2]["TargetVelocity"].raw = ctspersec # Send
-            self.node.rpdo[2].transmit()
-            self.node.network.sync.transmit()
-        elif quick_test == 3: # Position step
-            # On position update
-            # Set waypoint entries
-            # 607A Target, 6081 Profile Velocity, 6082 Final Velocity, 6083 Accel, 6084 Decel (positive)
-            # cmd_value is in degree = 19.1 gear ratio 4096 cts 360 degrees
-            ctsvalue = cmd_value / 360 * 4096 * self.gearRatio # 19.1 for Dev Kit gear ratio 
-            print("Set Target Position += {0}".format(cmd_value) + " degrees")
-            # original
-            # self.node.sdo["TargetPosition"].raw = self.node.sdo["PositionFeedback"].raw + ctsvalue # Send
-            # New
-            self.node.rpdo[2]["TargetPosition"].raw = self.node.tpdo[1]["PositionFeedback"].raw + ctsvalue # Send
-            self.node.rpdo[2].transmit()
-            self.node.network.sync.transmit()
-            # Wait for StatusWord[12] == 0 (ready to receive new waypoint)
-            while self.node.sdo["StatusWord"].raw & 0x1000:
-                time.sleep(0.01)
-            
-            # Set ControlWord to 0x3F (Immediate position, New setpoint)
-            self.node.rpdo[1]["ControlWord"].raw = 0x3F # Raise new setpoint flag, motor should begin moving
+                cmd_value = math.copysign(rated_torque * self.gearRatio, cmd_value)
+            trq_value = round(cmd_value * 1000 / (rated_torque * self.gearRatio))
+            print(f"Set TargetTorque = {cmd_value} mNm ({round(trq_value / 10, 2)}% max)")
+            self.node.rpdo[1]["TargetTorque"].raw = trq_value
             self.node.rpdo[1].transmit()
             self.node.network.sync.transmit()
 
-            # Wait for StatusWord[12] == 1 (setpoint acknowledged)
-            while not (self.node.sdo["StatusWord"].raw & 0x1000):
-                # print('wating for 1')
-                time.sleep(0.01)
+        elif quick_test == 2:  # Velocity
+            ctspersec = round(cmd_value * 4096 / 60 * self.gearRatio)
+            print(f"Set TargetVelocity = {cmd_value} RPM")
+            self.node.rpdo[2]["TargetVelocity"].raw = ctspersec
+            self.node.rpdo[2].transmit()
+            self.node.network.sync.transmit()
 
-            # Set ControlWord to 0x2F (clear new setpoint flag)
+        elif quick_test == 3:  # Position
+            ctsvalue = cmd_value / 360 * 4096 * self.gearRatio
+            print(f"Set Target Position += {cmd_value} degrees")
+            self.node.rpdo[2]["TargetPosition"].raw = self.node.sdo["PositionFeedback"].raw + ctsvalue
+            self.node.rpdo[2].transmit()
+            self.node.network.sync.transmit()
+            # Wait for ready to receive new waypoint (StatusWord bit 12 = 0)
+            while self.node.sdo["StatusWord"].raw & 0x1000:
+                time.sleep(0.01)
+            # Raise new setpoint flag
+            self.node.rpdo[1]["ControlWord"].raw = 0x3F
+            self.node.rpdo[1].transmit()
+            self.node.network.sync.transmit()
+            # Wait for setpoint acknowledged (StatusWord bit 12 = 1)
+            while not (self.node.sdo["StatusWord"].raw & 0x1000):
+                time.sleep(0.01)
+            # Clear new setpoint flag
             self.node.rpdo[1]["ControlWord"].raw = 0x2F
             self.node.rpdo[1].transmit()
             self.node.network.sync.transmit()
-            # Wait for motor to acknowledge the Falling Edge (Bit 12 should go to 0)
+            # Wait for falling edge acknowledgment
             while self.node.sdo["StatusWord"].raw & 0x1000:
                 time.sleep(0.01)
 
-        elif quick_test == 4: # Homing
+        elif quick_test == 4:  # Homing
             self.node.sdo["HomingOffset"].raw = int(cmd_value)
-            # start homing
             self.node.sdo["ControlWord"].raw |= 0x0010
-            # Wait for StatusWord[12] == 1 (homing attained)
             while not (self.node.sdo["StatusWord"].raw & 0x1000):
                 time.sleep(0.1)
-            # stop homing
             self.node.sdo["ControlWord"].raw &= ~0x0010
 
         self.lastMode = quick_test
