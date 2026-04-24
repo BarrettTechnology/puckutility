@@ -1339,6 +1339,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.on_off_adc(self)
 
     def getMonitor(self):
+        if self.ADC_ON == False:
+            return
         try:
             # Read ADC for Puck Temperature, format properly, and update Frame
             ampTemp = self.node.tpdo[3]['Amplifier.Temperature'].raw
@@ -1417,6 +1419,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             pass
 
     def getPosition(self): #Get RPM + Update every 10th cycle for 10Hz
+        if self.ADC_ON == False:
+            return        
         try:
             encPos = self.node.tpdo[1]['PositionFeedback'].raw
             currentSysTime = time.time() # Get Current System time for accurate calc
