@@ -15,6 +15,7 @@ from puckutilityapp_gui import puckutilityapp_frame
 from calibrate_menu import calibrate
 from factory_menu import factory
 import OnOffButton
+import widgets
 
 import os
 import canopen
@@ -104,6 +105,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
     def __init__(self, *args, **kwds):
 
         puckutilityapp_frame.__init__(self, *args, **kwds)
+        self._replace_static_texts()
         icons = wx.Icon("images/BarrettLogo.png")
         self.SetBackgroundColour(wx.Colour(255,255,255))
         USE_BUFFERED_DC = True
@@ -164,7 +166,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         # Add button to onoffpanel
         # MAY WANT TO INCREASE THE SIZE OF THIS IN CASE IT GIVES BETTER RESOLUTION
         sizer = wx.BoxSizer(wx.HORIZONTAL)
-        self.onoff1 = OnOffButton.OnOffButton(self.onoffpanel, -1, size=(50, 34), initial=0, border=False, name="2")
+        self.onoff1 = widgets.TransparentOnOffButton(self.onoffpanel, -1, size=(50, 34), initial=0, border=False, name="2")
         self.onoff1.Bind(OnOffButton.EVT_ON_OFF, self.on_off_adc)
         # Demonstrate individual control adjustments
         self.onoff1.SetOnColour(self.orange) # Barrett Orange
@@ -174,6 +176,9 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         self.onoff1.SetToolTip("ADC Monitor ON/OFF")
         sizer.Add(self.onoff1, 0, wx.ALIGN_CENTER)
         self.onoffpanel.SetSizer(sizer)
+        self.onoffpanel.SetBackgroundStyle(wx.BG_STYLE_PAINT)
+        self.onoffpanel.Bind(wx.EVT_ERASE_BACKGROUND, lambda e: None)
+        self.onoffpanel.Bind(wx.EVT_PAINT, self._paint_onoffpanel)
 
         # Disable the unimplemented menu items
         menu = "Menu"
@@ -208,6 +213,34 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
         # NOW need to work on pass the update thread into other programs??
         self.update_queue = multiprocessing.Queue()
+
+    def _paint_onoffpanel(self, event):
+        panel = self.onoffpanel
+        dc = wx.PaintDC(panel)
+        pos = self.ScreenToClient(panel.GetScreenPosition())
+        dc.DrawBitmap(self.backgroundBMP, -pos.x, -pos.y)
+
+    def _replace_static_texts(self):
+        """Swap every wx.StaticText child with a TransparentText in-place."""
+        instance_attrs = {id(getattr(self, a)): a
+                         for a in ('VBus', 'PTemp', 'MTemp', 'Vrpm')
+                         if isinstance(getattr(self, a, None), wx.StaticText)}
+        for child in list(self.GetChildren()):
+            if not isinstance(child, wx.StaticText):
+                continue
+            style = child.GetWindowStyle() & (wx.ALIGN_CENTER_HORIZONTAL | wx.ALIGN_RIGHT)
+            new = widgets.TransparentText(self, wx.ID_ANY, child.GetLabel(), style=style)
+            new.SetFont(child.GetFont())
+            new.SetForegroundColour(child.GetForegroundColour())
+            new.SetMinSize(child.GetMinSize())
+            sizer = child.GetContainingSizer()
+            if sizer:
+                sizer.Replace(child, new)
+            attr = instance_attrs.get(id(child))
+            if attr:
+                setattr(self, attr, new)
+            child.Destroy()
+        self.Layout()
 
     def set_tool_tips(self,event):
         wx.ToolTip.SetDelay(3000)
