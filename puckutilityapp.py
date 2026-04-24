@@ -154,7 +154,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
         # Setup Window + Icon
         self.SetIcon(wx.Icon('images/BarrettIcon.png'))
-        self.SetTitle("Puck Utility App - v1.2.0 DEV")
+        self.SetTitle("Puck Utility App - v1.2.0 - DEV")
         self.button_6.SetBackgroundColour(self.gray) # Initialize with gray button in idle
         self.Bind(wx.EVT_KEY_DOWN,self.onKeyDown)
         self.Bind(wx.EVT_KEY_UP,self.onKeyUp)
@@ -498,11 +498,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         # Call function to update Position / Velocity Data
         wx.CallAfter(self.getPosition)
 
-    # def Rescan(self): # NOT USED anymore
-    #     print('Out of Date - rescanning!')
-    #     self.scan_pucks(None)
-    #     self.Rescanning = False
-
     def can_port(self,event,skipADC=False):
         #print("Event handler 'can_port'")
         if skipADC == True:
@@ -562,6 +557,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
     def scan_pucks(self, event,selfCALL=False,skipADC=False):  # wxGlade: wxp3_frame.<event_handler>
         #print("Event handler 'scan_pucks'")
         #print(str(datetime.datetime.now()) + " Event handler 'scan_pucks'")
+        
         # Set Mode to IDLE in case test is active
         if skipADC == True:
             pass
@@ -604,9 +600,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 if init_length > 0:
                     self.init = False
                     print('Success!')
-            # print('now we here')
+
             # If we found at least one, select the first
-            # print(scan_length)
             if scan_length > 0:
                 # print('here')
                 if self.getID() == 0:
