@@ -412,8 +412,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         motor_rev = int.from_bytes(motor_rev, byteorder='little',signed=False)
         shaft_rev = self.node.sdo.upload(0x6091,2)
         shaft_rev = int.from_bytes(shaft_rev, byteorder='little',signed=False)
-        # print('Numerator: {}'.format(motor_rev))
-        # print('Denominator: {}'.format(shaft_rev))
         self.gearRatio = motor_rev / shaft_rev
 
         self.i_cont = self.node.sdo.upload(0x3011,8)
@@ -421,14 +419,12 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         print('I_cont: {}'.format(self.i_cont))
         self.i_peak = self.node.sdo.upload(0x3011,9)
         self.i_peak = int.from_bytes(self.i_peak, byteorder='little',signed=False)
-        # print('I_peak: {}'.format(self.i_peak))
 
         self.temp_limit = self.node.sdo.upload(0x2384,9)
         self.temp_limit = int.from_bytes(self.temp_limit, byteorder='little',signed=False)
 
         self.temp_limited_current = self.node.sdo.upload(0x3025,3)
         self.temp_limited_current = int.from_bytes(self.temp_limited_current, byteorder='little',signed=False)
-        # print('I_temp_limited: {}'.format(self.temp_limited_current))
 
         # Get peak velocity
         self.peak_velocity = self.node.sdo.upload(0x6080,0)
@@ -479,6 +475,12 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         self.node.tpdo[4].add_callback(self.tpdo4_callback)
 
         self.node.sdo["HeartbeatPeriod"].raw = 0
+
+    def tpdo1_callback(self, msg):
+        global node
+
+        # Call function to update Position / Velocity Data
+        wx.CallAfter(self.getPosition)
 
     def tpdo2_callback(self, msg):
         global node
@@ -1260,9 +1262,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
     def getMonitor(self):
         try:
             # Read ADC for Puck Temperature, format properly, and update Frame
-            #ampTempbyte = self.node.sdo.upload(0x3000,2)
             ampTemp = self.node.tpdo[3]['Amplifier.Temperature'].raw
-            #ampTemp = int.from_bytes(ampTempbyte, byteorder='little', signed='signed')
             ampTempString = str(ampTemp) + "C"
             if ampTempString != self.PTemp.GetLabel(): # Only updates label if there is a change
                 #self.PTemp.SetLabel(ampTempString)
@@ -1303,8 +1303,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             if round(current,1) == 0 and currentString[0] == "-":
                 currentString = currentString[1:]
                 
-            # i2t_value = self.node.tpdo[2]['i2t.Value'].raw
-            # print(i2t_value)
             if currentString != self.VBus.GetLabel():
                 self.VBus.SetLabel(currentString)
                 #Colour Setting
