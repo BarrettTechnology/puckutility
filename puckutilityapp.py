@@ -42,14 +42,13 @@ import argparse
 import configparser
 
 # TODO
-# Set an actie Fault flag to prevent pouring of errors?
+# Tab doesn't work on windows!!!
+# Set an active Fault flag to prevent pouring of errors?
 # If gainfactor is 0 don't run calc and fail
-# Set cal / config required flag if going from v3 -> v4 or reverse
 # Setup confirmation of Puck type prior to configuring and raise error if not a match
 # Auto focus when coming out of disabled??
 # Add hotkeys to help guide! ******************************
-# Look into possible issues with Pucks responding to sync messages when not in focus (this appears to be caused by COB ID only being updated when configuration is set)
-# SET FLAG ^^ IF ID is changed so that config must be reuploaded
+# Auto reset cob IDs so configuration isn't required??
 
 # Calibration steps individually still popup issue for multiple cal
 # Firmware update to flashp4.py to program multiple pucks at once?? - nice to have 
@@ -883,6 +882,18 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         if self.adcWasON == True:
             self.on_off_adc(self)
 
+        # We could also add something to set_id to automatically reload cob ids, but for now this is how we ensure IDs get updated
+        self.choice_test.SetSelection(0)
+        # Should tell user calibration is required, and ask to perform 'calibrate all'
+        msg = "Configuration is required after changing ID.\nWould you like to configure the active Puck?"
+        dlg = wx.MessageDialog(None,msg,'Warning!',wx.YES_NO | wx.ICON_WARNING)
+        answer = dlg.ShowModal()
+        if answer == wx.ID_YES:
+            self.file_to_p4(None)
+        else:
+            pass
+        dlg.Destroy()
+
     def browse_fw(self, event, path=False):  # wxGlade: wxp3_frame.<event_handler>
         #print("Event handler 'browse_fw'")
         if self.check_for_node() == False:
@@ -1177,13 +1188,9 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.node.rpdo[1]["SetModeOfOperation"].raw = 0
             self.node.rpdo[1]["ControlWord"].raw = 0x06 # Shutdown state
             self.node.rpdo[1].transmit()
-            for attempt in range(5):
-                # self.node.sdo["ControlWord"].raw = 0x00
-                # self.node.sdo["ControlWord"].raw = 0x06
 
+            for attempt in range(5):
                 self.node.sdo["SetModeOfOperation"].raw = 0
-                # self.node.rpdo[1].transmit()
-                # self.node.network.sync.transmit()
                 time.sleep(0.05)
                 if self.node.sdo[0x6061].raw == 0:
                     print("Mode Confirmed")
