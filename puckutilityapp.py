@@ -180,6 +180,17 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         self.onoffpanel.Bind(wx.EVT_ERASE_BACKGROUND, lambda e: None)
         self.onoffpanel.Bind(wx.EVT_PAINT, self._paint_onoffpanel)
 
+        # Replace wx.StaticBitmap Dial with transparent version
+        dial_bmp = wx.Bitmap("images/dialnobgcroppedscaled.png", wx.BITMAP_TYPE_ANY)
+        new_dial = widgets.TransparentBitmap(self, wx.ID_ANY, dial_bmp)
+        new_dial.SetMinSize(self.Dial.GetMinSize())
+        dial_sizer = self.Dial.GetContainingSizer()
+        if dial_sizer:
+            dial_sizer.Replace(self.Dial, new_dial)
+        self.Dial.Destroy()
+        self.Dial = new_dial
+        self.Layout()
+
         # Disable the unimplemented menu items
         menu = "Menu"
         for item in [#"Calibrate All", 
