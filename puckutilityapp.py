@@ -1168,7 +1168,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             # Set Go Color to Orange
             self.button_6.SetBackgroundColour(self.orange)
 
-        # Verify state (Optional but recommended)
+        # Verify state
         status = self.node.sdo["StatusWord"].raw
         if (status & 0x6F) == 0x27:
             print("Drive is ENABLED and ready.")
@@ -1186,13 +1186,24 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         elif quick_test == 3: # Position
             # Set Mode to Position (1)
             print("Setting Mode = POSITION")
-            self.node.rpdo[1]["SetModeOfOperation"].raw = 1
-            # self.node.rpdo[1].transmit()
-            self.node.rpdo[1]["ControlWord"].raw = 0x2F # Immediate position mode (not buffered)
-            self.node.rpdo[1].transmit()
-            # making Profile Velocity an even RPM to make debugging easier
             # 100 RPM * 4096 cts/sec / 60 sec
             self.node.sdo["ProfileVelocity"].raw = 130000 # cts/s (default)
+            # self.node.sdo["SetModeOfOperation"].raw = 1
+            # self.node.sdo["ControlWord"].raw = 0x2F # Immediate position mode (not buffered)
+        
+            self.node.rpdo[1]["SetModeOfOperation"].raw = 1
+            self.node.rpdo[1]["ControlWord"].raw = 0x2F # Immediate position mode (not buffered)
+            self.node.rpdo[1].transmit()
+            # The SYNC message tells the Puck to process the data NOW
+            print("Sending SYNC pulse...")
+            self.node.network.sync.transmit()   
+            # making Profile Velocity an even RPM to make debugging easier
+            # Read back from the 'Display' index to ensure the motor switched
+            if self.node.sdo[0x6061].raw == 1:
+                print("Motor confirmed Position Mode.")
+            else:
+                print("Motor NOT in Position Mode.")
+                print(self.node.sdo[0x6061].raw)
         elif quick_test == 4: # Homing
             print ("Setting Mode = HOMING")
             self.node.sdo["SetModeOfOperation"].raw = 6
@@ -1277,6 +1288,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             # New
             self.node.rpdo[2]["TargetPosition"].raw = self.node.tpdo[1]["PositionFeedback"].raw + ctsvalue # Send
             self.node.rpdo[2].transmit()
+            self.node.network.sync.transmit()
             # Wait for StatusWord[12] == 0 (ready to receive new waypoint)
             while self.node.sdo["StatusWord"].raw & 0x1000:
                 time.sleep(0.01)
@@ -1284,15 +1296,20 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             # Set ControlWord to 0x3F (Immediate position, New setpoint)
             self.node.rpdo[1]["ControlWord"].raw = 0x3F # Raise new setpoint flag, motor should begin moving
             self.node.rpdo[1].transmit()
+            self.node.network.sync.transmit()
 
             # Wait for StatusWord[12] == 1 (setpoint acknowledged)
             while not (self.node.sdo["StatusWord"].raw & 0x1000):
-                print('wating for 1')
+                # print('wating for 1')
                 time.sleep(0.01)
 
             # Set ControlWord to 0x2F (clear new setpoint flag)
             self.node.rpdo[1]["ControlWord"].raw = 0x2F
             self.node.rpdo[1].transmit()
+            self.node.network.sync.transmit()
+            # Wait for motor to acknowledge the Falling Edge (Bit 12 should go to 0)
+            while self.node.sdo["StatusWord"].raw & 0x1000:
+                time.sleep(0.01)
 
         elif quick_test == 4: # Homing
             self.node.sdo["HomingOffset"].raw = int(cmd_value)
