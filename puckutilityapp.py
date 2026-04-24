@@ -42,7 +42,7 @@ import argparse
 import configparser
 
 # TODO
-# Need to detect faults and automatically setup the app back into idle! This may go in monitor?
+# Set an actie Fault flag to prevent pouring of errors?
 # If gainfactor is 0 don't run calc and fail
 # Set cal / config required flag if going from v3 -> v4 or reverse
 # Setup confirmation of Puck type prior to configuring and raise error if not a match
@@ -484,6 +484,9 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         self.node.tpdo[2].add_callback(self.tpdo2_callback)
         self.node.tpdo[3].add_callback(self.tpdo3_callback)
 
+        # Register the callback
+        self.node.emcy.add_callback(self.on_emcy_received)
+
         # node.tpdo[3].clear()
         # node.tpdo[3].add_variable('Amplifier', 'Temperature')
         # node.tpdo[3].add_variable('Motor', 'Therm')
@@ -532,6 +535,34 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
         # Call function to update Position / Velocity Data
         wx.CallAfter(self.getPosition)
+
+    def on_emcy_received(self, emcy_error):
+        # self.fault_active = True
+        # self.node.network.sync.stop()
+        
+        error_msg = f"Fault {hex(emcy_error.code)}: {emcy_error.get_desc()}"
+        print(error_msg)
+
+        wx.CallAfter(self.choice_test.SetSelection, 0)
+        wx.CallAfter(self.frame_statusbar.SetStatusText, error_msg, 1)
+        wx.CallAfter(self.frame_statusbar.Update)
+        wx.Yield()
+        print(hex(emcy_error.code) )
+        if hex(emcy_error.code) == '0x0':
+            time.sleep(5)
+            wx.CallAfter(self.frame_statusbar.SetStatusText, 'Ready', 1)
+            wx.CallAfter(self.frame_statusbar.Update)
+            wx.Yield()
+
+        # ADD additional handling
+        # Move the select test to idle to match puck state
+        # Update the status bar to show fault, maybe in red?
+       
+        # dlg = wx.MessageDialog(None, error_msg, 'EMCY Fault', 
+        #                        wx.OK | wx.ICON_ERROR)
+        # dlg.ShowModal()
+        # dlg.Destroy()
+        
 
     def can_port(self,event,skipADC=False):
         #print("Event handler 'can_port'")
@@ -1100,6 +1131,11 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.adcWasON = False
 
     def select_test(self, event):  # wxGlade: wxp3_frame.<event_handler>
+        
+        # Start by pausing network transmits
+        if self.ADC_ON == True:
+            self.node.network.sync.stop()
+
         if len(self.network.scanner.nodes) == 0:
             self.choice_test.SetSelection(0)
             print('No active node!')
@@ -1137,12 +1173,18 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         if quick_test == 0:
             # print(self.lastMode)
             print("Setting Mode = IDLE")
+            # Update buffer for when Sync restarts
+            self.node.rpdo[1]["SetModeOfOperation"].raw = 0
+            self.node.rpdo[1]["ControlWord"].raw = 0x06 # Shutdown state
+            self.node.rpdo[1].transmit()
             for attempt in range(5):
-                self.node.sdo["ControlWord"].raw = 0x00
+                # self.node.sdo["ControlWord"].raw = 0x00
+                # self.node.sdo["ControlWord"].raw = 0x06
+
                 self.node.sdo["SetModeOfOperation"].raw = 0
                 # self.node.rpdo[1].transmit()
                 # self.node.network.sync.transmit()
-                time.sleep(0.01)
+                time.sleep(0.05)
                 if self.node.sdo[0x6061].raw == 0:
                     print("Mode Confirmed")
                     break
@@ -1150,6 +1192,9 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 print(f"Failed to set IDLE mode (got {self.node.sdo[0x6061].raw})")
             self.button_6.SetBackgroundColour(self.gray)
             self.lastMode = 0
+            # Resume transmission
+            if self.ADC_ON == True:
+                self.node.network.sync.start()
             return
 
         # Clear faults, RTSO, OpEnabled
@@ -1212,6 +1257,10 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             print("Setting Mode = HOMING")
             self.node.sdo["SetModeOfOperation"].raw = 6
             self.text_testvalue.SetValue("0")
+        
+        # Finally resume transmission
+        if self.ADC_ON == True:
+            self.node.network.sync.start()
 
     def run_test(self, event):  # wxGlade: wxp3_frame.<event_handler>
         if len(self.network.scanner.nodes) == 0:
@@ -1412,10 +1461,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             RPM = abs(round(RPM *10))
             RPMString = str(RPM)
             self.y = self.y + 1
-
-            # use this to set RPM and position dial off
-
-            #self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
 
             if self.y == 10:
                 if self.motorPresent != True: # or Mode == 0: # Add Mode == 0 to turn off RPM during idle (only useful for annoying graphics with no motor)
