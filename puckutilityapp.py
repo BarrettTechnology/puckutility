@@ -1178,11 +1178,31 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         if quick_test == 1: # Torque
             # Set Mode to Torque (4)
             print("Setting Mode = TORQUE")
-            self.node.sdo["SetModeOfOperation"].raw = 4
+            # self.node.sdo["SetModeOfOperation"].raw = 4
+            self.node.rpdo[1]["SetModeOfOperation"].raw = 4
+            self.node.rpdo[1].transmit()
+            self.node.network.sync.transmit()  
+            # Read back from the 'Display' index to ensure the motor switched
+            if self.node.sdo[0x6061].raw == 4:
+                print("Mode Confirmed")
+            else:
+                print("Mode was not properly set...")
+                print(self.node.sdo[0x6061].raw)
+
         elif quick_test == 2: # Velocity
             # Set Mode to Velocity (3)
             print("Setting Mode = VELOCITY")
-            self.node.sdo["SetModeOfOperation"].raw = 3
+            # self.node.sdo["SetModeOfOperation"].raw = 3
+            self.node.rpdo[1]["SetModeOfOperation"].raw = 3
+            self.node.rpdo[1].transmit()
+            self.node.network.sync.transmit() 
+            # Read back from the 'Display' index to ensure the motor switched
+            if self.node.sdo[0x6061].raw == 3:
+                print("Mode Confirmed")
+            else:
+                print("Mode was not properly set...")
+                print(self.node.sdo[0x6061].raw)
+
         elif quick_test == 3: # Position
             # Set Mode to Position (1)
             print("Setting Mode = POSITION")
@@ -1190,20 +1210,18 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.node.sdo["ProfileVelocity"].raw = 130000 # cts/s (default)
             # self.node.sdo["SetModeOfOperation"].raw = 1
             # self.node.sdo["ControlWord"].raw = 0x2F # Immediate position mode (not buffered)
-        
             self.node.rpdo[1]["SetModeOfOperation"].raw = 1
             self.node.rpdo[1]["ControlWord"].raw = 0x2F # Immediate position mode (not buffered)
             self.node.rpdo[1].transmit()
             # The SYNC message tells the Puck to process the data NOW
-            print("Sending SYNC pulse...")
             self.node.network.sync.transmit()   
-            # making Profile Velocity an even RPM to make debugging easier
             # Read back from the 'Display' index to ensure the motor switched
             if self.node.sdo[0x6061].raw == 1:
-                print("Motor confirmed Position Mode.")
+                print("Mode Confirmed")
             else:
-                print("Motor NOT in Position Mode.")
+                print("Mode was not properly set...")
                 print(self.node.sdo[0x6061].raw)
+
         elif quick_test == 4: # Homing
             print ("Setting Mode = HOMING")
             self.node.sdo["SetModeOfOperation"].raw = 6
@@ -1244,44 +1262,30 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         elif quick_test == 1: # Torque
             rated_torque = self.node.sdo["RatedTorque"].raw
             if abs(cmd_value / self.gearRatio) > rated_torque:
-            # Needs to be based on gear Ratio
                 cmd_value = math.copysign(rated_torque * self.gearRatio, cmd_value) # Saturate
             trq_value = round(cmd_value * 1000 / (rated_torque * self.gearRatio)) # Scale
-            
             # Needs scaling for accurate gear ratio based torque!!!
             print("Set TargetTorque = {0}".format(cmd_value) + " mNm ({0}".format(round(trq_value/10,2)) + "% max)") # show mNm & percent max
             print("Command CAN value - {}".format(trq_value))
             # Original
-            self.node.sdo["TargetTorque"].raw = trq_value # Send
+            # self.node.sdo["TargetTorque"].raw = trq_value # Send
             # New
-            # self.node.rpdo[1]["TargetTorque"].raw = trq_value # Send
+            self.node.rpdo[1]["TargetTorque"].raw = trq_value # Send
 
         elif quick_test == 2: # Velocity
             ctspersec = cmd_value * 4096 / 60 * self.gearRatio
-            print("Set Target Velocity = {0}".format(cmd_value) + " RPM")
-            # print('Ctspersec: {}'.format(ctspersec))
-            # Used to fix old max velocity bug! No longer relevant
-            # if ctspersec > self.peak_velocity:
-            #     print('Target Velocity Higher than peak motor velocity. Limiting to maximum velocity...')
-            #     ctspersec = self.peak_velocity
-            #     cmd_value = round(ctspersec / 4096 * 60 / self.gearRatio)
-            #     self.text_testvalue.SetValue(str(cmd_value)) 
-            # elif ctspersec < -self.peak_velocity:
-            #     print('Target Velocity Higher than peak motor velocity. Limiting to maximum velocity...')
-            #     ctspersec = -self.peak_velocity
-            #     cmd_value = round(ctspersec / 4096 * 60 / self.gearRatio)
-            #     self.text_testvalue.SetValue(str(cmd_value)) 
+            print("Set Target Velocity = {0}".format(cmd_value) + " RPM") 
             print("Set TargetVelocity = {0}".format(cmd_value) + " RPM")
-            self.node.sdo["TargetVelocity"].raw = ctspersec # Send
-
+            # self.node.sdo["TargetVelocity"].raw = ctspersec # Send
+            self.node.rpdo[2]["TargetVelocity"].raw = ctspersec # Send
+            self.node.rpdo[2].transmit()
+            self.node.network.sync.transmit()
         elif quick_test == 3: # Position step
             # On position update
             # Set waypoint entries
-            #  607A Target, 6081 Profile Velocity, 6082 Final Velocity, 6083 Accel, 6084 Decel (positive)
+            # 607A Target, 6081 Profile Velocity, 6082 Final Velocity, 6083 Accel, 6084 Decel (positive)
             # cmd_value is in degree = 19.1 gear ratio 4096 cts 360 degrees
-            
-            
-            ctsvalue = cmd_value / 360 * 4096 * self.gearRatio #* 19.1 # 19.1 for Dev Kit gear ratio 
+            ctsvalue = cmd_value / 360 * 4096 * self.gearRatio # 19.1 for Dev Kit gear ratio 
             print("Set Target Position += {0}".format(cmd_value) + " degrees")
             # original
             # self.node.sdo["TargetPosition"].raw = self.node.sdo["PositionFeedback"].raw + ctsvalue # Send
@@ -1526,6 +1530,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                     #     self.onoff1.SetValue(0)
                     # self.onoff1.SetValue(0)
             else:
+                # Need to update the custom button to allow setting!
                 print('No Puck Connected -')
                 print('Turning off ADC Monitor...')
                 time.sleep(0.1) # delay for visual effect
