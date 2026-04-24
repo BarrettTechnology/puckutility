@@ -1172,35 +1172,44 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             print("Setting Mode = TORQUE")
             self.node.rpdo[1]["SetModeOfOperation"].raw = 4
             self.node.rpdo[1]["ControlWord"].raw = 0x0F
-            self.node.rpdo[1].transmit()
-            self.node.network.sync.transmit()
-            if self.node.sdo[0x6061].raw == 4:
-                print("Mode Confirmed")
+            for attempt in range(3):
+                self.node.rpdo[1].transmit()
+                self.node.network.sync.transmit()
+                time.sleep(0.02)
+                if self.node.sdo[0x6061].raw == 4:
+                    print("Mode Confirmed")
+                    break
             else:
-                print(f"Mode was not properly set... (got {self.node.sdo[0x6061].raw})")
+                print(f"Failed to set TORQUE mode (got {self.node.sdo[0x6061].raw})")
 
         elif quick_test == 2:  # Velocity
             print("Setting Mode = VELOCITY")
             self.node.rpdo[1]["SetModeOfOperation"].raw = 3
             self.node.rpdo[1]["ControlWord"].raw = 0x0F
-            self.node.rpdo[1].transmit()
-            self.node.network.sync.transmit()
-            if self.node.sdo[0x6061].raw == 3:
-                print("Mode Confirmed")
+            for attempt in range(3):
+                self.node.rpdo[1].transmit()
+                self.node.network.sync.transmit()
+                time.sleep(0.02)
+                if self.node.sdo[0x6061].raw == 3:
+                    print("Mode Confirmed")
+                    break
             else:
-                print(f"Mode was not properly set... (got {self.node.sdo[0x6061].raw})")
+                print(f"Failed to set VELOCITY mode (got {self.node.sdo[0x6061].raw})")
 
         elif quick_test == 3:  # Position
             print("Setting Mode = POSITION")
-            self.node.sdo["ProfileVelocity"].raw = 130000  # 100 RPM default
+            self.node.sdo["ProfileVelocity"].raw = 130000
             self.node.rpdo[1]["SetModeOfOperation"].raw = 1
-            self.node.rpdo[1]["ControlWord"].raw = 0x2F  # Immediate position mode
-            self.node.rpdo[1].transmit()
-            self.node.network.sync.transmit()
-            if self.node.sdo[0x6061].raw == 1:
-                print("Mode Confirmed")
+            self.node.rpdo[1]["ControlWord"].raw = 0x2F
+            for attempt in range(3):
+                self.node.rpdo[1].transmit()
+                self.node.network.sync.transmit()
+                time.sleep(0.02)
+                if self.node.sdo[0x6061].raw == 1:
+                    print("Mode Confirmed")
+                    break
             else:
-                print(f"Mode was not properly set... (got {self.node.sdo[0x6061].raw})")
+                print(f"Failed to set POSITION mode (got {self.node.sdo[0x6061].raw})")
 
         elif quick_test == 4:  # Homing
             print("Setting Mode = HOMING")
@@ -1438,10 +1447,27 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
    
     def onCloseFrame(self,event):
         try:
-          self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
-          MyApp.removePuck(self,self.getID())
-        except:
-          pass
+            self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
+            # 3. Verification Loop: Wait up to 500ms for the hardware to confirm
+            success = False
+            timeout = time.time() + 0.5
+            while time.time() < timeout:
+                # Check 0x6061 (Modes of Operation Display)
+                if self.node.sdo[0x6061].raw == 0:
+                    success = True
+                    break
+                time.sleep(0.05)
+            if success:
+                print("Puck successfully transitioned to IDLE.")
+            else:
+                print("Warning: Puck did not confirm IDLE mode, but proceeding with removal.")
+            
+            MyApp.removePuck(self,self.getID())
+
+        except canopen.SdoCommunicationError as e:
+                print(f"CANopen Communication Error: {e}")
+                # Even if communication fails, you might still want to remove it from the UI
+                MyApp.removePuck(self, self.getID())
 
         self.Destroy()
         print('Closing Frame...')
