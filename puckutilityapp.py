@@ -50,12 +50,10 @@ import configparser
 # Add hotkeys to help guide! ******************************
 # Look into possible issues with Pucks responding to sync messages when not in focus (this appears to be caused by COB ID only being updated when configuration is set)
 # SET FLAG ^^ IF ID is changed so that config must be reuploaded
-# SHOULD use RPDOs to handle control mode in the future and command values! This is the correct way to handle (needs an issue and addition for v1.1.5)
-# Do not clear tpdo 1 and 2, use these in the monitor / position # THIS WOULD BE LOVELY *************
-# Refresh looks awful on windows # ehhh not much we can do here
+
 # Calibration steps individually still popup issue for multiple cal
 # Firmware update to flashp4.py to program multiple pucks at once?? - nice to have 
-# Need to update menu bar to include hotkeys
+
 # WIDEN ERROR BOUNDS FOR CAL
 # Controlling Play/Pause from the menu does NOT change the button state
 
@@ -209,17 +207,10 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         # if not is_jlink_detected():
         self.frame_menubar.Remove(self.frame_menubar.FindMenu("Factory"))
 
-        # should be able to over ride and make rounded corners! radius = 10 or 12
-        # attempt to add progress bar
-        # self.progress = wx.Gauge(self.frame_statusbar, range=100, style=wx.GA_HORIZONTAL| wx.CENTER | wx.ALL) #wx.ALIGN_CENTER_VERTICAL)
         self.progress = PG.PyGauge(self.frame_statusbar, range=100, style=wx.ALIGN_CENTER_VERTICAL | wx.ALL)
-        # self.progress.SetBarColour(self.orange)
         self.progress.SetBarGradient(('#FFFFFF',self.orange))
-        # print(self.progress.GetBarGradient())
-        # self.progress.SetBarGradient()
-        # self.progress.Hide()
-        # self.progress.SetBorderColor(wx.BLACK)
         self.dc = wx.ScreenDC()
+
         # Initial Positioniing
         self.RepositionGauge()
 
@@ -884,38 +875,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         can_device = self.choice_port.GetStringSelection()
         node_id = self.choice_id.GetString(self.choice_id.GetSelection())
 
-        # LET flash program handle version!!
-
-        # Determine bootloader version
-        # 1 = Windows blhost.exe
-        # 2 = Win/Lin flashp3.py
-
-        # Ping: msgID = can_id, dlc = 2, data = [5A A6]
-        # Wait 200 ms (for possible reboot)
-        # SDO request 0x100A,0
-        # -> Success, version = 2
-        # -> Failure, version = 1
-        
-        # Response to ping commands:
-        # - Bootloader v1 = [5A, A7]
-        # - Bootloader v2 = RESET
-        # - RSF5 firmware = RESET
-        # - CANopen firmware = RESET
-
-        # self.network.send_message(int(node_id), [0x5A, 0xA6]) # Ping command
-        # time.sleep(0.2) # Wait for reboot
-        # try:
-        #     version = get_version(self.node.sdo['MfgSoftwareVersion'].raw)
-        # except:
-        #     version = get_version(1 << 24) # Assume version 1.0.0
-
-        # print("Found bootloader version: {0}".format(version))
-        # Not necessary anymore
-        # if semver.match(version, '==1.0.0') and platform.system() != "Windows":
-        #     msg = "To update firmware, please run this program under Windows."
-        #     print(msg)
-        #     wx.MessageBox(msg, 'Info', wx.OK | wx.ICON_INFORMATION)
-        #     return
         if path == False:
             # File browser
             if platform.system() == "Windows":
@@ -1002,6 +961,9 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         self.OnTaskComplete()
 
         print(result)
+
+        self.requireCal = True
+        self.requireConfig = True
 
         # Re-scan
         self.can_port(None,True)
@@ -1103,6 +1065,9 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
           dlg.ShowModal()
           dlg.Destroy()
 
+        self.requireCal = True
+        self.requireConfig = False
+
         # THIS SEEMS LIKE IT SHOULDN'T HAPPEN HERE, use can_port / scan_pucks??
 
         print("Establishing a new network...")
@@ -1143,8 +1108,17 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             dlg.ShowModal()
             dlg.Destroy()
             return
-        elif self.requireCal or self.requireConfig:
-            print('Needs cal or config...')
+        elif self.requireCal:
+            self.choice_test.SetSelection(0)
+            # Should tell user calibration is required, and ask to perform 'calibrate all'
+            msg = "Calibration is required after configuration. Would you like to calibrate all Pucks?"
+            dlg = wx.MessageDialog(None,msg,'Warning!',wx.YES_NO | wx.ICON_WARNING)
+            answer = dlg.ShowModal()
+            if answer == wx.ID_YES:
+                self.calibrate_all_pucks(None)
+            else:
+                pass
+            dlg.Destroy()
             return
 
         quick_test = self.choice_test.GetSelection()
@@ -1447,6 +1421,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
    
     def onCloseFrame(self,event):
         try:
+            # This is the most important step for safety!
+            self.node.sdo["ControlWord"].raw = 0x00
             self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
             # 3. Verification Loop: Wait up to 500ms for the hardware to confirm
             success = False

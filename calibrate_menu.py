@@ -64,6 +64,8 @@ class calibrate():
           print('Ending calibration...')
           self.Enable()
           return
+        
+        self.requireCal = False
         self.Enable()
         #event.Skip()
 
