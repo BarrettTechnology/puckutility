@@ -774,7 +774,7 @@ class calibrate():
                 print('Puck {} Not found...'.format(config_id))
 
         # Should tell user calibration is required, and ask to perform 'calibrate all'
-        msg = "Calibration is required after configuration. Would you like to calibrate all Pucks?"
+        msg = "Calibration is required after configuration.\nWould you like to calibrate all Pucks?"
         dlg = wx.MessageDialog(None,msg,'Warning!',wx.YES_NO | wx.ICON_WARNING)
         answer = dlg.ShowModal()
         if answer == wx.ID_YES:

@@ -330,7 +330,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         elif extension == '.csv':
             print('Motor Configuration Detected...')
             # Run configuration upload
-            self.file_to_p3(None,filepath)
+            self.file_to_p4(None,filepath)
         elif extension == '.ini':
             print('System Configuration Detected...')
             start = time.time()
@@ -977,10 +977,10 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         if self.adcWasON == True:
             self.on_off_adc(self)
 
-    def file_to_p3(self, event, path=False):  # wxGlade: wxp3_frame.<event_handler>
+    def file_to_p4(self, event, path=False):  # wxGlade: wxp3_frame.<event_handler>
         if self.check_for_node() == False:
             return
-        #print("Event handler 'file_to_p3'")
+        #print("Event handler 'file_to_p4'")
         # If motor is not idled, idle
         quick_test = self.choice_test.GetSelection()
         if quick_test != 0:
@@ -1108,10 +1108,22 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             dlg.ShowModal()
             dlg.Destroy()
             return
+        elif self.requireConfig:
+            self.choice_test.SetSelection(0)
+            # Should tell user calibration is required, and ask to perform 'calibrate all'
+            msg = "Configuration is required after a firmware update.\nWould you like to configure the active Puck?"
+            dlg = wx.MessageDialog(None,msg,'Warning!',wx.YES_NO | wx.ICON_WARNING)
+            answer = dlg.ShowModal()
+            if answer == wx.ID_YES:
+                self.file_to_p4(None)
+            else:
+                pass
+            dlg.Destroy()
+            return
         elif self.requireCal:
             self.choice_test.SetSelection(0)
             # Should tell user calibration is required, and ask to perform 'calibrate all'
-            msg = "Calibration is required after configuration. Would you like to calibrate all Pucks?"
+            msg = "Calibration is required after configuration.\nWould you like to calibrate all Pucks?"
             dlg = wx.MessageDialog(None,msg,'Warning!',wx.YES_NO | wx.ICON_WARNING)
             answer = dlg.ShowModal()
             if answer == wx.ID_YES:
@@ -1123,10 +1135,21 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
         quick_test = self.choice_test.GetSelection()
         if quick_test == 0:
-            self.lastMode = 0
+            # print(self.lastMode)
             print("Setting Mode = IDLE")
-            self.node.sdo["SetModeOfOperation"].raw = 0
+            for attempt in range(5):
+                self.node.sdo["ControlWord"].raw = 0x00
+                self.node.sdo["SetModeOfOperation"].raw = 0
+                # self.node.rpdo[1].transmit()
+                # self.node.network.sync.transmit()
+                time.sleep(0.01)
+                if self.node.sdo[0x6061].raw == 0:
+                    print("Mode Confirmed")
+                    break
+            else:
+                print(f"Failed to set IDLE mode (got {self.node.sdo[0x6061].raw})")
             self.button_6.SetBackgroundColour(self.gray)
+            self.lastMode = 0
             return
 
         # Clear faults, RTSO, OpEnabled
@@ -1146,10 +1169,10 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             print("Setting Mode = TORQUE")
             self.node.rpdo[1]["SetModeOfOperation"].raw = 4
             self.node.rpdo[1]["ControlWord"].raw = 0x0F
-            for attempt in range(3):
+            for attempt in range(5):
                 self.node.rpdo[1].transmit()
                 self.node.network.sync.transmit()
-                time.sleep(0.02)
+                time.sleep(0.01)
                 if self.node.sdo[0x6061].raw == 4:
                     print("Mode Confirmed")
                     break
@@ -1160,10 +1183,10 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             print("Setting Mode = VELOCITY")
             self.node.rpdo[1]["SetModeOfOperation"].raw = 3
             self.node.rpdo[1]["ControlWord"].raw = 0x0F
-            for attempt in range(3):
+            for attempt in range(5):
                 self.node.rpdo[1].transmit()
                 self.node.network.sync.transmit()
-                time.sleep(0.02)
+                time.sleep(0.01)
                 if self.node.sdo[0x6061].raw == 3:
                     print("Mode Confirmed")
                     break
@@ -1175,10 +1198,10 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.node.sdo["ProfileVelocity"].raw = 130000
             self.node.rpdo[1]["SetModeOfOperation"].raw = 1
             self.node.rpdo[1]["ControlWord"].raw = 0x2F
-            for attempt in range(3):
+            for attempt in range(5):
                 self.node.rpdo[1].transmit()
                 self.node.network.sync.transmit()
-                time.sleep(0.02)
+                time.sleep(0.01)
                 if self.node.sdo[0x6061].raw == 1:
                     print("Mode Confirmed")
                     break
@@ -1420,11 +1443,12 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             pass
    
     def onCloseFrame(self,event):
+        self.network.sync.stop()
         try:
             # This is the most important step for safety!
-            self.node.sdo["ControlWord"].raw = 0x00
+            # self.node.sdo["ControlWord"].raw = 0x00
             self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
-            # 3. Verification Loop: Wait up to 500ms for the hardware to confirm
+            # Verification Loop: Wait up to 500ms for the hardware to confirm
             success = False
             timeout = time.time() + 0.5
             while time.time() < timeout:
@@ -1652,7 +1676,7 @@ def _cli_flash(can_device, node_id, fw_path):
 def _cli_config(can_device, node_id, csv_path):
     print(f"Uploading config to node {node_id} from {csv_path}...")
     canopen_runner.start(can_device, node_id, 'puck4.eds', csv_path, CLIProgress())
-    # Mirror file_to_p3: save all OD entries to EEPROM then reboot
+    # Mirror file_to_p4: save all OD entries to EEPROM then reboot
     save_net = _cli_make_network(can_device)
     save_node = save_net.add_node(node_id, 'puck4.eds')
     print("  Saving to EEPROM...")
