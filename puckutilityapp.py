@@ -181,7 +181,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         self.onoffpanel.Bind(wx.EVT_PAINT, self._paint_onoffpanel)
 
         # Replace wx.StaticBitmap Dial with transparent version
-        dial_bmp = wx.Bitmap("images/dialnobgcroppedscaled.png", wx.BITMAP_TYPE_ANY)
+        self._dial_base_img = wx.Image("images/dialnobgcroppedscaled.png")
+        dial_bmp = wx.Bitmap(self._dial_base_img)
         new_dial = widgets.TransparentBitmap(self, wx.ID_ANY, dial_bmp)
         new_dial.SetMinSize(self.Dial.GetMinSize())
         dial_sizer = self.Dial.GetContainingSizer()
@@ -1352,14 +1353,13 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
             if self.motorPresent: # and Mode != 0: # Add Mode != 0 to stop updates when in idle (only useful for annoying graphics when no motor attached)
                 if abs(encPosRad - self.lastPosRad) > 0.005: # if encPos has changed - this saves CPU usage and limits screen refreshes
-                    img = wx.Image('images/dialnobgcroppedscaled.png')
+                    img = self._dial_base_img.Copy()
                     img._W, img._H = img.GetSize()
                     center = (int(img._W/2),int(img._H/2))
                     img = img.Rotate(encPosRad, center,interpolating=True)
                     self.Dial.SetBitmap(img)
             else:
-                img = wx.Image('images/dialnobgcroppedscaled.png')
-                self.Dial.SetBitmap(img)
+                self.Dial.SetBitmap(wx.Bitmap(self._dial_base_img))
 
             #if True: #self.firstRun != True:
                
@@ -1444,8 +1444,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                     self.MTemp.SetForegroundColour((0,0,0))
                     self.Vrpm.SetForegroundColour((0,0,0))
 
-                    img = wx.Image('images/dialnobgcroppedscaled.png')
-                    self.Dial.SetBitmap(img)
+                    self.Dial.SetBitmap(wx.Bitmap(self._dial_base_img))
                     # if event.getId() == '-31989':
                     #     print('yes')
                     #     self.onoff1.SetValue(0)
