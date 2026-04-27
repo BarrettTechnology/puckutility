@@ -1,5 +1,134 @@
 import wx
+import wx.adv
 import OnOffButton as _oob
+
+# Saved before any monkey-patching so TallTextCtrl can always reach the real class.
+_OrigTextCtrl = wx.TextCtrl
+
+
+class TallTextCtrl(wx.Panel):
+    """Drop-in for wx.TextCtrl that vertically centres text on Windows.
+
+    On Windows, single-line EDIT controls draw text at the top of the client
+    area regardless of control height.  This panel wrapper places a borderless
+    inner TextCtrl inside a BORDER_THEME panel and uses vertical stretch spacers
+    to centre it, matching the text position of WindowsFriendlyChoice.
+
+    Only instantiated on Windows (monkey-patched in puckutilityapp.py).
+    """
+
+    _BORDER_MASK = (wx.BORDER_SUNKEN | wx.BORDER_RAISED | wx.BORDER_STATIC |
+                    wx.BORDER_THEME | wx.BORDER_SIMPLE | wx.BORDER_NONE)
+    _INNER_EVENTS = (wx.EVT_TEXT, wx.EVT_TEXT_ENTER,
+                     wx.EVT_SET_FOCUS, wx.EVT_KILL_FOCUS)
+
+    def __init__(self, parent, id=wx.ID_ANY, value='',
+                 pos=wx.DefaultPosition, size=wx.DefaultSize,
+                 style=0, validator=wx.DefaultValidator, name='', **kwargs):
+        inner_style = (style & ~self._BORDER_MASK) | wx.BORDER_NONE
+        super().__init__(parent, id, pos, size, style=wx.BORDER_THEME)
+        self._inner = _OrigTextCtrl(self, wx.ID_ANY, value,
+                                     style=inner_style, validator=validator)
+        sizer = wx.BoxSizer(wx.VERTICAL)
+        sizer.AddStretchSpacer(1)
+        sizer.Add(self._inner, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 1)
+        sizer.AddStretchSpacer(1)
+        self.SetSizer(sizer)
+        self.SetBackgroundColour(self._inner.GetBackgroundColour())
+        self.Bind(wx.EVT_LEFT_DOWN, lambda e: self._inner.SetFocus())
+
+    def GetValue(self):       return self._inner.GetValue()
+    def SetValue(self, v):    self._inner.SetValue(v)
+    def ChangeValue(self, v): self._inner.ChangeValue(v)
+    def Clear(self):          self._inner.Clear()
+
+    def SetMargins(self, left=wx.DefaultCoord, top=wx.DefaultCoord):
+        # Vertical centering is handled by the stretch spacers; only forward
+        # the horizontal margin so text isn't flush against the left border.
+        self._inner.SetMargins(left)
+
+    def Enable(self, enable=True):
+        # Forward to the inner ctrl so disabled visuals (gray text) take effect,
+        # then update the panel itself for consistent focus behaviour.
+        self._inner.Enable(enable)
+        return super().Enable(enable)
+
+    def SetFont(self, font):
+        self._inner.SetFont(font)
+        return super().SetFont(font)
+
+    def SetForegroundColour(self, colour):
+        self._inner.SetForegroundColour(colour)
+        return super().SetForegroundColour(colour)
+
+    def SetBackgroundColour(self, colour):
+        self._inner.SetBackgroundColour(colour)
+        return super().SetBackgroundColour(colour)
+
+    def SetToolTip(self, tip):
+        self._inner.SetToolTip(tip)
+        return super().SetToolTip(tip)
+
+    def Bind(self, event, handler, source=None, id=wx.ID_ANY, id2=wx.ID_ANY):
+        if event in self._INNER_EVENTS:
+            self._inner.Bind(event, handler)
+        else:
+            super().Bind(event, handler, source, id, id2)
+
+    def Unbind(self, event, source=None, id=wx.ID_ANY,
+               id2=wx.ID_ANY, handler=None):
+        if event in self._INNER_EVENTS:
+            return self._inner.Unbind(event, handler=handler)
+        return super().Unbind(event, source, id, id2, handler)
+
+
+class WindowsFriendlyChoice(wx.adv.OwnerDrawnComboBox):
+    """Drop-in replacement for wx.Choice whose height matches wx.TextCtrl on Windows.
+
+    On Windows, native CBS_DROPDOWNLIST (wx.Choice) is painted by the Windows GDI
+    at the font height regardless of the window size, so SetMinSize height is
+    visually ignored — combos render shorter than adjacent TextCtrls of the same
+    requested height.  OwnerDrawnComboBox is a pure-wxPython control whose overall
+    size IS honoured by the sizer, and whose content is rendered by OnDrawItem so
+    text is centred within the full allocated height.
+
+    Bind() transparently routes wx.EVT_CHOICE to wx.EVT_COMBOBOX so callers
+    written against wx.Choice keep working without modification.
+
+    Only instantiated on Windows (monkey-patched in puckutilityapp.py).
+    """
+
+    def __init__(self, parent, id=wx.ID_ANY, pos=wx.DefaultPosition,
+                 size=wx.DefaultSize, choices=[], style=0, **kwargs):
+        super().__init__(parent, id, value='',
+                         pos=pos, size=size, choices=choices,
+                         style=wx.CB_READONLY)
+
+    def Bind(self, event, handler, source=None, id=wx.ID_ANY, id2=wx.ID_ANY):
+        if event is wx.EVT_CHOICE:
+            event = wx.EVT_COMBOBOX
+        return super().Bind(event, handler, source, id, id2)
+
+    def OnDrawItem(self, dc, rect, item, flags):
+        if item == wx.NOT_FOUND:
+            return
+        dc.SetFont(self.GetFont())
+        if (flags & wx.adv.ODCB_PAINTING_SELECTED and
+                not (flags & wx.adv.ODCB_PAINTING_CONTROL)):
+            dc.SetTextForeground(
+                wx.SystemSettings.GetColour(wx.SYS_COLOUR_HIGHLIGHTTEXT))
+        else:
+            dc.SetTextForeground(
+                wx.SystemSettings.GetColour(wx.SYS_COLOUR_WINDOWTEXT))
+        r = wx.Rect(rect.x + 3, rect.y, rect.width - 3, rect.height)
+        dc.DrawLabel(self.GetString(item), r,
+                     wx.ALIGN_CENTER_VERTICAL | wx.ALIGN_LEFT)
+
+    def OnMeasureItem(self, item):
+        return 24
+
+    def OnMeasureItemWidth(self, item):
+        return -1
 
 
 class TransparentText(wx.Control):

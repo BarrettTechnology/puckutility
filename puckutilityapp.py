@@ -98,10 +98,26 @@ class DropTarget(wx.FileDropTarget):
 # Functions from these files are merged into this class using Python's "mixin" ability.
 # Fun fact: Python class "mixins" override from left to right, so put the base class on the right.
 
-class MyFrame(calibrate, factory, puckutilityapp_frame): 
+class MyFrame(calibrate, factory, puckutilityapp_frame):
     def __init__(self, *args, **kwds):
 
-        puckutilityapp_frame.__init__(self, *args, **kwds)
+        # On Windows, native wx.Choice ignores SetMinSize height and native
+        # wx.TextCtrl draws text top-aligned regardless of control height.
+        # Patch both during the GUI-generated __init__ so combo boxes match
+        # text-box height and text is vertically centred in input boxes.
+        # The patch is scoped to this constructor so puckutilityapp_gui.py
+        # remains untouched and other call sites are unaffected.
+        if wx.Platform == '__WXMSW__':
+            _orig_choice = wx.Choice
+            _orig_textctrl = wx.TextCtrl
+            wx.Choice = widgets.WindowsFriendlyChoice
+            wx.TextCtrl = widgets.TallTextCtrl
+        try:
+            puckutilityapp_frame.__init__(self, *args, **kwds)
+        finally:
+            if wx.Platform == '__WXMSW__':
+                wx.Choice = _orig_choice
+                wx.TextCtrl = _orig_textctrl
         self._replace_static_texts()
         icons = wx.Icon("images/BarrettLogo.png")
         self.SetBackgroundColour(wx.Colour(255,255,255))
