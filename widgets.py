@@ -26,7 +26,8 @@ class TallTextCtrl(wx.Panel):
                  pos=wx.DefaultPosition, size=wx.DefaultSize,
                  style=0, validator=wx.DefaultValidator, name='', **kwargs):
         inner_style = (style & ~self._BORDER_MASK) | wx.BORDER_NONE
-        super().__init__(parent, id, pos, size, style=wx.BORDER_THEME)
+        super().__init__(parent, id, pos, size,
+                         style=wx.BORDER_THEME | wx.TAB_TRAVERSAL)
         self._inner = _OrigTextCtrl(self, wx.ID_ANY, value,
                                      style=inner_style, validator=validator)
         sizer = wx.BoxSizer(wx.VERTICAL)
@@ -36,6 +37,12 @@ class TallTextCtrl(wx.Panel):
         self.SetSizer(sizer)
         self.SetBackgroundColour(self._inner.GetBackgroundColour())
         self.Bind(wx.EVT_LEFT_DOWN, lambda e: self._inner.SetFocus())
+        # On Windows the EDIT control's Win32 dialog-navigation logic consumes
+        # Tab BEFORE EVT_KEY_DOWN fires, so binding KEY_DOWN never sees it.
+        # EVT_CHAR_HOOK is delivered to the focused window before any default
+        # key processing (including dialog navigation), which is the reliable
+        # hook for Tab interception on Windows.
+        self._inner.Bind(wx.EVT_CHAR_HOOK, self._on_inner_key)
 
     def GetValue(self):       return self._inner.GetValue()
     def SetValue(self, v):    self._inner.SetValue(v)
@@ -82,6 +89,17 @@ class TallTextCtrl(wx.Panel):
         if event in self._INNER_EVENTS:
             return self._inner.Unbind(event, handler=handler)
         return super().Unbind(event, source, id, id2, handler)
+
+    def _on_inner_key(self, event):
+        if event.GetKeyCode() == wx.WXK_TAB:
+            # Navigate() on the wrapper moves focus among the wrapper's
+            # siblings (children of GetParent()), bypassing the panel-internal
+            # traversal that would otherwise trap focus on the inner ctrl.
+            # Don't Skip() so a literal Tab character isn't inserted into
+            # the inner ctrl's text (TE_PROCESS_TAB would otherwise insert it).
+            self.Navigate(not event.ShiftDown())
+            return
+        event.Skip()
 
 
 class WindowsFriendlyChoice(wx.adv.OwnerDrawnComboBox):
@@ -154,12 +172,19 @@ class TransparentText(wx.Control):
         self.Bind(wx.EVT_ERASE_BACKGROUND, lambda e: None)
 
     def _on_paint(self, event):
-        dc = wx.PaintDC(self)
+        # BufferedPaintDC composes the background-blit and text draw off-screen,
+        # then blits the finished bitmap to the screen in a single operation.
+        # This eliminates the brief frame on Windows where the background is
+        # visible without the text painted over it (the source of the flicker).
+        dc = wx.BufferedPaintDC(self)
         parent = self.GetParent()
         bmp = getattr(parent, 'backgroundBMP', None)
         if bmp:
             pos = parent.ScreenToClient(self.GetScreenPosition())
             dc.DrawBitmap(bmp, -pos.x, -pos.y)
+        else:
+            dc.SetBackground(wx.Brush(self.GetBackgroundColour()))
+            dc.Clear()
         dc.SetFont(self.GetFont())
         dc.SetTextForeground(self.GetForegroundColour())
         dc.DrawLabel(self._label, self.GetClientRect(),
