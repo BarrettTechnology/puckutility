@@ -6,6 +6,73 @@ import OnOffButton as _oob
 _OrigTextCtrl = wx.TextCtrl
 
 
+# Standard wx widget types that visually display keyboard focus and should
+# therefore be Tab-navigation stops. Custom wx.Control / wx.Panel subclasses
+# (TransparentSlider, TransparentText, OnOffButton, TransparentBitmap, etc.)
+# accept focus by default but don't render any focus indicator, so Tab landing
+# on them looks like "focus lost". Whitelisting the standard form-control
+# types is more robust than blacklisting custom ones.
+_FOCUSABLE_TYPES = (
+    wx.TextCtrl,
+    wx.ComboBox,
+    wx.Choice,
+    wx.adv.OwnerDrawnComboBox,   # base class of WindowsFriendlyChoice
+    wx.Button,
+    wx.BitmapButton,
+    wx.ToggleButton,
+    wx.RadioButton,
+    wx.CheckBox,
+    wx.SpinCtrl,
+    wx.ListBox,
+)
+
+
+def _find_focusable(widget):
+    """Return widget itself if it is a standard, visible, enabled form
+    control, otherwise recurse into its children and return the first
+    focusable descendant. The recursion is what lets Tab land on the inner
+    TextCtrl of a TallTextCtrl wrapper."""
+    try:
+        # IsShownOnScreen also accounts for ancestor visibility, so widgets
+        # whose parent panel was hidden via Show(False) or sizer.ShowItems
+        # are correctly skipped even when their own IsShown() returns True.
+        if not widget.IsShownOnScreen() or not widget.IsEnabled():
+            return None
+        if (isinstance(widget, _FOCUSABLE_TYPES)
+                and widget.AcceptsFocusFromKeyboard()):
+            return widget
+        for child in widget.GetChildren():
+            f = _find_focusable(child)
+            if f is not None:
+                return f
+    except RuntimeError:
+        pass
+    return None
+
+
+def _navigate_to_sibling(widget, forward):
+    """Move keyboard focus to the next/previous focusable sibling of widget,
+    descending into wrappers that don't accept focus themselves. Bypasses
+    wx's default navigation, which doesn't reliably traverse out of a
+    wrapper Panel whose only child is its inner control."""
+    parent = widget.GetParent()
+    if not parent:
+        return
+    siblings = list(parent.GetChildren())
+    try:
+        idx = siblings.index(widget)
+    except ValueError:
+        return
+    n = len(siblings)
+    step = 1 if forward else -1
+    for offset in range(1, n + 1):
+        target = siblings[(idx + offset * step) % n]
+        focusable = _find_focusable(target)
+        if focusable is not None:
+            focusable.SetFocus()
+            return
+
+
 class TallTextCtrl(wx.Panel):
     """Drop-in for wx.TextCtrl that vertically centres text on Windows.
 
@@ -21,13 +88,17 @@ class TallTextCtrl(wx.Panel):
                     wx.BORDER_THEME | wx.BORDER_SIMPLE | wx.BORDER_NONE)
     _INNER_EVENTS = (wx.EVT_TEXT, wx.EVT_TEXT_ENTER,
                      wx.EVT_SET_FOCUS, wx.EVT_KILL_FOCUS)
+    # Strip TE_PROCESS_TAB so Tab triggers focus navigation instead of
+    # inserting a literal tab character. On Windows, TE_PROCESS_TAB tells
+    # the native EDIT control to handle Tab itself, which inserts \t into
+    # the field — breaking standard form Tab-to-next-field behaviour.
+    _STYLE_STRIP = _BORDER_MASK | wx.TE_PROCESS_TAB
 
     def __init__(self, parent, id=wx.ID_ANY, value='',
                  pos=wx.DefaultPosition, size=wx.DefaultSize,
                  style=0, validator=wx.DefaultValidator, name='', **kwargs):
-        inner_style = (style & ~self._BORDER_MASK) | wx.BORDER_NONE
-        super().__init__(parent, id, pos, size,
-                         style=wx.BORDER_THEME | wx.TAB_TRAVERSAL)
+        inner_style = (style & ~self._STYLE_STRIP) | wx.BORDER_NONE
+        super().__init__(parent, id, pos, size, style=wx.BORDER_THEME)
         self._inner = _OrigTextCtrl(self, wx.ID_ANY, value,
                                      style=inner_style, validator=validator)
         sizer = wx.BoxSizer(wx.VERTICAL)
@@ -36,13 +107,42 @@ class TallTextCtrl(wx.Panel):
         sizer.AddStretchSpacer(1)
         self.SetSizer(sizer)
         self.SetBackgroundColour(self._inner.GetBackgroundColour())
-        self.Bind(wx.EVT_LEFT_DOWN, lambda e: self._inner.SetFocus())
-        # On Windows the EDIT control's Win32 dialog-navigation logic consumes
-        # Tab BEFORE EVT_KEY_DOWN fires, so binding KEY_DOWN never sees it.
-        # EVT_CHAR_HOOK is delivered to the focused window before any default
-        # key processing (including dialog navigation), which is the reliable
-        # hook for Tab interception on Windows.
-        self._inner.Bind(wx.EVT_CHAR_HOOK, self._on_inner_key)
+        # Show the text I-beam cursor when hovering over the spacer regions
+        # of the outer panel, matching the inner TextCtrl. Without this the
+        # arrow cursor appears in the spacer area, making it unclear that
+        # the field is editable.
+        self.SetCursor(wx.Cursor(wx.CURSOR_IBEAM))
+        # Forward clicks on the spacer regions to the inner TextCtrl so a
+        # click anywhere on the field places the caret in the editor.
+        self.Bind(wx.EVT_LEFT_DOWN, self._on_left_down)
+        # Redirect Tab/Shift-Tab navigation. wx's default navigation from the
+        # inner control looks at the inner's siblings — but the inner is the
+        # only child of this wrapper, so Tab bounces back to the inner and
+        # just re-selects its text. Capture Tab with EVT_CHAR_HOOK (fires
+        # before native key processing) and route navigation through the
+        # wrapper's parent so wx walks the form panel's tab order.
+        self._inner.Bind(wx.EVT_CHAR_HOOK, self._on_inner_char_hook)
+
+    def AcceptsFocusFromKeyboard(self):
+        # Skip the wrapper Panel during Tab navigation. Tab should land on
+        # the inner TextCtrl (which has a caret), not the wrapper (which
+        # doesn't). Mouse-click focus is unaffected because AcceptsFocus()
+        # defaults to True and EVT_LEFT_DOWN explicitly forwards to inner.
+        return False
+
+    def _on_left_down(self, event):
+        self._inner.SetFocus()
+        event.Skip()
+
+    def _on_inner_char_hook(self, event):
+        if event.GetKeyCode() == wx.WXK_TAB:
+            forward = not event.ShiftDown()
+            # Manually navigate among the wrapper's siblings — wx's own
+            # Navigate/NavigateIn calls don't reliably traverse out of a
+            # wrapper Panel whose only child is the inner control.
+            wx.CallAfter(_navigate_to_sibling, self, forward)
+            return
+        event.Skip()
 
     def GetValue(self):       return self._inner.GetValue()
     def SetValue(self, v):    self._inner.SetValue(v)
@@ -90,16 +190,6 @@ class TallTextCtrl(wx.Panel):
             return self._inner.Unbind(event, handler=handler)
         return super().Unbind(event, source, id, id2, handler)
 
-    def _on_inner_key(self, event):
-        if event.GetKeyCode() == wx.WXK_TAB:
-            # Navigate() on the wrapper moves focus among the wrapper's
-            # siblings (children of GetParent()), bypassing the panel-internal
-            # traversal that would otherwise trap focus on the inner ctrl.
-            # Don't Skip() so a literal Tab character isn't inserted into
-            # the inner ctrl's text (TE_PROCESS_TAB would otherwise insert it).
-            self.Navigate(not event.ShiftDown())
-            return
-        event.Skip()
 
 
 class WindowsFriendlyChoice(wx.adv.OwnerDrawnComboBox):

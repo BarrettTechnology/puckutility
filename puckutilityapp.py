@@ -54,7 +54,6 @@ import configparser
 # Firmware update to flashp4.py to program multiple pucks at once?? - nice to have 
 
 # Update Calibration procedure to calculate settling time
-# Controlling Play/Pause from the menu does NOT change the button state
 
 def get_version(vers): # Convert uint32_t to semantic version: Major.Minor.Patch
     return "{0}.{1}.{2}".format(
@@ -118,6 +117,16 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             if wx.Platform == '__WXMSW__':
                 wx.Choice = _orig_choice
                 wx.TextCtrl = _orig_textctrl
+
+        # Frame-level Tab/Shift-Tab interception. EVT_CHAR_HOOK on the focused
+        # window bubbles up to the frame; binding here gives us a single hook
+        # that fires for keystrokes from ANY control (buttons, choices, the
+        # TallTextCtrl inner, etc.), so Tab navigation works from every focus
+        # target — not just the TallTextCtrl-bound ones.  Windows-only because
+        # GTK already handles Tab natively.
+        if wx.Platform == '__WXMSW__':
+            self.Bind(wx.EVT_CHAR_HOOK, self._on_tab_nav)
+
         self._replace_static_texts()
         icons = wx.Icon("images/BarrettLogo.png")
         self.SetBackgroundColour(wx.Colour(255,255,255))
@@ -237,6 +246,26 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         dc = wx.PaintDC(panel)
         pos = self.ScreenToClient(panel.GetScreenPosition())
         dc.DrawBitmap(self.backgroundBMP, -pos.x, -pos.y)
+
+    def _on_tab_nav(self, event):
+        # Frame-level Tab/Shift-Tab interception. Fires for the focused window
+        # via EVT_CHAR_HOOK regardless of which control has focus, so Tab works
+        # from buttons, choices, and TallTextCtrl inners alike. Routes through
+        # widgets._navigate_to_sibling to avoid wx's broken default navigation.
+        if event.GetKeyCode() == wx.WXK_TAB:
+            focused = wx.Window.FindFocus()
+            if focused is not None:
+                # If focus is inside a TallTextCtrl wrapper, navigate from the
+                # wrapper itself — its inner is the wrapper's only child, so
+                # navigating from the inner finds no siblings.
+                nav_from = focused
+                parent = focused.GetParent()
+                if isinstance(parent, widgets.TallTextCtrl):
+                    nav_from = parent
+                forward = not event.ShiftDown()
+                wx.CallAfter(widgets._navigate_to_sibling, nav_from, forward)
+                return
+        event.Skip()
 
     def _replace_static_texts(self):
         """Swap every wx.StaticText child with a TransparentText in-place."""
