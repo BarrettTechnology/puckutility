@@ -37,6 +37,15 @@ import datetime
 import canopen_runner
 import csv
 import flashp4
+import logging
+
+# Silence python-can's PCAN warnings — "Bus error: an error counter reached the
+# 'heavy'/'warning' limit" floods the terminal/logger when the CAN bus has
+# transient errors (e.g. unpowered Puck, marginal cabling). The same condition
+# is already handled at the application level via SDO timeouts and the
+# "buffer"/"heavy" string checks in scan_pucks; the underlying exception text
+# is unaffected by the log level.
+logging.getLogger("can.pcan").setLevel(logging.ERROR)
 import threading
 import wx.lib.agw.pygauge as PG
 import argparse
@@ -1588,35 +1597,44 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             pass
    
     def onCloseFrame(self,event):
-        self.network.sync.stop()
         try:
-            # This is the most important step for safety!
-            # self.node.sdo["ControlWord"].raw = 0x00
-            self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
-            # Verification Loop: Wait up to 500ms for the hardware to confirm
-            success = False
-            timeout = time.time() + 0.5
-            while time.time() < timeout:
-                # Check 0x6061 (Modes of Operation Display)
-                if self.node.sdo[0x6061].raw == 0:
-                    success = True
-                    break
-                time.sleep(0.05)
-            if success:
-                print("Puck successfully transitioned to IDLE.")
-            else:
-                print("Warning: Puck did not confirm IDLE mode, but proceeding with removal.")
-            
-            MyApp.removePuck(self,self.getID())
+            self.network.sync.stop()
+        except Exception:
+            pass
 
-        except canopen.SdoCommunicationError as e:
-                print(f"CANopen Communication Error: {e}")
-                # Even if communication fails, you might still want to remove it from the UI
-                MyApp.removePuck(self, self.getID())
+        # Skip the idle handshake if no node is active — without one, the SDO
+        # write below blocks until timeout and freezes the frame on exit.
+        if len(MyApp.getNodes(self)) == 0:
+            print("No active node; skipping idle handshake.")
+        else:
+            try:
+                # This is the most important step for safety!
+                # self.node.sdo["ControlWord"].raw = 0x00
+                self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
+                # Verification Loop: Wait up to 500ms for the hardware to confirm
+                success = False
+                timeout = time.time() + 0.5
+                while time.time() < timeout:
+                    # Check 0x6061 (Modes of Operation Display)
+                    if self.node.sdo[0x6061].raw == 0:
+                        success = True
+                        break
+                    time.sleep(0.05)
+                if success:
+                    print("Puck successfully transitioned to IDLE.")
+                else:
+                    print("Warning: Puck did not confirm IDLE mode, but proceeding with removal.")
+
+                MyApp.removePuck(self,self.getID())
+
+            except canopen.SdoCommunicationError as e:
+                    print(f"CANopen Communication Error: {e}")
+                    # Even if communication fails, you might still want to remove it from the UI
+                    MyApp.removePuck(self, self.getID())
 
         self.Destroy()
         print('Closing Frame...')
-        os._exit(0)    
+        os._exit(0)
 
     def on_off_adc(self,event):
         try:
@@ -1673,15 +1691,24 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 # Need to update the custom button to allow setting!
                 print('No Puck Connected -')
                 print('Turning off ADC Monitor...')
-                time.sleep(0.1) # delay for visual effect
-                self.onoff1.SetValue(0)
+                # Explicitly set ON first so the visual feedback fires even
+                # when on_off_adc was triggered by the Ctrl+P menu accelerator
+                # (which never toggles the button). When invoked from the
+                # button click itself, the click handler already toggled the
+                # button to ON, so SetValue(1) is a harmless no-op.
+                # CallLater (not time.sleep) lets the event loop process the
+                # pending ON paint and briefly render it before we reset to
+                # OFF — gives the user visual feedback that the request was
+                # received and intentionally rejected.
+                self.onoff1.SetValue(1)
+                wx.CallLater(100, self.onoff1.SetValue, 0)
         except:
             # self.on_off_adc(None) # incorrect
             # Reset Button to off
             print('No Puck Connected -')
             print('Turning off ADC Monitor...')
-            time.sleep(0.1) # delay for visual effect
-            self.onoff1.SetValue(0)
+            self.onoff1.SetValue(1)
+            wx.CallLater(100, self.onoff1.SetValue, 0)
             pass
 
 class MyApp(wx.App):
