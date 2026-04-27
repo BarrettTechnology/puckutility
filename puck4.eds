@@ -4,10 +4,10 @@ FileVersion=1
 FileRevision=1
 EDSVersion=4.0
 Description=Barrett Puck 4 PMSM motor controller
-CreationTime=10:44AM
+CreationTime=12:26PM
 CreationDate=04-27-2026
 CreatedBy=scripts/gen_eds.py
-ModificationTime=10:44AM
+ModificationTime=12:26PM
 ModificationDate=04-27-2026
 ModifiedBy=scripts/gen_eds.py
 
@@ -17,7 +17,7 @@ VendorNumber=0x00000408
 ProductName=Puck 4
 ProductNumber=0
 RevisionNumber=0
-OrderCode=
+OrderCode=Puck4
 BaudRate_10=0
 BaudRate_20=0
 BaudRate_50=0
@@ -199,14 +199,13 @@ DefaultValue=0
 ParameterName=ErrorHistory
 ObjectType=0x08
 SubNumber=9
-DataType=0x0007
 
 [1003sub0]
 ParameterName=NumberOfEntries
 ObjectType=0x07
 DataType=0x0005
 AccessType=ro
-DefaultValue=0
+DefaultValue=8
 
 [1003sub1]
 ParameterName=1
@@ -548,14 +547,13 @@ DefaultValue=0
 ParameterName=Rpdo1Mapping
 ObjectType=0x08
 SubNumber=17
-DataType=0x0007
 
 [1600sub0]
 ParameterName=NumberOfEntries
 ObjectType=0x07
 DataType=0x0005
-AccessType=ro
-DefaultValue=0
+AccessType=rw
+DefaultValue=16
 
 [1600sub1]
 ParameterName=1
@@ -620,50 +618,50 @@ DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1600sub10]
+[1600suba]
 ParameterName=10
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1600sub11]
+[1600subb]
 ParameterName=11
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1600sub12]
+[1600subc]
 ParameterName=12
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1600sub13]
+[1600subd]
 ParameterName=13
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1600sub14]
+[1600sube]
 ParameterName=14
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1600sub15]
+[1600subf]
 ParameterName=15
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1600sub16]
-ParameterName=16
+[1600sub10]
+ParameterName=10
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
@@ -673,14 +671,13 @@ DefaultValue=0
 ParameterName=Rpdo2Mapping
 ObjectType=0x08
 SubNumber=17
-DataType=0x0007
 
 [1601sub0]
 ParameterName=NumberOfEntries
 ObjectType=0x07
 DataType=0x0005
-AccessType=ro
-DefaultValue=0
+AccessType=rw
+DefaultValue=16
 
 [1601sub1]
 ParameterName=1
@@ -745,50 +742,50 @@ DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1601sub10]
+[1601suba]
 ParameterName=10
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1601sub11]
+[1601subb]
 ParameterName=11
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1601sub12]
+[1601subc]
 ParameterName=12
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1601sub13]
+[1601subd]
 ParameterName=13
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1601sub14]
+[1601sube]
 ParameterName=14
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1601sub15]
+[1601subf]
 ParameterName=15
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1601sub16]
-ParameterName=16
+[1601sub10]
+ParameterName=10
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
@@ -798,14 +795,13 @@ DefaultValue=0
 ParameterName=Rpdo3Mapping
 ObjectType=0x08
 SubNumber=17
-DataType=0x0007
 
 [1602sub0]
 ParameterName=NumberOfEntries
 ObjectType=0x07
 DataType=0x0005
-AccessType=ro
-DefaultValue=0
+AccessType=rw
+DefaultValue=16
 
 [1602sub1]
 ParameterName=1
@@ -870,50 +866,50 @@ DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1602sub10]
+[1602suba]
 ParameterName=10
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1602sub11]
+[1602subb]
 ParameterName=11
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1602sub12]
+[1602subc]
 ParameterName=12
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1602sub13]
+[1602subd]
 ParameterName=13
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1602sub14]
+[1602sube]
 ParameterName=14
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1602sub15]
+[1602subf]
 ParameterName=15
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1602sub16]
-ParameterName=16
+[1602sub10]
+ParameterName=10
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
@@ -923,14 +919,13 @@ DefaultValue=0
 ParameterName=Rpdo4Mapping
 ObjectType=0x08
 SubNumber=17
-DataType=0x0007
 
 [1603sub0]
 ParameterName=NumberOfEntries
 ObjectType=0x07
 DataType=0x0005
-AccessType=ro
-DefaultValue=0
+AccessType=rw
+DefaultValue=16
 
 [1603sub1]
 ParameterName=1
@@ -995,50 +990,50 @@ DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1603sub10]
+[1603suba]
 ParameterName=10
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1603sub11]
+[1603subb]
 ParameterName=11
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1603sub12]
+[1603subc]
 ParameterName=12
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1603sub13]
+[1603subd]
 ParameterName=13
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1603sub14]
+[1603sube]
 ParameterName=14
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1603sub15]
+[1603subf]
 ParameterName=15
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1603sub16]
-ParameterName=16
+[1603sub10]
+ParameterName=10
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
@@ -1236,14 +1231,13 @@ DefaultValue=0
 ParameterName=Tpdo1Mapping
 ObjectType=0x08
 SubNumber=17
-DataType=0x0007
 
 [1A00sub0]
 ParameterName=NumberOfEntries
 ObjectType=0x07
 DataType=0x0005
-AccessType=ro
-DefaultValue=0
+AccessType=rw
+DefaultValue=16
 
 [1A00sub1]
 ParameterName=1
@@ -1308,50 +1302,50 @@ DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1A00sub10]
+[1A00suba]
 ParameterName=10
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1A00sub11]
+[1A00subb]
 ParameterName=11
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1A00sub12]
+[1A00subc]
 ParameterName=12
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1A00sub13]
+[1A00subd]
 ParameterName=13
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1A00sub14]
+[1A00sube]
 ParameterName=14
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1A00sub15]
+[1A00subf]
 ParameterName=15
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1A00sub16]
-ParameterName=16
+[1A00sub10]
+ParameterName=10
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
@@ -1361,14 +1355,13 @@ DefaultValue=0
 ParameterName=Tpdo2Mapping
 ObjectType=0x08
 SubNumber=17
-DataType=0x0007
 
 [1A01sub0]
 ParameterName=NumberOfEntries
 ObjectType=0x07
 DataType=0x0005
-AccessType=ro
-DefaultValue=0
+AccessType=rw
+DefaultValue=16
 
 [1A01sub1]
 ParameterName=1
@@ -1433,50 +1426,50 @@ DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1A01sub10]
+[1A01suba]
 ParameterName=10
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1A01sub11]
+[1A01subb]
 ParameterName=11
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1A01sub12]
+[1A01subc]
 ParameterName=12
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1A01sub13]
+[1A01subd]
 ParameterName=13
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1A01sub14]
+[1A01sube]
 ParameterName=14
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1A01sub15]
+[1A01subf]
 ParameterName=15
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1A01sub16]
-ParameterName=16
+[1A01sub10]
+ParameterName=10
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
@@ -1486,14 +1479,13 @@ DefaultValue=0
 ParameterName=Tpdo3Mapping
 ObjectType=0x08
 SubNumber=17
-DataType=0x0007
 
 [1A02sub0]
 ParameterName=NumberOfEntries
 ObjectType=0x07
 DataType=0x0005
-AccessType=ro
-DefaultValue=0
+AccessType=rw
+DefaultValue=16
 
 [1A02sub1]
 ParameterName=1
@@ -1558,50 +1550,50 @@ DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1A02sub10]
+[1A02suba]
 ParameterName=10
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1A02sub11]
+[1A02subb]
 ParameterName=11
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1A02sub12]
+[1A02subc]
 ParameterName=12
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1A02sub13]
+[1A02subd]
 ParameterName=13
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1A02sub14]
+[1A02sube]
 ParameterName=14
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1A02sub15]
+[1A02subf]
 ParameterName=15
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1A02sub16]
-ParameterName=16
+[1A02sub10]
+ParameterName=10
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
@@ -1611,14 +1603,13 @@ DefaultValue=0
 ParameterName=Tpdo4Mapping
 ObjectType=0x08
 SubNumber=17
-DataType=0x0007
 
 [1A03sub0]
 ParameterName=NumberOfEntries
 ObjectType=0x07
 DataType=0x0005
-AccessType=ro
-DefaultValue=0
+AccessType=rw
+DefaultValue=16
 
 [1A03sub1]
 ParameterName=1
@@ -1683,50 +1674,50 @@ DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1A03sub10]
+[1A03suba]
 ParameterName=10
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1A03sub11]
+[1A03subb]
 ParameterName=11
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1A03sub12]
+[1A03subc]
 ParameterName=12
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1A03sub13]
+[1A03subd]
 ParameterName=13
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1A03sub14]
+[1A03sube]
 ParameterName=14
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1A03sub15]
+[1A03subf]
 ParameterName=15
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
 DefaultValue=0
 
-[1A03sub16]
-ParameterName=16
+[1A03sub10]
+ParameterName=10
 ObjectType=0x07
 DataType=0x0007
 AccessType=rw
@@ -1991,7 +1982,14 @@ DefaultValue=0
 [2384]
 ParameterName=Object2384
 ObjectType=0x09
-SubNumber=5
+SubNumber=6
+
+[2384sub0]
+ParameterName=NumberOfEntries
+ObjectType=0x07
+DataType=0x0005
+AccessType=ro
+DefaultValue=9
 
 [2384sub4]
 ParameterName=OvervoltageFaultTimeout
@@ -2038,7 +2036,7 @@ ParameterName=NumberOfEntries
 ObjectType=0x07
 DataType=0x0005
 AccessType=ro
-DefaultValue=2
+DefaultValue=3
 
 [2385sub1]
 ParameterName=Function
@@ -2204,7 +2202,7 @@ DataType=0x0006
 AccessType=rw
 DefaultValue=0
 
-[3001sub10]
+[3001suba]
 ParameterName=InvertGateSignals
 ObjectType=0x07
 DataType=0x0005
@@ -2286,35 +2284,35 @@ DataType=0x0003
 AccessType=ro
 DefaultValue=0
 
-[3002sub10]
+[3002suba]
 ParameterName=StatsStdev
 ObjectType=0x07
 DataType=0x0003
 AccessType=ro
 DefaultValue=0
 
-[3002sub11]
+[3002subb]
 ParameterName=StatsMin
 ObjectType=0x07
 DataType=0x0003
 AccessType=ro
 DefaultValue=0
 
-[3002sub12]
+[3002subc]
 ParameterName=StatsMax
 ObjectType=0x07
 DataType=0x0003
 AccessType=ro
 DefaultValue=0
 
-[3002sub13]
+[3002subd]
 ParameterName=StatsMean
 ObjectType=0x07
 DataType=0x0003
 AccessType=ro
 DefaultValue=0
 
-[3002sub14]
+[3002sube]
 ParameterName=StatsStdev14
 ObjectType=0x07
 DataType=0x0003
@@ -2584,14 +2582,14 @@ DataType=0x0006
 AccessType=rw
 DefaultValue=0
 
-[3011sub10]
+[3011suba]
 ParameterName=i_peak_time
 ObjectType=0x07
 DataType=0x0006
 AccessType=rw
 DefaultValue=0
 
-[3011sub11]
+[3011subb]
 ParameterName=i_cal
 ObjectType=0x07
 DataType=0x0006
@@ -2641,7 +2639,7 @@ ParameterName=NumberOfEntries
 ObjectType=0x07
 DataType=0x0005
 AccessType=ro
-DefaultValue=5
+DefaultValue=6
 
 [3013sub1]
 ParameterName=Resolution

@@ -53,7 +53,7 @@ import configparser
 # Calibration steps individually still popup issue for multiple cal
 # Firmware update to flashp4.py to program multiple pucks at once?? - nice to have 
 
-# WIDEN ERROR BOUNDS FOR CAL
+# Update Calibration procedure to calculate settling time
 # Controlling Play/Pause from the menu does NOT change the button state
 
 def get_version(vers): # Convert uint32_t to semantic version: Major.Minor.Patch
@@ -1547,9 +1547,10 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                         pass
                     self.network.sync.start(0.01)
                     self.ADC_ON = True
-                    # if event.getId() == '-31989':
-                    #     print('yes')
-                    #     self.onoff1.SetValue(1)
+                    # Sync button state — required when on_off_adc is called
+                    # from a path other than the button click itself (e.g. the
+                    # Ctrl+P menu accelerator, which fires EVT_MENU directly).
+                    self.onoff1.SetValue(1)
 
                 elif self.ADC_ON == True:
                     print('Turning off ADC Monitor...')
@@ -1572,10 +1573,10 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                     self.Vrpm.SetForegroundColour((0,0,0))
 
                     self.Dial.SetBitmap(wx.Bitmap(self._dial_base_img))
-                    # if event.getId() == '-31989':
-                    #     print('yes')
-                    #     self.onoff1.SetValue(0)
-                    # self.onoff1.SetValue(0)
+                    # Sync button state — required when on_off_adc is called
+                    # from a path other than the button click itself (e.g. the
+                    # Ctrl+P menu accelerator, which fires EVT_MENU directly).
+                    self.onoff1.SetValue(0)
             else:
                 # Need to update the custom button to allow setting!
                 print('No Puck Connected -')
