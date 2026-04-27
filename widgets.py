@@ -48,10 +48,12 @@ class TallTextCtrl(wx.Panel):
         self._inner.SetMargins(left)
 
     def Enable(self, enable=True):
-        # Forward to the inner ctrl so disabled visuals (gray text) take effect,
-        # then update the panel itself for consistent focus behaviour.
-        self._inner.Enable(enable)
-        return super().Enable(enable)
+        # No-op: disabling the panel paints a gray disabled-window background,
+        # and disabling the inner TextCtrl makes Windows draw it with a gray
+        # client area.  Read-only fields use TE_READONLY for non-editability
+        # and should keep a white background, so we suppress Enable(False)
+        # entirely on this wrapper.
+        return True
 
     def SetFont(self, font):
         self._inner.SetFont(font)
