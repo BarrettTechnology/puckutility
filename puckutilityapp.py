@@ -35,6 +35,7 @@ import sys
 import math
 import datetime
 import canopen_runner
+import csv
 import flashp4
 import threading
 import wx.lib.agw.pygauge as PG
@@ -42,18 +43,19 @@ import argparse
 import configparser
 
 # TODO
-# Tab doesn't work on windows!!!
-# Set an active Fault flag to prevent pouring of errors?
+
+# KNOWN BUGS
 # If gainfactor is 0 don't run calc and fail
-# Setup confirmation of Puck type prior to configuring and raise error if not a match
 # Auto focus when coming out of disabled??
 # Add hotkeys to help guide! ******************************
 # Auto reset cob IDs so configuration isn't required??
-
 # Calibration steps individually still popup issue for multiple cal
-# Firmware update to flashp4.py to program multiple pucks at once?? - nice to have 
 
+# WISH LIST
 # Update Calibration procedure to calculate settling time
+
+# NICE TO HAVE 
+# Firmware update to flashp4.py to program multiple pucks at once?? - nice to have 
 
 def get_version(vers): # Convert uint32_t to semantic version: Major.Minor.Patch
     return "{0}.{1}.{2}".format(
@@ -1064,6 +1066,39 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         if self.adcWasON == True:
             self.on_off_adc(self)
 
+    # Mapping of CANopen 0x1018 sub-2 product codes to Puck model names.
+    _PRODUCT_CODE_MODELS = {
+        5707: 'P4-16',
+        1323: 'P4-37',
+        1950: 'P4-37',
+        5755: 'P4-42',
+        5760: 'P4-32',
+    }
+
+    def _format_product_code(self, code):
+        """Format a product code as e.g. '5707 (P4-16)', or '<unknown>' if code is None."""
+        if code is None:
+            return '<unknown>'
+        model = self._PRODUCT_CODE_MODELS.get(code)
+        return f"{code} ({model})" if model else f"{code} (unknown model)"
+
+    def _read_csv_product_code(self, pathname):
+        """Return the 0x1018 sub-2 (Product Code) value from a CANopen CSV
+        config, or None if not present / parse error. CSV row format is:
+        description, variable, index, subindex, type, value."""
+        try:
+            with open(pathname, 'r') as f:
+                for row in csv.reader(f):
+                    if len(row) < 6:
+                        continue
+                    idx = row[2].strip().lower()
+                    sub = row[3].strip()
+                    if idx == '0x1018' and sub == '2':
+                        return int(row[5].strip(), 0)  # base 0 handles 0x.. and decimal
+        except Exception as e:
+            print(f"Failed to parse product code from CSV: {e}")
+        return None
+
     def file_to_p4(self, event, path=False):  # wxGlade: wxp3_frame.<event_handler>
         if self.check_for_node() == False:
             return
@@ -1101,6 +1136,34 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
               pathname = fileDialog.GetPath()
         else:
             pathname = path
+
+        # Verify the CSV's product code (0x1018 sub-2) matches the active
+        # Puck before disconnecting/uploading. Flashing a config from a
+        # mismatched motor variant can leave the drive in an unusable state.
+        csv_product_code = self._read_csv_product_code(pathname)
+        try:
+            node_product_code = int(self.node.sdo[0x1018][2].raw)
+        except Exception as e:
+            node_product_code = None
+            print(f"Failed to read active node product code: {e}")
+        if (csv_product_code is not None
+                and node_product_code is not None
+                and csv_product_code != node_product_code):
+            csv_str = self._format_product_code(csv_product_code)
+            node_str = self._format_product_code(node_product_code)
+            print(f"Product Code Mismatch: CSV={csv_str}, node={node_str}")
+            msg = ("Product Code Mismatch — configuration NOT uploaded.\n\n"
+                   f"CSV File product code: {csv_str}\n"
+                   f"Active Puck product code: {node_str}\n\n"
+                   "Select a configuration file that matches this Puck "
+                   "variant and try again.")
+            dlg = wx.MessageDialog(None, msg, "Product Code Mismatch",
+                                   wx.OK | wx.ICON_ERROR)
+            dlg.ShowModal()
+            dlg.Destroy()
+            if self.adcWasON == True:
+                self.on_off_adc(self)
+            return
 
         self.frame_statusbar.SetStatusText("Updating Config...", 1)
         self.frame_statusbar.Update()
