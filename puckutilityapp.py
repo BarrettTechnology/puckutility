@@ -1142,65 +1142,48 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.adcWasON = False
 
     def select_test(self, event):  # wxGlade: wxp3_frame.<event_handler>
-        
-        # Start by pausing network transmits
         if self.ADC_ON == True:
             self.node.network.sync.stop()
+            time.sleep(0.05)  # Let any in-flight sync frame clear before SDO transactions
 
         if len(self.network.scanner.nodes) == 0:
             self.choice_test.SetSelection(0)
             print('No active node!')
-            msg = ('No active node!')
-            dlg = wx.MessageDialog(None, msg)
+            dlg = wx.MessageDialog(None, 'No active node!')
             dlg.ShowModal()
             dlg.Destroy()
             return
         elif self.requireConfig:
             self.choice_test.SetSelection(0)
-            # Should tell user calibration is required, and ask to perform 'calibrate all'
             msg = "Configuration is required after a firmware update.\nWould you like to configure the active Puck?"
-            dlg = wx.MessageDialog(None,msg,'Warning!',wx.YES_NO | wx.ICON_WARNING)
+            dlg = wx.MessageDialog(None, msg, 'Warning!', wx.YES_NO | wx.ICON_WARNING)
             answer = dlg.ShowModal()
+            dlg.Destroy()
             if answer == wx.ID_YES:
                 self.file_to_p4(None)
-            else:
-                pass
-            dlg.Destroy()
             return
         elif self.requireCal:
             self.choice_test.SetSelection(0)
-            # Should tell user calibration is required, and ask to perform 'calibrate all'
             msg = "Calibration is required after configuration.\nWould you like to calibrate all Pucks?"
-            dlg = wx.MessageDialog(None,msg,'Warning!',wx.YES_NO | wx.ICON_WARNING)
+            dlg = wx.MessageDialog(None, msg, 'Warning!', wx.YES_NO | wx.ICON_WARNING)
             answer = dlg.ShowModal()
+            dlg.Destroy()
             if answer == wx.ID_YES:
                 self.calibrate_all_pucks(None)
-            else:
-                pass
-            dlg.Destroy()
             return
 
         quick_test = self.choice_test.GetSelection()
-        if quick_test == 0:
-            # print(self.lastMode)
-            print("Setting Mode = IDLE")
-            # Update buffer for when Sync restarts
-            self.node.rpdo[1]["SetModeOfOperation"].raw = 0
-            self.node.rpdo[1]["ControlWord"].raw = 0x06 # Shutdown state
-            self.node.rpdo[1].transmit()
 
-            for attempt in range(5):
-                self.node.sdo["SetModeOfOperation"].raw = 0
-                time.sleep(0.05)
-                if self.node.sdo[0x6061].raw == 0:
-                    print("Mode Confirmed")
-                    break
-            else:
-                print(f"Failed to set IDLE mode (got {self.node.sdo[0x6061].raw})")
+        if quick_test == 0:
+            print("Setting Mode = IDLE")
+            self.node.sdo["ControlWord"].raw = 0x06  # Shutdown state
+            self.node.sdo["SetModeOfOperation"].raw = 0
+            self.node.rpdo[1]["SetModeOfOperation"].raw = 0
+            self.node.rpdo[1]["ControlWord"].raw = 0x06
             self.button_6.SetBackgroundColour(self.gray)
             self.lastMode = 0
-            # Resume transmission
             if self.ADC_ON == True:
+                self.node.rpdo[1].transmit()
                 self.node.network.sync.start()
             return
 
@@ -1219,69 +1202,48 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
         if quick_test == 1:  # Torque
             print("Setting Mode = TORQUE")
+            self.node.sdo["SetModeOfOperation"].raw = 4
             self.node.rpdo[1]["SetModeOfOperation"].raw = 4
             self.node.rpdo[1]["ControlWord"].raw = 0x0F
-            for attempt in range(5):
-                self.node.rpdo[1].transmit()
-                self.node.network.sync.transmit()
-                time.sleep(0.01)
-                if self.node.sdo[0x6061].raw == 4:
-                    print("Mode Confirmed")
-                    break
-            else:
-                print(f"Failed to set TORQUE mode (got {self.node.sdo[0x6061].raw})")
 
         elif quick_test == 2:  # Velocity
             print("Setting Mode = VELOCITY")
+            self.node.sdo["SetModeOfOperation"].raw = 3
             self.node.rpdo[1]["SetModeOfOperation"].raw = 3
             self.node.rpdo[1]["ControlWord"].raw = 0x0F
-            for attempt in range(5):
-                self.node.rpdo[1].transmit()
-                self.node.network.sync.transmit()
-                time.sleep(0.01)
-                if self.node.sdo[0x6061].raw == 3:
-                    print("Mode Confirmed")
-                    break
-            else:
-                print(f"Failed to set VELOCITY mode (got {self.node.sdo[0x6061].raw})")
 
         elif quick_test == 3:  # Position
             print("Setting Mode = POSITION")
             self.node.sdo["ProfileVelocity"].raw = 130000
+            self.node.sdo["SetModeOfOperation"].raw = 1
+            self.node.sdo["ControlWord"].raw = 0x2F  # Enable + new setpoint
             self.node.rpdo[1]["SetModeOfOperation"].raw = 1
             self.node.rpdo[1]["ControlWord"].raw = 0x2F
-            for attempt in range(5):
-                self.node.rpdo[1].transmit()
-                self.node.network.sync.transmit()
-                time.sleep(0.01)
-                if self.node.sdo[0x6061].raw == 1:
-                    print("Mode Confirmed")
-                    break
-            else:
-                print(f"Failed to set POSITION mode (got {self.node.sdo[0x6061].raw})")
 
         elif quick_test == 4:  # Homing
             print("Setting Mode = HOMING")
             self.node.sdo["SetModeOfOperation"].raw = 6
+            self.node.rpdo[1]["SetModeOfOperation"].raw = 6
+            self.node.rpdo[1]["ControlWord"].raw = 0x0F
             self.text_testvalue.SetValue("0")
-        
-        # Finally resume transmission
+
         if self.ADC_ON == True:
+            # Push fresh RPDO state so the first SYNC tick latches the new mode/CW,
+            # not whatever stale data was last in the drive's RPDO inbox.
+            self.node.rpdo[1].transmit()
             self.node.network.sync.start()
 
     def run_test(self, event):  # wxGlade: wxp3_frame.<event_handler>
         if len(self.network.scanner.nodes) == 0:
             print('No active node!')
-            msg = ('No active node!')
-            dlg = wx.MessageDialog(None, msg)
+            dlg = wx.MessageDialog(None, 'No active node!')
             dlg.ShowModal()
             dlg.Destroy()
             return
 
         if len(self.text_testvalue.GetValue()) == 0:
             print('No input value!')
-            msg = ('No input value!')
-            dlg = wx.MessageDialog(None, msg)
+            dlg = wx.MessageDialog(None, 'No input value!')
             dlg.ShowModal()
             dlg.Destroy()
             return
@@ -1291,58 +1253,81 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
         if quick_test == 0:
             print('No mode selected!')
-            msg = ('No mode selected!')
-            dlg = wx.MessageDialog(None, msg)
+            dlg = wx.MessageDialog(None, 'No mode selected!')
             dlg.ShowModal()
             dlg.Destroy()
+            return
 
-        elif quick_test == 1:  # Torque
+        if self.ADC_ON == True:
+            self.node.network.sync.stop()
+            time.sleep(0.05)  # Let any in-flight sync frame clear before SDO transactions
+
+        if quick_test == 1:  # Torque
             rated_torque = self.node.sdo["RatedTorque"].raw
             if abs(cmd_value / self.gearRatio) > rated_torque:
                 cmd_value = math.copysign(rated_torque * self.gearRatio, cmd_value)
             trq_value = round(cmd_value * 1000 / (rated_torque * self.gearRatio))
             print(f"Set TargetTorque = {cmd_value} mNm ({round(trq_value / 10, 2)}% max)")
+            self.node.sdo["TargetTorque"].raw = trq_value
             self.node.rpdo[1]["TargetTorque"].raw = trq_value
-            self.node.rpdo[1].transmit()
-            self.node.network.sync.transmit()
+            self.node.rpdo[1]["ControlWord"].raw = 0x0F
 
         elif quick_test == 2:  # Velocity
             ctspersec = round(cmd_value * 4096 / 60 * self.gearRatio)
             print(f"Set TargetVelocity = {cmd_value} RPM")
+            self.node.sdo["TargetVelocity"].raw = ctspersec
             self.node.rpdo[2]["TargetVelocity"].raw = ctspersec
-            self.node.rpdo[2].transmit()
-            self.node.network.sync.transmit()
+            self.node.rpdo[1]["ControlWord"].raw = 0x0F
 
         elif quick_test == 3:  # Position
             ctsvalue = cmd_value / 360 * 4096 * self.gearRatio
             print(f"Set Target Position += {cmd_value} degrees")
-            self.node.rpdo[2]["TargetPosition"].raw = self.node.sdo["PositionFeedback"].raw + ctsvalue
-            self.node.rpdo[2].transmit()
-            self.node.network.sync.transmit()
-            # Wait for ready to receive new waypoint (StatusWord bit 12 = 0)
-            while self.node.sdo["StatusWord"].raw & 0x1000:
+            # Wait for ready to receive new waypoint (StatusWord bit 12 = 0), 1 s timeout
+            for _ in range(100):
+                if not (self.node.sdo["StatusWord"].raw & 0x1000):
+                    break
                 time.sleep(0.01)
-            # Raise new setpoint flag
+            target_pos = int(self.node.sdo["PositionFeedback"].raw + ctsvalue)
+            self.node.sdo["TargetPosition"].raw = target_pos
+            self.node.rpdo[2]["TargetPosition"].raw = target_pos
+            # Push the new target into the drive's RPDO[2] inbox before SYNC latches it
+            self.node.rpdo[2].transmit()
+            # Raise new setpoint flag via RPDO + single SYNC (avoids SDO lock on ControlWord)
             self.node.rpdo[1]["ControlWord"].raw = 0x3F
             self.node.rpdo[1].transmit()
             self.node.network.sync.transmit()
-            # Wait for setpoint acknowledged (StatusWord bit 12 = 1)
-            while not (self.node.sdo["StatusWord"].raw & 0x1000):
+            # Wait for setpoint acknowledged (StatusWord bit 12 = 1), 1 s timeout
+            for _ in range(100):
+                if self.node.sdo["StatusWord"].raw & 0x1000:
+                    break
                 time.sleep(0.01)
-            # Clear new setpoint flag
+            # Clear new setpoint flag via RPDO + single SYNC
             self.node.rpdo[1]["ControlWord"].raw = 0x2F
             self.node.rpdo[1].transmit()
             self.node.network.sync.transmit()
-            # Wait for falling edge acknowledgment
-            while self.node.sdo["StatusWord"].raw & 0x1000:
+            # Wait for falling edge acknowledgment, 1 s timeout
+            for _ in range(100):
+                if not (self.node.sdo["StatusWord"].raw & 0x1000):
+                    break
                 time.sleep(0.01)
 
         elif quick_test == 4:  # Homing
             self.node.sdo["HomingOffset"].raw = int(cmd_value)
-            self.node.sdo["ControlWord"].raw |= 0x0010
-            while not (self.node.sdo["StatusWord"].raw & 0x1000):
+            self.node.rpdo[1]["ControlWord"].raw = 0x1F  # 0x0F | homing-start bit
+            self.node.rpdo[1].transmit()
+            self.node.network.sync.transmit()
+            for _ in range(300):  # 30 s timeout
+                if self.node.sdo["StatusWord"].raw & 0x1000:
+                    break
                 time.sleep(0.1)
-            self.node.sdo["ControlWord"].raw &= ~0x0010
+            self.node.rpdo[1]["ControlWord"].raw = 0x0F
+            self.node.rpdo[1].transmit()
+            self.node.network.sync.transmit()
+
+        if self.ADC_ON == True:
+            # Push fresh RPDO state so the first SYNC tick latches it, not stale inbox data.
+            self.node.rpdo[1].transmit()
+            self.node.network.sync.start()
 
         self.lastMode = quick_test
 
@@ -1531,9 +1516,20 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 # print(event.GetId())
                 if self.ADC_ON == False:
                     print('Turning on ADC Monitor...')
-                    # Start sync transmission
+                    # Refresh RPDO buffers from live drive state and TRANSMIT them
+                    # so the firmware's RPDO inbox holds the current state before
+                    # the first sync tick arrives (otherwise stale/empty inbox
+                    # data is latched on first sync, idling the motor).
+                    try:
+                        mode = self.node.sdo[0x6061].raw  # Modes of Operation Display (read-only)
+                        self.node.rpdo[1]["SetModeOfOperation"].raw = mode
+                        if mode == 1:  # Position: hold at current feedback so a stale TargetPosition can't move us
+                            self.node.rpdo[2]["TargetPosition"].raw = self.node.sdo["PositionFeedback"].raw
+                            self.node.rpdo[2].transmit()
+                        self.node.rpdo[1].transmit()
+                    except Exception:
+                        pass
                     self.network.sync.start(0.01)
-                    #Turn on ADC Monitoring
                     self.ADC_ON = True
                     # if event.getId() == '-31989':
                     #     print('yes')
