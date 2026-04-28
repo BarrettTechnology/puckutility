@@ -1845,13 +1845,11 @@ class MyApp(wx.App):
         self.frame.Centre()
         self.frame.Show()
         if MyApp.touchscreen:
-            # Kiosk-style fullscreen for the 7" Pi touchscreen. Keep the menu
-            # bar visible so the Ctrl+S / Ctrl+P / Ctrl+C accelerators stay
-            # discoverable.
-            self.frame.ShowFullScreen(
-                True,
-                wx.FULLSCREEN_NOTOOLBAR | wx.FULLSCREEN_NOSTATUSBAR
-                | wx.FULLSCREEN_NOBORDER | wx.FULLSCREEN_NOCAPTION)
+            # Maximize so the window fills the work area on the 7" Pi screen
+            # while keeping the menu bar, status bar, and frame border all
+            # intact (ShowFullScreen strips that chrome, which isn't what we
+            # want here).
+            self.frame.Maximize(True)
 
         result = self.frame.can_port(None)
         self.Bind(wx.EVT_KEY_DOWN,self.frame.onKeyDown)
