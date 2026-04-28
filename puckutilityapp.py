@@ -924,6 +924,12 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             node_id = self.initialize[node_idx]
             self.setID(node_id)
             self.firstRun = False
+            # Mirror the non-firstRun branch's bookkeeping: register the
+            # selected puck in ActiveID. Without this, a retry-scan that
+            # succeeds after an initial empty scan leaves the puck active
+            # in the UI but missing from ActiveID, which then blows up
+            # onCloseFrame -> removePuck.
+            MyApp.addPucks(self, self.getID())
         else: # Not first run
             node_id = int(self.choice_id.GetString(self.choice_id.GetSelection()))
             # Popup error if Node is already active and not the selected frames current node
@@ -1827,6 +1833,9 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             pass
 
 class MyApp(wx.App):
+    # Set by __main__ before instantiation when --touchscreen is passed.
+    touchscreen = False
+
     def OnInit(self):
         #self.SetTopWindow(self.frame)
         wx.App.ActiveID = []
@@ -1835,6 +1844,14 @@ class MyApp(wx.App):
         self.frame = MyFrame(None, wx.ID_ANY, "")
         self.frame.Centre()
         self.frame.Show()
+        if MyApp.touchscreen:
+            # Kiosk-style fullscreen for the 7" Pi touchscreen. Keep the menu
+            # bar visible so the Ctrl+S / Ctrl+P / Ctrl+C accelerators stay
+            # discoverable.
+            self.frame.ShowFullScreen(
+                True,
+                wx.FULLSCREEN_NOTOOLBAR | wx.FULLSCREEN_NOSTATUSBAR
+                | wx.FULLSCREEN_NOBORDER | wx.FULLSCREEN_NOCAPTION)
 
         result = self.frame.can_port(None)
         self.Bind(wx.EVT_KEY_DOWN,self.frame.onKeyDown)
@@ -1867,10 +1884,21 @@ class MyApp(wx.App):
         return True # Added for Windows DEMO - windows can't handle multi bus currently
 
     def addPucks(self,i): # Adds Puck ID to list of Active Frames
+        # Idempotent: select_id's firstRun branch and OnInit can both end up
+        # calling this for the same id when a retry-scan succeeds; without
+        # this guard ActiveID grows duplicates that confuse later bookkeeping.
+        if i in wx.App.ActiveID:
+            return
         wx.App.ActiveID.append(i)
         print('Adding Puck...')
 
     def removePuck(self,i):
+        # Defensive: if the id was never added (e.g. retry-scan path that
+        # bypassed addPucks before the bug fix, or any future bookkeeping
+        # gap), don't let it block the close path with a ValueError.
+        if i not in wx.App.ActiveID:
+            print('Removing Puck (not tracked, skipping)...')
+            return
         wx.App.ActiveID.remove(i)
         print('Removing Puck...')
         return
@@ -2249,6 +2277,8 @@ Examples:
                         help='One or more target node IDs')
     parser.add_argument('--all', action='store_true',
                         help='Scan the bus and apply operation to all discovered pucks')
+    parser.add_argument('--touchscreen', action='store_true',
+                        help='GUI mode only: launch fullscreen (e.g. for the 7" Raspberry Pi touchscreen)')
 
     ops = parser.add_mutually_exclusive_group()
     ops.add_argument('--scan', action='store_true',
@@ -2264,8 +2294,11 @@ Examples:
 
     args = parser.parse_args()
 
-    # No CLI args → launch GUI
-    if len(sys.argv) == 1:
+    # No operation flag → launch GUI. --touchscreen is a GUI-mode flag, so
+    # passing it alone (or with nothing else) still falls into this branch.
+    if not (args.scan or args.flash or args.config
+            or args.calibrate or args.system_config):
+        MyApp.touchscreen = args.touchscreen
         app = MyApp(0)
         app.MainLoop()
         sys.exit(0)
