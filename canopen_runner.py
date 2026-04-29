@@ -123,6 +123,9 @@ class DATATYPE(enum.Enum):
 ###############################################################################
 
 def progressbar(update_progress, progress):
+    # No sink (standalone __main__ run): silently drop the update.
+    if update_progress is None:
+        return
     update_progress.put(progress)
     
 def printout(text, override=False):
@@ -268,7 +271,7 @@ def math_eval(node):
 ###############################################################################
 
 def canopen_runner(csvfile, replace_id, start_id, edsfile, v, force,
-                   no_warnings, progress, rowcount):
+                   no_warnings, progress=None, rowcount=None):
     """
     Main function for Runner, called by cli.py
     First validates the provided CSV file, then conditionally launches runner
@@ -443,7 +446,7 @@ def validate(csvfile, replace_id, objdict):
     return (invalid_lines, warning_lines)
 
 
-def execute_canopen_runner(csvfile, replace_id, start_id, progress, rowcount):
+def execute_canopen_runner(csvfile, replace_id, start_id, progress=None, rowcount=None):
     """
     Actually parses the csv file and sends the proper sequence of CANOpen
     SDO/NMT messages as well as accurately processes other commands as specified
@@ -468,10 +471,10 @@ def execute_canopen_runner(csvfile, replace_id, start_id, progress, rowcount):
     # print(type(csvfile))
     linenum = 0
     for row in csvfile:
-        # print(linenum)
-        value = round(linenum / rowcount * 100)
-        # print(value)
-        progressbar(progress, value)
+        # Only compute and report percent when a sink is supplied AND we
+        # have a row count to divide by — standalone runs pass neither.
+        if progress is not None and rowcount:
+            progressbar(progress, round(linenum / rowcount * 100))
         linenum += 1
         if len(row) == 0 or (len(row) == 1 and row[0].isspace()): #is empty line
             continue #skip it
@@ -587,7 +590,7 @@ def run_main():
 
     canopen_runner(myfile, can_id, can_id, None, False, False, False)
 
-def start(can_device, can_id, edsfile, csvfile,progress):
+def start(can_device, can_id, edsfile, csvfile, progress=None):
     global node
     global errors
 

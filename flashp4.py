@@ -14,6 +14,9 @@ import time
 # return_code.get_string[1] (--> 'Lost_Dog')
 
 def progressbar(update_progress, progress):
+    # No sink (standalone __main__ run): silently drop the update.
+    if update_progress is None:
+        return
     update_progress.put(progress)
 
 def enum(*sequential, **named):
@@ -46,7 +49,7 @@ def write(node, progress, data=[]):
     node.sdo['ProgramCommand']['Command'].raw = flash_command.END
     print("[" + "=" * 50 + "] (100%) \n") # Show finished progress bar
 
-def flash(can_device, can_id, file_name, progress):
+def flash(can_device, can_id, file_name, progress=None):
     if not os.path.isfile(file_name): # Check that the given file exists
         return flash_result.FILE_NOT_FOUND
   
@@ -126,7 +129,7 @@ def flash(can_device, can_id, file_name, progress):
     network.disconnect()
     return flash_result.SUCCESS
 
-def start(can_device, can_id, firmfile,progress):
+def start(can_device, can_id, firmfile, progress=None):
 
     global node
     # global errors
