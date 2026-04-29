@@ -10,11 +10,7 @@ from canopen_runner import (
     CLEAR_FAULT, SHUTDOWN, OP_ENABLED,
     MODE_IDLE, MODE_PHASE_VOLTAGE_ANGLE, MODE_PROFILE_TRQ,
 )
-
-def _strip_ini_quotes(value):
-    if value and len(value) >= 2 and value[0] == '"' and value[-1] == '"':
-        return value[1:-1]
-    return value if value else value
+from cli_ops import _resolve_path, FIRMWARE_DIR, CONFIG_DIR
 
 # TODO - No active issues
 
@@ -741,7 +737,7 @@ class calibrate():
             print(option)
             config_id = int(config[option]['ID'])
             fw_version = config[option].get('fw_version')
-            fwpath = _strip_ini_quotes(config[option].get('fw'))
+            fwpath = _resolve_path(config[option].get('fw'), FIRMWARE_DIR)
             if config_id == self.ID: # Check if config_id is in getNodes()
                 print("Found defaults for Puck {}!".format(config_id))
                 # firmware
@@ -752,7 +748,7 @@ class calibrate():
                   self.browse_fw(None, fwpath)
                 else:
                   print('Version {} found.'.format(version))
-                csvpath = _strip_ini_quotes(config[option]['CSV'])
+                csvpath = _resolve_path(config[option]['CSV'], CONFIG_DIR)
                 # print(csvpath)
                 self.file_to_p3(None, csvpath)
                 break
