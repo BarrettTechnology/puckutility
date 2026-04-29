@@ -35,6 +35,13 @@ import sys
 import math
 import datetime
 import canopen_runner
+from canopen_runner import (
+    CLEAR_FAULT, SHUTDOWN, OP_ENABLED,
+    MODE_IDLE, MODE_PROFILE_POS, MODE_VELOCITY, MODE_PROFILE_VEL,
+    MODE_PROFILE_TRQ, MODE_RESERVED, MODE_HOMING, MODE_INTERPOLATED_POS,
+    MODE_CYCLIC_SYNC_POS, MODE_CYCLIC_SYNC_VEL, MODE_CYCLIC_SYNC_TRQ,
+    MODE_CYCLIC_SYNC_TRQ_ANGLE, MODE_PHASE_VOLTAGE_ANGLE,
+)
 import csv
 import flashp4
 import logging
@@ -812,7 +819,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         try:
             if self.lastMode != 0:
                 self.lastMode = 0 # Reset lastMode
-                self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
+                self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
                 self.button_6.SetBackgroundColour(self.gray)
                 self.button_6.SetLabel("Go")
                 print("Idling...")
@@ -1011,7 +1018,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
         if self.lastMode != 0:
             self.lastMode = 0 # Reset lastMode
-            self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
+            self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
             self.button_6.SetBackgroundColour(self.gray)
             self.button_6.SetLabel("Go")
             print("Idling...")
@@ -1081,7 +1088,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.lastMode = 0 # Reset lastMode
             print("Setting Mode = IDLE")
             self.choice_test.SetSelection(0)
-            self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
+            self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
             # Set Go Color to Gray
             self.button_6.SetBackgroundColour(self.gray)
 
@@ -1211,7 +1218,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.lastMode = 0 # Reset lastMode
             print("Setting Mode = IDLE")
             self.choice_test.SetSelection(0)
-            self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
+            self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
             # Set Go Color to Gray
             self.button_6.SetBackgroundColour(self.gray)
 
@@ -1385,10 +1392,10 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
         if quick_test == 0:
             print("Setting Mode = IDLE")
-            self.node.sdo["ControlWord"].raw = 0x06  # Shutdown state
-            self.node.sdo["SetModeOfOperation"].raw = 0
-            self.node.rpdo[1]["SetModeOfOperation"].raw = 0
-            self.node.rpdo[1]["ControlWord"].raw = 0x06
+            self.node.sdo["ControlWord"].raw = SHUTDOWN
+            self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
+            self.node.rpdo[1]["SetModeOfOperation"].raw = MODE_IDLE
+            self.node.rpdo[1]["ControlWord"].raw = SHUTDOWN
             self.button_6.SetBackgroundColour(self.gray)
             self.lastMode = 0
             if self.ADC_ON == True:
@@ -1398,9 +1405,9 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
         # Clear faults, RTSO, OpEnabled
         print("Going OpEnabled")
-        self.node.sdo["ControlWord"].raw = 0x80
-        self.node.sdo["ControlWord"].raw = 0x06
-        self.node.sdo["ControlWord"].raw = 0x0F
+        self.node.sdo["ControlWord"].raw = CLEAR_FAULT
+        self.node.sdo["ControlWord"].raw = SHUTDOWN
+        self.node.sdo["ControlWord"].raw = OP_ENABLED
         self.button_6.SetBackgroundColour(self.orange)
 
         status = self.node.sdo["StatusWord"].raw
@@ -1415,29 +1422,29 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
         if quick_test == 1:  # Torque
             print("Setting Mode = TORQUE")
-            self.node.sdo["SetModeOfOperation"].raw = 4
-            self.node.rpdo[1]["SetModeOfOperation"].raw = 4
-            self.node.rpdo[1]["ControlWord"].raw = 0x0F
+            self.node.sdo["SetModeOfOperation"].raw = MODE_PROFILE_TRQ
+            self.node.rpdo[1]["SetModeOfOperation"].raw = MODE_PROFILE_TRQ
+            self.node.rpdo[1]["ControlWord"].raw = OP_ENABLED
 
         elif quick_test == 2:  # Velocity
             print("Setting Mode = VELOCITY")
-            self.node.sdo["SetModeOfOperation"].raw = 3
-            self.node.rpdo[1]["SetModeOfOperation"].raw = 3
-            self.node.rpdo[1]["ControlWord"].raw = 0x0F
+            self.node.sdo["SetModeOfOperation"].raw = MODE_PROFILE_VEL
+            self.node.rpdo[1]["SetModeOfOperation"].raw = MODE_PROFILE_VEL
+            self.node.rpdo[1]["ControlWord"].raw = OP_ENABLED
 
         elif quick_test == 3:  # Position
             print("Setting Mode = POSITION")
             self.node.sdo["ProfileVelocity"].raw = 130000
-            self.node.sdo["SetModeOfOperation"].raw = 1
-            self.node.sdo["ControlWord"].raw = 0x2F  # Enable + new setpoint
-            self.node.rpdo[1]["SetModeOfOperation"].raw = 1
+            self.node.sdo["SetModeOfOperation"].raw = MODE_PROFILE_POS
+            self.node.sdo["ControlWord"].raw = 0x2F  # OP_ENABLED | new setpoint
+            self.node.rpdo[1]["SetModeOfOperation"].raw = MODE_PROFILE_POS
             self.node.rpdo[1]["ControlWord"].raw = 0x2F
 
         elif quick_test == 4:  # Homing
             print("Setting Mode = HOMING")
-            self.node.sdo["SetModeOfOperation"].raw = 6
-            self.node.rpdo[1]["SetModeOfOperation"].raw = 6
-            self.node.rpdo[1]["ControlWord"].raw = 0x0F
+            self.node.sdo["SetModeOfOperation"].raw = MODE_HOMING
+            self.node.rpdo[1]["SetModeOfOperation"].raw = MODE_HOMING
+            self.node.rpdo[1]["ControlWord"].raw = OP_ENABLED
             self.text_testvalue.SetValue("0")
 
         if self.ADC_ON == True:
@@ -1483,14 +1490,14 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             print(f"Set TargetTorque = {cmd_value} mNm ({round(trq_value / 10, 2)}% max)")
             self.node.sdo["TargetTorque"].raw = trq_value
             self.node.rpdo[1]["TargetTorque"].raw = trq_value
-            self.node.rpdo[1]["ControlWord"].raw = 0x0F
+            self.node.rpdo[1]["ControlWord"].raw = OP_ENABLED
 
         elif quick_test == 2:  # Velocity
             ctspersec = round(cmd_value * 4096 / 60 * self.gearRatio)
             print(f"Set TargetVelocity = {cmd_value} RPM")
             self.node.sdo["TargetVelocity"].raw = ctspersec
             self.node.rpdo[2]["TargetVelocity"].raw = ctspersec
-            self.node.rpdo[1]["ControlWord"].raw = 0x0F
+            self.node.rpdo[1]["ControlWord"].raw = OP_ENABLED
 
         elif quick_test == 3:  # Position
             ctsvalue = cmd_value / 360 * 4096 * self.gearRatio
@@ -1526,14 +1533,14 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
         elif quick_test == 4:  # Homing
             self.node.sdo["HomingOffset"].raw = int(cmd_value)
-            self.node.rpdo[1]["ControlWord"].raw = 0x1F  # 0x0F | homing-start bit
+            self.node.rpdo[1]["ControlWord"].raw = OP_ENABLED | 0x10  # | homing-start bit
             self.node.rpdo[1].transmit()
             self.node.network.sync.transmit()
             for _ in range(300):  # 30 s timeout
                 if self.node.sdo["StatusWord"].raw & 0x1000:
                     break
                 time.sleep(0.1)
-            self.node.rpdo[1]["ControlWord"].raw = 0x0F
+            self.node.rpdo[1]["ControlWord"].raw = OP_ENABLED
             self.node.rpdo[1].transmit()
             self.node.network.sync.transmit()
 
@@ -1591,7 +1598,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 # Turn off test
                 #Set Mode to IDLE
                 self.lastMode = 0 # Reset lastMode
-                self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
+                self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
                 self.button_6.SetBackgroundColour(self.orange)
                 self.button_6.SetLabel("Go")
                 print("Puck Overheating - Stopping test...")
@@ -1706,7 +1713,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             try:
                 # This is the most important step for safety!
                 # self.node.sdo["ControlWord"].raw = 0x00
-                self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
+                self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
                 # Verification Loop: Wait up to 500ms for the hardware to confirm
                 success = False
                 timeout = time.time() + 0.5
@@ -1991,7 +1998,7 @@ def _cli_config(can_device, node_id, csv_path):
 
 def _cli_test_encoder(node):
     print("  Testing encoder stability...")
-    node.sdo["SetModeOfOperation"].raw = 0
+    node.sdo["SetModeOfOperation"].raw = MODE_IDLE
     time.sleep(1)
     t_end = time.time() + 1
     readings = []
@@ -2009,12 +2016,12 @@ def _cli_test_encoder(node):
 
 def _cli_calibrate_ibias(node):
     print("  Calibrating current sense bias (ibias)...")
-    node.sdo["ControlWord"].raw = 0x80
-    node.sdo["ControlWord"].raw = 0x06
-    node.sdo["ControlWord"].raw = 0x0F
+    node.sdo["ControlWord"].raw = CLEAR_FAULT
+    node.sdo["ControlWord"].raw = SHUTDOWN
+    node.sdo["ControlWord"].raw = OP_ENABLED
     node.sdo['Theta_e'].raw = 0x7FFF
     node.sdo['Motor']['ud'].raw = 0
-    node.sdo["SetModeOfOperation"].raw = 12
+    node.sdo["SetModeOfOperation"].raw = MODE_PHASE_VOLTAGE_ANGLE
     time.sleep(1)
     for ch in ['Alpha', 'Beta']:
         print(f"  Previous {ch} bias = {node.sdo[ch]['Bias'].raw}")
@@ -2026,7 +2033,7 @@ def _cli_calibrate_ibias(node):
     node.sdo['Save']['Single'].raw = ((0x3009 << 8) | 0x03)
     a_bias = node.sdo['Alpha']['Bias'].raw
     b_bias = node.sdo['Beta']['Bias'].raw
-    node.sdo["SetModeOfOperation"].raw = 0
+    node.sdo["SetModeOfOperation"].raw = MODE_IDLE
     error = 0.5
     lo, hi = round(2048 * (1 - error)), round(2048 * (1 + error))
     if a_bias > hi or a_bias < lo or b_bias > hi or b_bias < lo:
@@ -2040,10 +2047,10 @@ def _cli_calibrate_igainfactor(node):
     print("  Calibrating current sense gain factor (igainfactor)...")
     node.sdo['Alpha']['Gainfactor'].raw = 4096
     node.sdo['Beta']['Gainfactor'].raw = 4096
-    node.sdo["ControlWord"].raw = 0x80
-    node.sdo["ControlWord"].raw = 0x06
-    node.sdo["ControlWord"].raw = 0x0F
-    node.sdo["SetModeOfOperation"].raw = 12
+    node.sdo["ControlWord"].raw = CLEAR_FAULT
+    node.sdo["ControlWord"].raw = SHUTDOWN
+    node.sdo["ControlWord"].raw = OP_ENABLED
+    node.sdo["SetModeOfOperation"].raw = MODE_PHASE_VOLTAGE_ANGLE
     node.sdo['Theta_e'].raw = 0x7FFF
     cal_current = node.sdo['Calibration']['i_cal'].raw
     i_peak = node.sdo['Calibration']['i_peak'].raw
@@ -2063,7 +2070,7 @@ def _cli_calibrate_igainfactor(node):
     time.sleep(1)
     b_filt = node.sdo['Beta']['Filtered'].raw
     b_filt = (b_filt >> 4) + ((b_filt & 0x0008) >> 3)
-    node.sdo["SetModeOfOperation"].raw = 0
+    node.sdo["SetModeOfOperation"].raw = MODE_IDLE
     abias = node.sdo['Alpha']['Bias'].raw
     bbias = node.sdo['Beta']['Bias'].raw
     gf_raw = 4096 * (a_filt - abias) / (b_filt - bbias)
@@ -2083,10 +2090,10 @@ def _cli_calibrate_igainfactor(node):
 
 def _cli_calibrate_enczero(node):
     print("  Calibrating encoder zero...")
-    node.sdo["ControlWord"].raw = 0x80
-    node.sdo["ControlWord"].raw = 0x06
-    node.sdo["ControlWord"].raw = 0x0F
-    node.sdo["SetModeOfOperation"].raw = 12
+    node.sdo["ControlWord"].raw = CLEAR_FAULT
+    node.sdo["ControlWord"].raw = SHUTDOWN
+    node.sdo["ControlWord"].raw = OP_ENABLED
+    node.sdo["SetModeOfOperation"].raw = MODE_PHASE_VOLTAGE_ANGLE
     node.sdo['Theta_e'].raw = -0x1000
     cal_current = node.sdo['Calibration']['i_cal'].raw
     i_peak = node.sdo['Calibration']['i_peak'].raw
@@ -2136,7 +2143,7 @@ def _cli_calibrate_enczero(node):
     node.sdo['Save']['Single'].raw = ((0x3011 << 8) | 0x01)
     pos_change1 = round(abs(startPos1 - zeroPos1) * (360 / 4096) * poles)
     pos_change2 = round(abs(startPos2 - zeroPos2) * (360 / 4096) * poles)
-    node.sdo["SetModeOfOperation"].raw = 0
+    node.sdo["SetModeOfOperation"].raw = MODE_IDLE
     error = 0.25
     min_jump = round(22.5 * (1 - error))
     if pos_change1 < min_jump or pos_change2 < min_jump:

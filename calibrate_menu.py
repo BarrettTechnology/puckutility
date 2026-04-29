@@ -6,6 +6,10 @@ import math
 import webbrowser
 import configparser
 import platform
+from canopen_runner import (
+    CLEAR_FAULT, SHUTDOWN, OP_ENABLED,
+    MODE_IDLE, MODE_PHASE_VOLTAGE_ANGLE, MODE_PROFILE_TRQ,
+)
 
 def _strip_ini_quotes(value):
     if value and len(value) >= 2 and value[0] == '"' and value[-1] == '"':
@@ -77,7 +81,7 @@ class calibrate():
             self.lastMode = 0 # Reset lastMode
             print("Setting Mode = IDLE")
             self.choice_test.SetSelection(0)
-            self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
+            self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
         
         if self.ADC_ON == True:
            self.on_off_adc(self)
@@ -91,9 +95,9 @@ class calibrate():
 
         # Clear faults, RTSO, OpEnabled
         print("Going OpEnabled")
-        self.node.sdo["ControlWord"].raw = 0x80
-        self.node.sdo["ControlWord"].raw = 0x06
-        self.node.sdo["ControlWord"].raw = 0x0F
+        self.node.sdo["ControlWord"].raw = CLEAR_FAULT
+        self.node.sdo["ControlWord"].raw = SHUTDOWN
+        self.node.sdo["ControlWord"].raw = OP_ENABLED
 
         self.node.sdo['Theta_e'].raw = 0x7FFF # Stall @ Alpha Peak (+pi)
 
@@ -101,7 +105,7 @@ class calibrate():
 
         # Set Mode to Voltage
         print("Setting Mode = VOLTAGE MODE")
-        self.node.sdo["SetModeOfOperation"].raw = 12
+        self.node.sdo["SetModeOfOperation"].raw = MODE_PHASE_VOLTAGE_ANGLE
         time.sleep(1) # Wait at least 75 ms for the filters to settle (2 seconds seems to be the sweet spot)
 
         # Calibrate iSense
@@ -123,7 +127,7 @@ class calibrate():
 
         # Set Mode to Idle (0)
         print("Setting Mode = IDLE")
-        self.node.sdo["SetModeOfOperation"].raw = 0
+        self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
         # time.sleep(1) # Wait at least 75 ms for the filters to settle
 
         if a_bias > 2048 * (1 + error) or a_bias < 2048 * (1 - error) or b_bias > 2048 * (1 + error) or b_bias < 2048 * (1 - error) :
@@ -166,7 +170,7 @@ class calibrate():
             self.lastMode = 0 # Reset lastMode
             print("Setting Mode = IDLE")
             self.choice_test.SetSelection(0)
-            self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
+            self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
 
         if self.ADC_ON == True:
            self.on_off_adc(self)
@@ -184,13 +188,13 @@ class calibrate():
 
         # Clear faults, RTSO, OpEnabled
         print("Going OpEnabled")
-        self.node.sdo["ControlWord"].raw = 0x80
-        self.node.sdo["ControlWord"].raw = 0x06
-        self.node.sdo["ControlWord"].raw = 0x0F
+        self.node.sdo["ControlWord"].raw = CLEAR_FAULT
+        self.node.sdo["ControlWord"].raw = SHUTDOWN
+        self.node.sdo["ControlWord"].raw = OP_ENABLED
 
         # Set Mode to PhaseVoltageAngle (12)
         print("Setting Mode = VOLTAGE")
-        self.node.sdo["SetModeOfOperation"].raw = 12
+        self.node.sdo["SetModeOfOperation"].raw = MODE_PHASE_VOLTAGE_ANGLE
 
         # Write theta_e, ud, StatsMode, vel
         # theta_e is 16-bit signed from -pi to +pi
@@ -242,7 +246,7 @@ class calibrate():
           self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak, 
           self.node.sdo['Theta_e'].raw / 32768.0 * 3.14159))
 
-        self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
+        self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
 
         abias = self.node.sdo['Alpha']['Bias'].raw
         bbias = self.node.sdo['Beta']['Bias'].raw
@@ -309,7 +313,7 @@ class calibrate():
             self.lastMode = 0 # Reset lastMode
             print("Setting Mode = IDLE")
             self.choice_test.SetSelection(0)
-            self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
+            self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
         
         if self.ADC_ON == True:
             self.adcWasON = True
@@ -323,13 +327,13 @@ class calibrate():
 
         # Clear faults, RTSO, OpEnabled
         print("Going OpEnabled")
-        self.node.sdo["ControlWord"].raw = 0x80
-        self.node.sdo["ControlWord"].raw = 0x06
-        self.node.sdo["ControlWord"].raw = 0x0F
+        self.node.sdo["ControlWord"].raw = CLEAR_FAULT
+        self.node.sdo["ControlWord"].raw = SHUTDOWN
+        self.node.sdo["ControlWord"].raw = OP_ENABLED
         
         # Set Mode to PhaseVoltageAngle (12)
         print("Setting Mode = VOLTAGE")
-        self.node.sdo["SetModeOfOperation"].raw = 12
+        self.node.sdo["SetModeOfOperation"].raw = MODE_PHASE_VOLTAGE_ANGLE
 
         # Write theta_e, ud, StatsMode, vel
         # theta_e is 16-bit signed from -pi to +pi
@@ -420,7 +424,7 @@ class calibrate():
         error = .25 # 25%
         expected_change = 22.5
 
-        self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
+        self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
 
         if pos_change1 < round(expected_change * (1 - error)) or pos_change2 < round(expected_change * (1 - error)):
           print('Encoder Zero Failed!')
@@ -477,18 +481,18 @@ class calibrate():
 
         # Set Mode to Idle (0)
         print("Setting Mode = IDLE")
-        self.node.sdo["SetModeOfOperation"].raw = 0
+        self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
         time.sleep(1) # Wait at least 75 ms for the filters to settle
 
         # Clear faults, RTSO, OpEnabled
         print("Going OpEnabled")
-        self.node.sdo["ControlWord"].raw = 0x80
-        self.node.sdo["ControlWord"].raw = 0x06
-        self.node.sdo["ControlWord"].raw = 0x0F
+        self.node.sdo["ControlWord"].raw = CLEAR_FAULT
+        self.node.sdo["ControlWord"].raw = SHUTDOWN
+        self.node.sdo["ControlWord"].raw = OP_ENABLED
       
         # Set Mode to Torque (4)
         print("Setting Mode = TORQUE")
-        self.node.sdo["SetModeOfOperation"].raw = 4
+        self.node.sdo["SetModeOfOperation"].raw = MODE_PROFILE_TRQ
         self.node.sdo['EncoderConfig']['LagFactor'].raw = 0
 
         # Increase TargetTorque until iq.fbk = 1000 mA
@@ -571,7 +575,7 @@ class calibrate():
 
         # Set Mode to Idle (0)
         print("Setting Mode = IDLE")
-        self.node.sdo["SetModeOfOperation"].raw = 0
+        self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
 
         if calAll==False:
           self.Enable()
@@ -602,7 +606,7 @@ class calibrate():
 
         # Set Mode to Idle (0)
         print("Setting Mode = IDLE")
-        self.node.sdo["SetModeOfOperation"].raw = 0
+        self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
         time.sleep(1) # Wait at least 75 ms for the filters to settle
         timeEnd = time.time() + 1
         Pos = []
