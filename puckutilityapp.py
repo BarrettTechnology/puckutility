@@ -39,6 +39,17 @@ import csv
 import flashp4
 import logging
 
+# Give the app its own Application User Model ID so Windows groups the
+# taskbar entry under our icon instead of the generic python.exe icon.
+# Must run before the frame is shown for Windows to honour it.
+if sys.platform == 'win32':
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            'Barrett.PuckUtilityApp')
+    except Exception:
+        pass
+
 # Silence python-can's PCAN warnings — "Bus error: an error counter reached the
 # 'heavy'/'warning' limit" floods the terminal/logger when the CAN bus has
 # transient errors (e.g. unpowered Puck, marginal cabling). The same condition
@@ -185,8 +196,17 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
         self.ctrlKey = False
 
-        # Setup Window + Icon
-        self.SetIcon(wx.Icon('images/BarrettIcon.png'))
+        # Setup Window + Icon. On Windows we have to wire the icon through
+        # four channels to cover every shell surface; see _set_windows_icon.
+        # Linux GTK ignores .ico, so fall back to the .png there. Resolve
+        # relative to this file so the icon loads regardless of cwd (the
+        # silent except in _set_windows_icon would otherwise swallow a
+        # missing-file failure when launched from another directory).
+        _icon_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'images')
+        if sys.platform == 'win32':
+            self._set_windows_icon(os.path.join(_icon_dir, 'BarrettIcon.ico'))
+        else:
+            self.SetIcon(wx.Icon(os.path.join(_icon_dir, 'BarrettIcon.png')))
         self.SetTitle("Puck Utility App - v1.2.0 - DEV")
         self.button_6.SetBackgroundColour(self.gray) # Initialize with gray button in idle
         self.Bind(wx.EVT_KEY_DOWN,self.onKeyDown)
@@ -373,6 +393,101 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         # self.Refresh()
         # self.Update()
         # force refresh to help windows?
+
+    def _set_windows_icon(self, ico_relpath):
+        # Wire the icon through every Windows shell surface; each one falls
+        # back to python.exe's icon if the channel below isn't set:
+        #   wx.IconBundle / SetIcons        -> title bar, taskbar, Alt-Tab
+        #   WM_SETICON ICON_SMALL2          -> thumbnail-preview small icon
+        #   SetClassLongPtrW HICON/HICONSM  -> shell UIs that read the class icon
+        #   IPropertyStore (AppUserModel)   -> thumbnail-preview group icon
+        self.SetIcons(wx.IconBundle(ico_relpath, wx.BITMAP_TYPE_ICO))
+
+        import ctypes
+        from ctypes import wintypes
+        ico_path = os.path.abspath(ico_relpath)
+        hwnd = int(self.GetHandle())
+        is64 = ctypes.sizeof(ctypes.c_void_p) == 8
+
+        try:
+            user32 = ctypes.windll.user32
+            user32.LoadImageW.restype = ctypes.c_void_p
+            user32.SendMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint,
+                                            ctypes.c_void_p, ctypes.c_void_p]
+            user32.SendMessageW.restype = ctypes.c_void_p
+            IMAGE_ICON, LR_LOADFROMFILE, WM_SETICON = 1, 0x10, 0x0080
+            hicon_small = user32.LoadImageW(None, ico_path, IMAGE_ICON, 16, 16, LR_LOADFROMFILE)
+            hicon_big = user32.LoadImageW(None, ico_path, IMAGE_ICON, 32, 32, LR_LOADFROMFILE)
+            for which, h in ((0, hicon_small), (2, hicon_small), (1, hicon_big)):
+                user32.SendMessageW(hwnd, WM_SETICON, which, h)
+            GCLP_HICON, GCLP_HICONSM = -14, -34
+            if is64:
+                user32.SetClassLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int,
+                                                    ctypes.c_void_p]
+                user32.SetClassLongPtrW.restype = ctypes.c_void_p
+                user32.SetClassLongPtrW(hwnd, GCLP_HICON, hicon_big)
+                user32.SetClassLongPtrW(hwnd, GCLP_HICONSM, hicon_small)
+            else:
+                user32.SetClassLongW(hwnd, GCLP_HICON, hicon_big)
+                user32.SetClassLongW(hwnd, GCLP_HICONSM, hicon_small)
+        except Exception:
+            pass
+
+        try:
+            class GUID(ctypes.Structure):
+                _fields_ = [('Data1', wintypes.DWORD), ('Data2', wintypes.WORD),
+                            ('Data3', wintypes.WORD), ('Data4', ctypes.c_ubyte * 8)]
+
+            class PROPERTYKEY(ctypes.Structure):
+                _fields_ = [('fmtid', GUID), ('pid', wintypes.DWORD)]
+
+            class PROPVARIANT(ctypes.Structure):
+                _fields_ = [('vt', wintypes.WORD), ('wReserved1', wintypes.WORD),
+                            ('wReserved2', wintypes.WORD), ('wReserved3', wintypes.WORD),
+                            ('pwszVal', ctypes.c_wchar_p),
+                            ('padding', ctypes.c_byte * 8)]
+
+            AUM_FMTID = GUID(0x9F4C2855, 0x9F79, 0x4B39,
+                             (ctypes.c_ubyte * 8)(0xA8, 0xD0, 0xE1, 0xD4,
+                                                  0x2D, 0xE1, 0xD5, 0xF3))
+            PKEY_AUM_ID = PROPERTYKEY(AUM_FMTID, 5)
+            PKEY_AUM_RelaunchIcon = PROPERTYKEY(AUM_FMTID, 3)
+            IID_IPropertyStore = GUID(0x886D8EEB, 0x8CF2, 0x4446,
+                                      (ctypes.c_ubyte * 8)(0x8D, 0x02, 0xCD, 0xBA,
+                                                           0x1D, 0xBD, 0xCF, 0x99))
+            VT_LPWSTR = 31
+
+            shell32 = ctypes.windll.shell32
+            shell32.SHGetPropertyStoreForWindow.argtypes = [
+                wintypes.HWND, ctypes.POINTER(GUID),
+                ctypes.POINTER(ctypes.c_void_p)]
+            shell32.SHGetPropertyStoreForWindow.restype = ctypes.HRESULT
+            pps = ctypes.c_void_p()
+            if shell32.SHGetPropertyStoreForWindow(
+                    hwnd, ctypes.byref(IID_IPropertyStore),
+                    ctypes.byref(pps)) != 0:
+                return
+
+            vtbl = ctypes.cast(pps, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p)))[0]
+            SetValue = ctypes.WINFUNCTYPE(
+                ctypes.HRESULT, ctypes.c_void_p,
+                ctypes.POINTER(PROPERTYKEY), ctypes.POINTER(PROPVARIANT)
+            )(vtbl[6])
+            Commit = ctypes.WINFUNCTYPE(ctypes.HRESULT, ctypes.c_void_p)(vtbl[7])
+            Release = ctypes.WINFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p)(vtbl[2])
+
+            pv_id = PROPVARIANT(); pv_id.vt = VT_LPWSTR
+            pv_id.pwszVal = 'Barrett.PuckUtilityApp'
+            SetValue(pps, ctypes.byref(PKEY_AUM_ID), ctypes.byref(pv_id))
+
+            pv_icon = PROPVARIANT(); pv_icon.vt = VT_LPWSTR
+            pv_icon.pwszVal = ico_path + ',0'
+            SetValue(pps, ctypes.byref(PKEY_AUM_RelaunchIcon), ctypes.byref(pv_icon))
+
+            Commit(pps)
+            Release(pps)
+        except Exception:
+            pass
 
     def ProcessDroppedFile(self,filepath):
         # print(filepath)
@@ -809,6 +924,12 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             node_id = self.initialize[node_idx]
             self.setID(node_id)
             self.firstRun = False
+            # Mirror the non-firstRun branch's bookkeeping: register the
+            # selected puck in ActiveID. Without this, a retry-scan that
+            # succeeds after an initial empty scan leaves the puck active
+            # in the UI but missing from ActiveID, which then blows up
+            # onCloseFrame -> removePuck.
+            MyApp.addPucks(self, self.getID())
         else: # Not first run
             node_id = int(self.choice_id.GetString(self.choice_id.GetSelection()))
             # Popup error if Node is already active and not the selected frames current node
@@ -1712,6 +1833,9 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             pass
 
 class MyApp(wx.App):
+    # Set by __main__ before instantiation when --touchscreen is passed.
+    touchscreen = False
+
     def OnInit(self):
         #self.SetTopWindow(self.frame)
         wx.App.ActiveID = []
@@ -1720,6 +1844,12 @@ class MyApp(wx.App):
         self.frame = MyFrame(None, wx.ID_ANY, "")
         self.frame.Centre()
         self.frame.Show()
+        if MyApp.touchscreen:
+            # Maximize so the window fills the work area on the 7" Pi screen
+            # while keeping the menu bar, status bar, and frame border all
+            # intact (ShowFullScreen strips that chrome, which isn't what we
+            # want here).
+            self.frame.Maximize(True)
 
         result = self.frame.can_port(None)
         self.Bind(wx.EVT_KEY_DOWN,self.frame.onKeyDown)
@@ -1752,10 +1882,21 @@ class MyApp(wx.App):
         return True # Added for Windows DEMO - windows can't handle multi bus currently
 
     def addPucks(self,i): # Adds Puck ID to list of Active Frames
+        # Idempotent: select_id's firstRun branch and OnInit can both end up
+        # calling this for the same id when a retry-scan succeeds; without
+        # this guard ActiveID grows duplicates that confuse later bookkeeping.
+        if i in wx.App.ActiveID:
+            return
         wx.App.ActiveID.append(i)
         print('Adding Puck...')
 
     def removePuck(self,i):
+        # Defensive: if the id was never added (e.g. retry-scan path that
+        # bypassed addPucks before the bug fix, or any future bookkeeping
+        # gap), don't let it block the close path with a ValueError.
+        if i not in wx.App.ActiveID:
+            print('Removing Puck (not tracked, skipping)...')
+            return
         wx.App.ActiveID.remove(i)
         print('Removing Puck...')
         return
@@ -2134,6 +2275,8 @@ Examples:
                         help='One or more target node IDs')
     parser.add_argument('--all', action='store_true',
                         help='Scan the bus and apply operation to all discovered pucks')
+    parser.add_argument('--touchscreen', action='store_true',
+                        help='GUI mode only: launch fullscreen (e.g. for the 7" Raspberry Pi touchscreen)')
 
     ops = parser.add_mutually_exclusive_group()
     ops.add_argument('--scan', action='store_true',
@@ -2149,8 +2292,11 @@ Examples:
 
     args = parser.parse_args()
 
-    # No CLI args → launch GUI
-    if len(sys.argv) == 1:
+    # No operation flag → launch GUI. --touchscreen is a GUI-mode flag, so
+    # passing it alone (or with nothing else) still falls into this branch.
+    if not (args.scan or args.flash or args.config
+            or args.calibrate or args.system_config):
+        MyApp.touchscreen = args.touchscreen
         app = MyApp(0)
         app.MainLoop()
         sys.exit(0)
