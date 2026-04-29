@@ -18,7 +18,7 @@ class calibrate():
     def calibrate_all_pucks(self, event):
         print(self.network.scanner.nodes)
         starting_id = self.getID()
-        if self.check_for_node() == False: #len(self.network.scanner.nodes) == 0:
+        if self.check_for_node() == False:
             # print("No active puck")
             return False
         for i in self.network.scanner.nodes:
@@ -29,9 +29,6 @@ class calibrate():
 
             # print("Running full calibration for Puck {}".format(self.getID()))
             self.calibrate_all(None)
-            # self.calibrate_ibias(None)
-            # self.calibrate_igainfactor(None)
-            # self.calibrate_enczero(None)
 
         indexID = self.network.scanner.nodes.index(starting_id)
         self.choice_id.SetSelection(indexID) # Return to starting ID after completion
@@ -39,7 +36,7 @@ class calibrate():
 
     def calibrate_all(self, event):  # wxGlade: wxp3_frame.<event_handler>
         # Try to add calibrate all step!
-        if self.check_for_node() == False: #len(self.network.scanner.nodes) == 0:
+        if self.check_for_node() == False:
             # print("No active puck")
             return False
         print("Running full calibration for Puck {}".format(self.getID()))
@@ -72,7 +69,7 @@ class calibrate():
     def calibrate_ibias(self, event, calAll=False):  # wxGlade: wxp3_frame.<event_handler>
         # print("Event handler 'calibrate_ibias'")
         if calAll==False:
-          if self.check_for_node() == False: #len(self.network.scanner.nodes) == 0:
+          if self.check_for_node() == False:
             return False
           self.Disable()
         quick_test = self.choice_test.GetSelection()
@@ -294,7 +291,7 @@ class calibrate():
         print("Event handler 'calibrate_itiming' not implemented!")
         # Tune the current sampling moment to minimize noise
         # Collect noise statistics at/near falling edge of the widest PWM, in all 6 sectors
-
+        # TODO new feature coming soon!
         event.Skip()
 
     def calibrate_islope(self, event):  # wxGlade: wxp3_frame.<event_handler>
@@ -336,7 +333,6 @@ class calibrate():
 
         # Write theta_e, ud, StatsMode, vel
         # theta_e is 16-bit signed from -pi to +pi
-        #self.node.sdo['Calibration']['e_polarity'].raw = 1
         self.node.sdo['Theta_e'].raw = -0x1000 # -pi/2
 
         # Read this motor's calibration current (mA)
@@ -690,12 +686,6 @@ class calibrate():
         with wx.FileDialog(self, "Select firmware file", directory, wildcard="BIN files (*.bin;*.ebin)|*.bin;*.ebin",
                       style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST) as fileDialog:
             if fileDialog.ShowModal() == wx.ID_CANCEL:
-                # Transmit an NMT reboot command to this node - No need for reboot! 
-                # print("Rebooting puck")
-                # self.network.send_message(0x0, [0x81, int(self.node_id)])
-                # time.sleep(0.5) # wait for puck to reboot (avoids loss of communication)
-                # # self.network.send_message(0x4, [self.LAUNCH, int(node_id)])
-                # self.configure_Puck()
                 if self.adcWasON == True:
                     self.on_off_adc(self)
                 return     # the user changed their mind
@@ -733,14 +723,6 @@ class calibrate():
           with wx.FileDialog(self, "Select firmware file", directory, wildcard="Configu files (*.ini|*.ini",
                         style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST) as fileDialog:
               if fileDialog.ShowModal() == wx.ID_CANCEL:
-                  # Transmit an NMT reboot command to this node
-                  # print("Rebooting puck")
-                  # self.network.send_message(0x0, [0x81, int(self.node_id)])
-                  # time.sleep(0.5) # wait for puck to reboot (avoids loss of communication)
-                  # self.network.send_message(0x4, [self.LAUNCH, int(node_id)])
-                  # self.configure_Puck()
-                  # if self.adcWasON == True:
-                  #     self.on_off_adc(self)
                   return     # the user changed their mind
               # Proceed loading the file chosen by the user
               filepath = fileDialog.GetPath()
