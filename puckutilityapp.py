@@ -1104,12 +1104,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             with wx.FileDialog(self, "Select firmware file", directory, wildcard="BIN files (*.bin;*.ebin)|*.bin;*.ebin",
                           style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST) as fileDialog:
                 if fileDialog.ShowModal() == wx.ID_CANCEL:
-                    # Transmit an NMT reboot command to this node
-                    # print("Rebooting puck")
-                    # self.network.send_message(0x0, [0x81, int(node_id)])
-                    # time.sleep(0.5) # wait for puck to reboot (avoids loss of communication)
-                    # # self.network.send_message(0x4, [self.LAUNCH, int(node_id)])
-                    # self.configure_Puck()
                     if self.adcWasON == True:
                         self.on_off_adc(self)
                     return     # the user changed their mind
@@ -1123,27 +1117,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         wx.Yield()
 
         # timeStart = time.time()
-
-        # if semver.match(version, '==1.0.0'):
-        #     l = ['blhost', '-p', can_device + "," + node_id, 'flash-erase-all']
-        #     subprocess.call(l) # Note: this waits until the subprocess exits
-
-        #     l = ['blhost', '-p', can_device + "," + node_id, 'write-memory', '0x8000', pathname]
-        #     subprocess.call(l) # Note: this waits until the subprocess exits
-
-        #     # blhost -p can0,1 reset
-        #     # blhost -p can0,1 execute 0 0 0 (address, arg, stack)
-        #     l = ['blhost', '-p', can_device + "," + node_id, 'reset']
-        #     subprocess.call(l) # Note: this waits until the subprocess exits
-        # else:
-        #     if platform.system() == "Windows":
-        #         python_name = "python"
-        #     else:
-        #         python_name = "python3"
-        #     l = [python_name, "flashp4.py", can_device, node_id, pathname]
-            
-            # OG WAY -_-
-            # subprocess.call(l) # Note: this waits until the subprocess exits
 
         can_device = self.choice_port.GetStringSelection()
         node_id = self.choice_id.GetString(self.choice_id.GetSelection())
@@ -1431,7 +1404,11 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         self.button_6.SetBackgroundColour(self.orange)
 
         status = self.node.sdo["StatusWord"].raw
-        if (status & 0x6F) == 0x27:
+        # DS402 "Operation Enabled" with Voltage Enabled asserted:
+        # bits 0,1,2,4,5 = 1, bits 3,6 = 0. Mask 0x7F isolates the state
+        # machine bits plus Voltage Enabled, ignoring Warning, Target
+        # Reached, mode-specific bits, etc.
+        if (status & 0x7F) == 0x37:
             print("Drive is ENABLED and ready.")
         else:
             print(f"Drive NOT enabled. StatusWord: {hex(status)}")
