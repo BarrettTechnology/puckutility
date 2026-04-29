@@ -1095,13 +1095,12 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         node_id = self.choice_id.GetString(self.choice_id.GetSelection())
 
         if path == False:
-            # File browser
-            if platform.system() == "Windows":
-                directory = '../firmware'
-            else:
-                directory = 'firmware/'
+            # File browser. Resolve relative to this file so the dialog opens
+            # in <puckutility>/firmware regardless of the cwd the app was
+            # launched from.
+            directory = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), 'firmware')
 
-            # File browser
             with wx.FileDialog(self, "Select firmware file", directory, wildcard="BIN files (*.bin;*.ebin)|*.bin;*.ebin",
                           style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST) as fileDialog:
                 if fileDialog.ShowModal() == wx.ID_CANCEL:
@@ -1248,12 +1247,11 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.adcWasON = True
 
         if path == False:
-            # print('no path')
-            # File browser
-            if platform.system() == "Windows":
-                directory = '../config'
-            else:
-                directory = 'config/'
+            # File browser. Resolve relative to this file so the dialog opens
+            # in <puckutility>/config regardless of the cwd the app was
+            # launched from.
+            directory = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), 'config')
 
             with wx.FileDialog(self, "Open CANopen CSV file", directory, wildcard="CSV files (*.csv)|*.csv",
                           style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST) as fileDialog:
