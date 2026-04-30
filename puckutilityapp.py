@@ -806,10 +806,14 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 msg = 'No CAN device found! \nCheck connection and try again'
             dlg = wx.MessageDialog(None,msg)
             dlg.ShowModal()
-            # Try to clear out selection of select ID and set ID
-            n = ''
-            self.choice_id.SetItems([n])
-            self.text_id.ChangeValue(str(n))
+            # No active puck — clear ID, firmware-version readout, and
+            # the Select ID dropdown so stale data isn't shown. On Windows
+            # the dropdown is an OwnerDrawnComboBox whose displayed text
+            # persists past SetItems([]), so explicitly drop the selection.
+            self.choice_id.SetItems([])
+            self.choice_id.SetSelection(wx.NOT_FOUND)
+            self.text_id.ChangeValue('')
+            self.text_version.ChangeValue('')
             dlg.Destroy()
             return False
         # We may need to wait a short while here to allow all nodes to respond
@@ -879,8 +883,14 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                     self.choice_id.SetSelection(indexID)
                 self.select_id(None)
             else:
-                self.text_id.ChangeValue('') # clear ID
+                # No active puck — clear ID, firmware-version, and the
+                # Select ID dropdown so stale data isn't shown. SetSelection
+                # is needed for the Windows OwnerDrawnComboBox path whose
+                # displayed text doesn't follow SetItems([]).
+                self.text_id.ChangeValue('')
+                self.text_version.ChangeValue('')
                 self.choice_id.SetItems([])
+                self.choice_id.SetSelection(wx.NOT_FOUND)
                 try:
                     result = self.can_port(None)
                     # print(result)
@@ -911,13 +921,19 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         except Exception as e: 
             # print('now fail')
             # print(e)
-            if "buffer" in str(e) or "heavy" in str(e):  
+            if "buffer" in str(e) or "heavy" in str(e):
                 print('No Pucks Found') # Establish error for no pucks
+                # No active puck — clear ID, firmware-version, and the
+                # Select ID dropdown.
+                self.text_id.ChangeValue('')
+                self.text_version.ChangeValue('')
+                self.choice_id.SetItems([])
+                self.choice_id.SetSelection(wx.NOT_FOUND)
                 msg = 'No Pucks Found! \nDebug:\nPower Connection\nCAN Connection\n\nVerify Connection and Retry'
                 dlg = wx.MessageDialog(None,msg)
                 dlg.ShowModal()
                 dlg.Destroy()
-            else: 
+            else:
                 try:
                     result = self.can_port(None)
                     # print(result)
@@ -1726,25 +1742,27 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             pass
    
     def onCloseFrame(self,event):
+        # Stop SYNC traffic first so it doesn't fight the SDOs below.
         try:
             self.network.sync.stop()
         except Exception:
             pass
 
-        # Skip the idle handshake if no node is active — without one, the SDO
-        # write below blocks until timeout and freezes the frame on exit.
+        # Idle the active puck if there is one. Use a tight SDO timeout so a
+        # disconnected/unresponsive puck can't hold the close path hostage
+        # for the default 30-second timeout. Catch any exception so a stale
+        # node, a torn-down bus, or a missing self.node never blocks exit.
         if len(MyApp.getNodes(self)) == 0:
             print("No active node; skipping idle handshake.")
         else:
+            prev_timeout = canopen.sdo.SdoClient.RESPONSE_TIMEOUT
+            canopen.sdo.SdoClient.RESPONSE_TIMEOUT = 0.5
             try:
-                # This is the most important step for safety!
-                # self.node.sdo["ControlWord"].raw = 0x00
                 self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
-                # Verification Loop: Wait up to 500ms for the hardware to confirm
+                # Verification loop: wait up to 500 ms for the hardware to confirm
                 success = False
                 timeout = time.time() + 0.5
                 while time.time() < timeout:
-                    # Check 0x6061 (Modes of Operation Display)
                     if self.node.sdo[0x6061].raw == 0:
                         success = True
                         break
@@ -1753,13 +1771,19 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                     print("Puck successfully transitioned to IDLE.")
                 else:
                     print("Warning: Puck did not confirm IDLE mode, but proceeding with removal.")
+            except Exception as e:
+                print(f"Idle handshake failed at close ({e!r}); proceeding.")
+            finally:
+                canopen.sdo.SdoClient.RESPONSE_TIMEOUT = prev_timeout
+                MyApp.removePuck(self, self.getID())
 
-                MyApp.removePuck(self,self.getID())
-
-            except canopen.SdoCommunicationError as e:
-                    print(f"CANopen Communication Error: {e}")
-                    # Even if communication fails, you might still want to remove it from the UI
-                    MyApp.removePuck(self, self.getID())
+        # Always release the CAN handle so the underlying transport (PCAN
+        # on Windows, socketcan on Linux) doesn't keep its driver open
+        # across the exit. Without this the close path can hang on Windows.
+        try:
+            self.network.disconnect()
+        except Exception:
+            pass
 
         self.Destroy()
         print('Closing Frame...')

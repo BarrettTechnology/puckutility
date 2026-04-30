@@ -12,6 +12,7 @@ cp scripts/reset_can.sh "${OUTDIR}"/
 cp scripts/60-can.rules "${OUTDIR}"/
 cp canopen_runner.py "${OUTDIR}"/
 cp flashp4.py "${OUTDIR}"/
+cp cli_ops.py "${OUTDIR}"/
 cp scripts/setup-socketcan.sh "${OUTDIR}"/
 cp scripts/install-ubuntu.sh "${OUTDIR}"/
 cp PuckUtilityApp.desktop "${OUTDIR}"/
