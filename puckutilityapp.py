@@ -1769,6 +1769,17 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             pass
    
     def onCloseFrame(self,event):
+        # Surface immediate visual feedback that the close was registered.
+        # The idle handshake + disconnect below can take up to ~1s, during
+        # which the wx event loop is blocked and the window otherwise
+        # appears frozen. Update() forces a synchronous paint so the new
+        # status text reaches screen before we start the slow path.
+        try:
+            self.frame_statusbar.SetStatusText("Exiting...", 1)
+            self.frame_statusbar.Update()
+        except Exception:
+            pass
+
         # Stop SYNC traffic first so it doesn't fight the SDOs below.
         try:
             self.network.sync.stop()
@@ -2001,7 +2012,15 @@ class MyApp(wx.App):
 
 def _setup_logging():
     """Tee stdout/stderr to a timestamped log file. Keeps the 10 most recent logs."""
-    log_dir = os.path.join(os.path.expanduser('~'), '.local', 'share', 'PuckUtilityApp', 'logs')
+    # In a PyInstaller --onefile bundle, __file__ resolves into the
+    # extracted MEIPASS temp dir, which is wiped when the exe exits.
+    # Anchor the log directory next to the running executable instead
+    # so logs survive (and the user can find them).
+    if getattr(sys, 'frozen', False):
+        base_dir = os.path.dirname(sys.executable)
+    else:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+    log_dir = os.path.join(base_dir, 'logs')
     os.makedirs(log_dir, exist_ok=True)
 
     # Rotate: remove oldest logs until fewer than 10 exist (making room for this one)
@@ -2027,9 +2046,11 @@ def _setup_logging():
     log_file.flush()
 
     class _Tee:
-        # `original` may be None when running under PyInstaller --noconsole
-        # (no attached console → sys.stdout / sys.stderr are None). In that
-        # case we fall back to writing only to the log file.
+        # PyInstaller --noconsole bundles can set sys.stdout/sys.stderr
+        # to None, in which case writing to it raises AttributeError and
+        # would kill the first print() after the tee is installed.
+        # Guard each delegated call so an absent original silently
+        # drops to logfile-only.
         def __init__(self, original, log):
             self._original = original
             self._log = log
@@ -2037,27 +2058,22 @@ def _setup_logging():
             if self._original is not None:
                 try:
                     self._original.write(data)
-                except Exception:
+                except (OSError, ValueError):
                     pass
             self._log.write(data)
         def flush(self):
             if self._original is not None:
                 try:
                     self._original.flush()
-                except Exception:
+                except (OSError, ValueError):
                     pass
             self._log.flush()
         def fileno(self):
-            if self._original is not None:
-                return self._original.fileno()
-            return self._log.fileno()
+            if self._original is None:
+                raise OSError("no fileno (stdout/stderr unavailable)")
+            return self._original.fileno()
         def isatty(self):
-            if self._original is not None:
-                try:
-                    return self._original.isatty()
-                except Exception:
-                    pass
-            return False
+            return self._original is not None and self._original.isatty()
 
     sys.stdout = _Tee(sys.stdout, log_file)
     sys.stderr = _Tee(sys.stderr, log_file)

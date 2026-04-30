@@ -1,7 +1,42 @@
 #!/usr/bin/env bash
-cd ..
+# Fail-fast on any error and resolve to the repo root regardless of where
+# the script is invoked from (so it works from PowerShell, Git Bash, an
+# IDE task runner, etc.).
+set -e
+cd "$(dirname "$0")/.."
+
+# Resolve the venv's python explicitly so PyInstaller bundles the
+# packages we installed via the venv, not whatever bare `python` happens
+# to resolve to on PATH (which on Windows often points to a system
+# Python that doesn't have our wxPython/canopen/etc.). Avoids the
+# "no module named PyInstaller" friction users hit when they forget to
+# Activate.ps1 first.
+if [ -x "Scripts/python.exe" ]; then
+    PY="Scripts/python.exe"          # Standard Windows venv
+elif [ -x "bin/python" ]; then
+    PY="bin/python"                  # Linux/macOS venv (rare on this script)
+else
+    echo "ERROR: could not find venv python in repo root." >&2
+    echo "Create the venv with 'python -m venv .' and 'pip install -r requirements.txt'." >&2
+    exit 1
+fi
+echo "Using venv python: $PY"
+
 VERSION=$(grep -m1 'SetTitle' puckutilityapp.py | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+')
 OUTDIR="build/win/PuckUtilityApp-${VERSION}"
+
+# Wipe leftover files from a half-completed previous run so they can't
+# pollute the new dist. We empty the OUTDIR's contents but DO NOT
+# remove OUTDIR itself — on Windows the directory entry is sometimes
+# held open by Explorer, a shell that `cd`'d into it, PyInstaller's
+# bootloader, or a stuck PuckUtilityApp.exe, even when the individual
+# files inside are deletable. `find -mindepth 1 -delete` walks
+# depth-first and removes every entry under OUTDIR without touching
+# OUTDIR itself.
+if [ -d "${OUTDIR}" ]; then
+    find "${OUTDIR}" -mindepth 1 -delete
+fi
+rm -f "build/win/PuckUtilityApp-${VERSION}-win.zip"
 
 # Windows notes (vs the Linux script):
 #   - PyInstaller's --add-data uses ';' as the source/dest separator on
@@ -29,10 +64,10 @@ PI_COMMON=(
 )
 
 # Windowed build (no console window flashes when launched from Explorer).
-python -m PyInstaller "${PI_COMMON[@]}" --name PuckUtilityApp --noconsole
+"$PY" -m PyInstaller "${PI_COMMON[@]}" --name PuckUtilityApp --noconsole
 
 # Console build (stdout/stderr/input attach to the launching terminal).
-python -m PyInstaller "${PI_COMMON[@]}" --name PuckUtilityAppCLI --console
+"$PY" -m PyInstaller "${PI_COMMON[@]}" --name PuckUtilityAppCLI --console
 
 cp -r images "${OUTDIR}"/
 cp -r config "${OUTDIR}"/
