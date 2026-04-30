@@ -11,6 +11,7 @@
 
 
 import wx
+import wx.adv
 from puckutilityapp_gui import puckutilityapp_frame
 from calibrate_menu import calibrate
 from factory_menu import factory
@@ -66,6 +67,13 @@ import threading
 import wx.lib.agw.pygauge as PG
 import argparse
 import configparser
+
+def resource_path(relative_path):
+    if getattr(sys, 'frozen', False):
+        base = os.path.dirname(sys.executable)
+    else:
+        base = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base, relative_path)
 
 # TODO
 
@@ -155,7 +163,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.Bind(wx.EVT_CHAR_HOOK, self._on_tab_nav)
 
         self._replace_static_texts()
-        icons = wx.Icon("images/BarrettLogo.png")
+        icons = wx.Icon(resource_path("images/BarrettLogo.png"))
         self.SetBackgroundColour(wx.Colour(255,255,255))
         USE_BUFFERED_DC = True
 
@@ -207,17 +215,16 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         # relative to this file so the icon loads regardless of cwd (the
         # silent except in _set_windows_icon would otherwise swallow a
         # missing-file failure when launched from another directory).
-        _icon_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'images')
         if sys.platform == 'win32':
-            self._set_windows_icon(os.path.join(_icon_dir, 'BarrettIcon.ico'))
+            self._set_windows_icon(resource_path(os.path.join('images', 'BarrettIcon.ico')))
         else:
-            self.SetIcon(wx.Icon(os.path.join(_icon_dir, 'BarrettIcon.png')))
+            self.SetIcon(wx.Icon(resource_path(os.path.join('images', 'BarrettIcon.png'))))
         self.SetTitle("Puck Utility App - v1.2.0")
         self.button_6.SetBackgroundColour(self.gray) # Initialize with gray button in idle
         self.Bind(wx.EVT_KEY_DOWN,self.onKeyDown)
         self.Bind(wx.EVT_KEY_UP,self.onKeyUp)
         self.Bind(wx.EVT_CLOSE, self.onCloseFrame)
-        self.backgroundBMP = wx.Bitmap("images/Background.png") # recreating the BMP each rewrite causes massive lagging this is much better!
+        self.backgroundBMP = wx.Bitmap(resource_path("images/Background.png")) # recreating the BMP each rewrite causes massive lagging this is much better!
         # Bind backgound function to assign bitmap
         self.Bind(wx.EVT_ERASE_BACKGROUND, self.OnEraseBackground)
 
@@ -239,7 +246,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         self.onoffpanel.Bind(wx.EVT_PAINT, self._paint_onoffpanel)
 
         # Replace wx.StaticBitmap Dial with transparent version
-        self._dial_base_img = wx.Image("images/dialnobgcroppedscaled.png")
+        self._dial_base_img = wx.Image(resource_path("images/dialnobgcroppedscaled.png"))
         dial_bmp = wx.Bitmap(self._dial_base_img)
         new_dial = widgets.TransparentBitmap(self, wx.ID_ANY, dial_bmp)
         new_dial.SetMinSize(self.Dial.GetMinSize())
@@ -712,32 +719,51 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         wx.CallAfter(self.getPosition)
 
     def on_emcy_received(self, emcy_error):
-        # self.fault_active = True
-        # self.node.network.sync.stop()
-        
-        error_msg = f"Fault {hex(emcy_error.code)}: {emcy_error.get_desc()}"
-        print(error_msg)
+        # Called from the canopen receiver thread — only wx.CallAfter is safe here.
+        code     = emcy_error.code
+        register = emcy_error.register
 
-        wx.CallAfter(self.choice_test.SetSelection, 0)
-        wx.CallAfter(self.frame_statusbar.SetStatusText, error_msg, 1)
-        wx.CallAfter(self.frame_statusbar.Update)
-        wx.Yield()
-        print(hex(emcy_error.code) )
-        if hex(emcy_error.code) == '0x0':
-            time.sleep(5)
+        # Error reset — puck cleared its fault/warning state
+        if code == 0x0000:
             wx.CallAfter(self.frame_statusbar.SetStatusText, 'Ready', 1)
-            wx.CallAfter(self.frame_statusbar.Update)
-            wx.Yield()
+            return
 
-        # ADD additional handling
-        # Move the select test to idle to match puck state
-        # Update the status bar to show fault, maybe in red?
-       
-        # dlg = wx.MessageDialog(None, error_msg, 'EMCY Fault', 
-        #                        wx.OK | wx.ICON_ERROR)
-        # dlg.ShowModal()
-        # dlg.Destroy()
-        
+        # EMCY codes to suppress entirely — no status bar update, no mode change.
+        # Add codes here as they are identified from puck behaviour in the field.
+        SUPPRESSED_CODES = {
+            0x8418,  # Velocity tracking — puck self-recovers, no action needed
+        }
+        if code in SUPPRESSED_CODES:
+            print(f"EMCY {hex(code)} suppressed: {emcy_error.get_desc()}")
+            return
+
+        # EMCY codes that are warnings even when the error register is non-zero.
+        # Add codes here as they are identified from puck behaviour in the field.
+        WARNING_CODES = {
+            0x2310,  # Current — puck self-recovers, does not leave operational state
+        }
+
+        # In CANopen the Error Register (0x1001) is set when the device has
+        # entered a fault state.  A warning EMCY is sent with register == 0
+        # because the device is still operational.  Any non-zero register
+        # means a real fault that requires the drive to stop.
+        is_fault = (register != 0x00) and (code not in WARNING_CODES)
+        prefix    = "Fault" if is_fault else "Warning"
+        error_msg = f"{prefix} {hex(code)}: {emcy_error.get_desc()}"
+
+        print(error_msg)
+        wx.CallAfter(self.frame_statusbar.SetStatusText, error_msg, 1)
+
+        if is_fault:
+            # SetSelection on wxGTK fires EVT_CHOICE, which would trigger
+            # select_test and send SDO commands. The _emcy_selection flag
+            # tells select_test to ignore this programmatic change.
+            def _set_idle():
+                self._emcy_selection = True
+                self.choice_test.SetSelection(0)
+                self._emcy_selection = False
+            wx.CallAfter(_set_idle)
+
 
     def can_port(self,event,skipADC=False):
         #print("Event handler 'can_port'")
@@ -1103,8 +1129,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             # File browser. Resolve relative to this file so the dialog opens
             # in <puckutility>/firmware regardless of the cwd the app was
             # launched from.
-            directory = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)), 'firmware')
+            directory = resource_path('firmware')
 
             with wx.FileDialog(self, "Select firmware file", directory, wildcard="BIN files (*.bin;*.ebin)|*.bin;*.ebin",
                           style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST) as fileDialog:
@@ -1228,8 +1253,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             # File browser. Resolve relative to this file so the dialog opens
             # in <puckutility>/config regardless of the cwd the app was
             # launched from.
-            directory = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)), 'config')
+            directory = resource_path('config')
 
             with wx.FileDialog(self, "Open CANopen CSV file", directory, wildcard="CSV files (*.csv)|*.csv",
                           style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST) as fileDialog:
@@ -1356,6 +1380,9 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.adcWasON = False
 
     def select_test(self, event):  # wxGlade: wxp3_frame.<event_handler>
+        if getattr(self, '_emcy_selection', False):
+            return
+
         if self.ADC_ON == True:
             self.node.network.sync.stop()
             time.sleep(0.05)  # Let any in-flight sync frame clear before SDO transactions
@@ -1822,8 +1849,38 @@ class MyApp(wx.App):
         wx.App.ActiveID = []
         wx.App.Nodes = []
 
+        splash_bmp = self._make_splash_bitmap()
+        self._splash = wx.adv.SplashScreen(
+            splash_bmp,
+            wx.adv.SPLASH_CENTRE_ON_SCREEN | wx.adv.SPLASH_NO_TIMEOUT,
+            0, None, style=wx.BORDER_NONE | wx.STAY_ON_TOP
+        )
+        # Return immediately so the event loop starts and the splash is fully
+        # painted by the OS before the heavy frame construction begins.
+        wx.CallLater(100, self._finish_init)
+        return True
+
+    def _make_splash_bitmap(self):
+        bg = wx.Image(resource_path(os.path.join("images", "Background.png")), wx.BITMAP_TYPE_PNG)
+        logo = wx.Image(resource_path(os.path.join("images", "BarrettLogoScaled-NoBG.png")), wx.BITMAP_TYPE_PNG)
+
+        bg_w, bg_h = bg.GetWidth(), bg.GetHeight()
+        logo_w, logo_h = logo.GetWidth(), logo.GetHeight()
+        x = (bg_w - logo_w) // 2
+        y = (bg_h - logo_h) // 2
+
+        result = wx.Bitmap(bg_w, bg_h, 32)
+        dc = wx.MemoryDC(result)
+        gc = wx.GraphicsContext.Create(dc)
+        gc.DrawBitmap(wx.Bitmap(bg), 0, 0, bg_w, bg_h)
+        gc.DrawBitmap(wx.Bitmap(logo), x, y, logo_w, logo_h)
+        dc.SelectObject(wx.NullBitmap)
+        return result
+
+    def _finish_init(self):
         self.frame = MyFrame(None, wx.ID_ANY, "")
         self.frame.Centre()
+        self._splash.Destroy()
         self.frame.Show()
         if MyApp.touchscreen:
             # Maximize so the window fills the work area on the 7" Pi screen
@@ -1849,7 +1906,7 @@ class MyApp(wx.App):
                 # Placement causes node not to get added!!
                 if len(self.getNodes()) == 0:
                     # print('No Pucks active')
-                    return True
+                    return
                 # print(self.frame.GetSize())
 
                 self.addPucks(self.frame.getID())
@@ -1859,8 +1916,6 @@ class MyApp(wx.App):
             except Exception as e:
                 # print(e)
                 pass
-
-        return True # Added for Windows DEMO - windows can't handle multi bus currently
 
     def addPucks(self,i): # Adds Puck ID to list of Active Frames
         # Idempotent: select_id's firstRun branch and OnInit can both end up
@@ -1895,7 +1950,7 @@ class MyApp(wx.App):
 
 def _setup_logging():
     """Tee stdout/stderr to a timestamped log file. Keeps the 10 most recent logs."""
-    log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
+    log_dir = os.path.join(os.path.expanduser('~'), '.local', 'share', 'PuckUtilityApp', 'logs')
     os.makedirs(log_dir, exist_ok=True)
 
     # Rotate: remove oldest logs until fewer than 10 exist (making room for this one)
@@ -1950,6 +2005,12 @@ from cli_ops import (
 # ---- Entry point ------------------------------------------------------------
 
 if __name__ == "__main__":
+    # When frozen, ensure cwd is the app directory so bare relative paths
+    # (puck4.eds, images/, config/, etc.) resolve correctly regardless of
+    # how the binary was launched (desktop file, terminal, etc.).
+    if getattr(sys, 'frozen', False):
+        os.chdir(os.path.dirname(sys.executable))
+
     _setup_logging()
 
     parser = argparse.ArgumentParser(
