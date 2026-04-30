@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 cd ..
-VERSION=$(grep -m1 'SetTitle' puckutilityapp.py | grep -oP 'v[0-9]+\.[0-9]+\.[0-9]+')
+VERSION=$(grep -m1 'SetTitle' puckutilityapp.py | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+')
 OUTDIR="build/lin/PuckUtilityApp-${VERSION}"
 pyinstaller --clean puckutilityapp.py --name PuckUtilityApp --onefile --distpath "${OUTDIR}" --add-data=lib/python3*/site-packages/canopen/:canopen/ --hiddenimport canopen --hiddenimport canopen.network --hiddenimport can --hiddenimport can.interfaces.socketcan
 cp -r images/ "${OUTDIR}"/

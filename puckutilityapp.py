@@ -395,13 +395,20 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         self.frame_statusbar.SetStatusText("Ready", 1)
 
     def UpdateUI(self,value):
-        # print('update ui')
-        # self.progress.Show()
-        # self.progress.SetValue(value)
+        # SetStatusText already invalidates the field it writes to; PyGauge
+        # does NOT auto-refresh on SetValue. Refresh+Update on the gauge
+        # alone (NOT the whole status bar) draws synchronously without the
+        # flicker the original whole-bar refresh produced. The synchronous
+        # Update() is required so the bar paints even when the window has
+        # lost focus — Refresh() alone only queues a WM_PAINT, which
+        # Windows deprioritises on background windows.
         self.frame_statusbar.SetStatusText(f"Progress: {value}%",1)
         self.UpdateProgress(value)
-        self.GetStatusBar().Refresh()
-        self.GetStatusBar().Update()
+        self.progress.Refresh(eraseBackground=False)
+        # PyGauge.Update(value, time) is the ANIMATED-update method and
+        # shadows wx.Window.Update() (the force-immediate-paint one we
+        # actually want here). Call the base-class method explicitly.
+        wx.Window.Update(self.progress)
         # self.Refresh()
         # self.Update()
         # force refresh to help windows?
@@ -1180,17 +1187,29 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         self.update = []
         self.update.clear()
 
-        while True:
+        # Drain everything that arrived since the last tick, but only repaint
+        # with the most recent numeric value — bursty updates would otherwise
+        # paint every intermediate step and tear. wx.YieldIfNeeded() pumps
+        # the event loop so paints/focus changes still flow even though
+        # we're inside this synchronous polling block (the previous version
+        # froze the gauge whenever the window lost focus).
+        result = None
+        while result is None:
+            latest = None
             try:
-                self.update.append(self.update_queue.get_nowait())
-                if self.update[-1] == "Pass" or self.update[-1] == "Fail" or self.update[-1] == "Done":
-                    result = self.update[-1]
-                    # print('process complete')
-                    break
-                else:
-                    # print(f"Received update: {self.update[-1]}% complete")
-                    self.UpdateUI(self.update[-1])
+                while True:
+                    item = self.update_queue.get_nowait()
+                    self.update.append(item)
+                    if item == "Pass" or item == "Fail" or item == "Done":
+                        result = item
+                        break
+                    latest = item
             except multiprocessing.queues.Empty:
+                pass
+            if latest is not None:
+                self.UpdateUI(latest)
+            if result is None:
+                wx.YieldIfNeeded()
                 time.sleep(0.05)
 
         process.terminate()
@@ -1329,17 +1348,25 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
         self.update = []
 
-        while True:
+        # Drain-and-pump pattern: see the matching loop in browse_fw for the
+        # rationale (focus-loss freeze + flicker avoidance).
+        result = None
+        while result is None:
+            latest = None
             try:
-                self.update.append(self.update_queue.get_nowait())
-                if self.update[-1] == "Pass" or self.update[-1] == "Fail":
-                    result = self.update[-1]
-                    # print('process complete')
-                    break
-                else:
-                    # print(f"Received update: {self.update[-1]}% complete")
-                    self.UpdateUI(self.update[-1])
+                while True:
+                    item = self.update_queue.get_nowait()
+                    self.update.append(item)
+                    if item == "Pass" or item == "Fail":
+                        result = item
+                        break
+                    latest = item
             except multiprocessing.queues.Empty:
+                pass
+            if latest is not None:
+                self.UpdateUI(latest)
+            if result is None:
+                wx.YieldIfNeeded()
                 time.sleep(0.05)
 
         process.terminate()
@@ -2000,19 +2027,37 @@ def _setup_logging():
     log_file.flush()
 
     class _Tee:
+        # `original` may be None when running under PyInstaller --noconsole
+        # (no attached console → sys.stdout / sys.stderr are None). In that
+        # case we fall back to writing only to the log file.
         def __init__(self, original, log):
             self._original = original
             self._log = log
         def write(self, data):
-            self._original.write(data)
+            if self._original is not None:
+                try:
+                    self._original.write(data)
+                except Exception:
+                    pass
             self._log.write(data)
         def flush(self):
-            self._original.flush()
+            if self._original is not None:
+                try:
+                    self._original.flush()
+                except Exception:
+                    pass
             self._log.flush()
         def fileno(self):
-            return self._original.fileno()
+            if self._original is not None:
+                return self._original.fileno()
+            return self._log.fileno()
         def isatty(self):
-            return self._original.isatty()
+            if self._original is not None:
+                try:
+                    return self._original.isatty()
+                except Exception:
+                    pass
+            return False
 
     sys.stdout = _Tee(sys.stdout, log_file)
     sys.stderr = _Tee(sys.stderr, log_file)

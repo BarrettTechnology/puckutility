@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 cd ..
-VERSION=$(grep -m1 'SetTitle' puckutilityapp.py | grep -oP 'v[0-9]+\.[0-9]+\.[0-9]+')
+VERSION=$(grep -m1 'SetTitle' puckutilityapp.py | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+')
 OUTDIR="build/win/PuckUtilityApp-${VERSION}"
 
 # Windows notes (vs the Linux script):
@@ -10,14 +10,29 @@ OUTDIR="build/win/PuckUtilityApp-${VERSION}"
 #   - The CAN transport on Windows is PCAN, so hidden-import that interface
 #     instead of socketcan.
 #   - --icon is needed so the .exe carries the Win32 icon resource.
-python -m PyInstaller --clean puckutilityapp.py --name PuckUtilityApp --onefile \
-    --distpath "${OUTDIR}" \
-    --add-data="Lib/site-packages/canopen/;canopen/" \
-    --hiddenimport canopen \
-    --hiddenimport canopen.network \
-    --hiddenimport can \
-    --hiddenimport can.interfaces.pcan \
+#
+# We build TWO exes from the same source:
+#   - PuckUtilityApp.exe    (windowed; double-click for the GUI, no console)
+#   - PuckUtilityAppCLI.exe (console; for `--scan / --flash / --config /
+#                            --calibrate / --system-config` from a terminal)
+# Both share the bundled folders/files copied alongside, so there is no
+# duplication outside the two .exe binaries themselves.
+PI_COMMON=(
+    --clean puckutilityapp.py --onefile
+    --distpath "${OUTDIR}"
+    --add-data="Lib/site-packages/canopen/;canopen/"
+    --hiddenimport canopen
+    --hiddenimport canopen.network
+    --hiddenimport can
+    --hiddenimport can.interfaces.pcan
     --icon=images/BarrettIcon.ico
+)
+
+# Windowed build (no console window flashes when launched from Explorer).
+python -m PyInstaller "${PI_COMMON[@]}" --name PuckUtilityApp --noconsole
+
+# Console build (stdout/stderr/input attach to the launching terminal).
+python -m PyInstaller "${PI_COMMON[@]}" --name PuckUtilityAppCLI --console
 
 cp -r images "${OUTDIR}"/
 cp -r config "${OUTDIR}"/
