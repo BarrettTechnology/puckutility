@@ -23,7 +23,7 @@ fi
 echo "Using venv python: $PY"
 
 VERSION=$(grep -m1 'SetTitle' puckutilityapp.py | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+')
-OUTDIR="build/win/PuckUtilityApp-${VERSION}"
+OUTDIR="build/win/PuckUtilityApp-win32-${VERSION}"
 
 # Wipe leftover files from a half-completed previous run so they can't
 # pollute the new dist. We empty the OUTDIR's contents but DO NOT
@@ -36,7 +36,7 @@ OUTDIR="build/win/PuckUtilityApp-${VERSION}"
 if [ -d "${OUTDIR}" ]; then
     find "${OUTDIR}" -mindepth 1 -delete
 fi
-rm -f "build/win/PuckUtilityApp-${VERSION}-win.zip"
+rm -f "build/win/PuckUtilityApp-win32-${VERSION}.zip"
 
 # Windows notes (vs the Linux script):
 #   - PyInstaller's --add-data uses ';' as the source/dest separator on
@@ -86,4 +86,4 @@ mv PeakOemDrv.exe "${OUTDIR}"/
 
 # Windows 10+ ships BSD tar; -a infers compression from the .zip suffix.
 cd build/win
-tar -a -cf "PuckUtilityApp-${VERSION}-win.zip" "PuckUtilityApp-${VERSION}/"
+tar -a -cf "PuckUtilityApp-win32-${VERSION}.zip" "PuckUtilityApp-win32-${VERSION}/"

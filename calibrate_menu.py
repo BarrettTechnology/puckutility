@@ -769,7 +769,7 @@ class calibrate():
                   print('Version {} found.'.format(version))
                 csvpath = _resolve_path(config[option]['CSV'], CONFIG_DIR)
                 # print(csvpath)
-                self.file_to_p3(None, csvpath)
+                self.file_to_p4(None, csvpath)
                 break
             else:
                 print('Puck {} Not found...'.format(config_id))
