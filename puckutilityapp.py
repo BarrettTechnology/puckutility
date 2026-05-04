@@ -615,14 +615,13 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         try:
             self.node.tpdo.read()
             self.node.rpdo.read()
-        except:
-            print('Failed to read PDOs...')
-            pass
+        except Exception as e:
+            print(f"Failed to read PDOs: {e!r}")
 
         if self.node.rpdo[1].cob_id is None:
-            self.node.rpdo[1].cob_id = 0x200 + node_id
+            self.node.rpdo[1].cob_id = 0x200 + self.node.id
         if self.node.rpdo[2].cob_id is None:
-            self.node.rpdo[2].cob_id = 0x300 + node_id
+            self.node.rpdo[2].cob_id = 0x300 + self.node.id
 
         # Original
 
@@ -652,18 +651,18 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         print("Configuring TPDOs...")
         try:
             # Use self.node consistently
-            self.node.tpdo.read() 
-            
+            self.node.tpdo.read()
+
             # Configure TPDO 3
             self.node.tpdo[3].clear()
             self.node.tpdo[3].add_variable('Amplifier', 'Temperature')
             self.node.tpdo[3].add_variable('Motor', 'Therm')
-            self.node.tpdo[3].trans_type = 10 
+            self.node.tpdo[3].trans_type = 10
             self.node.tpdo[3].enabled = True
-            
+
             # Apply changes to the hardware
             self.node.tpdo.save()
-            
+
         except Exception as e:
             print(f"Failed to set up TPDOs: {e}")
 
@@ -795,9 +794,9 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 self.network.connect(bustype='pcan', channel='PCAN_USBBUS'+str(int(can_device[-1:])+1), bitrate=1000000)
                 # self.network.connect(bustype='slcan', channel='COM7@128000', bitrate=1000000) # for SLCAN
             elif platform.system() == "Linux":
-                self.network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)    
+                self.network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)
             elif platform.system() == "Darwin":
-                self.network.connect(bustype='pcan', channel='PCAN_USBBUS1',bitrate=1000000) 
+                self.network.connect(bustype='pcan', channel='PCAN_USBBUS1',bitrate=1000000)
             # This will attempt to read an SDO from nodes 1 - 127
             self.network.scanner.reset()
             self.network.scanner.search()
@@ -948,9 +947,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                     pass
                 # self.choice_id.SetSelection(0)
             #print(str(datetime.datetime.now()) + " Complete!!!")
-        except Exception as e: 
-            # print('now fail')
-            # print(e)
+        except Exception as e:
             if "buffer" in str(e) or "heavy" in str(e):
                 print('No Pucks Found') # Establish error for no pucks
                 # No active puck — clear ID, firmware-version, and the
@@ -969,11 +966,22 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 dlg.ShowModal()
                 dlg.Destroy()
             else:
+                # Surface the underlying error so it isn't silently swallowed.
+                # Without the selfCALL guard, a persistent SDO failure (e.g. a
+                # node whose 0x100A read keeps faulting) traps startup in an
+                # infinite scan -> can_port -> scan loop.
+                print(f'Scan exception: {e!r}')
+                if selfCALL:
+                    self._scan_error = True
+                    self.progress.Hide()
+                    self.frame_statusbar.SetStatusText('Scan Error', 1)
+                    self.frame_statusbar.Refresh()
+                    self.frame_statusbar.Update()
+                    return
                 try:
                     result = self.can_port(None)
-                    # print(result)
                     if result == True:
-                        self.scan_pucks(None)
+                        self.scan_pucks(None, True)
                 except:
                     pass
 
@@ -1347,19 +1355,27 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 and csv_product_code != node_product_code):
             csv_str = self._format_product_code(csv_product_code)
             node_str = self._format_product_code(node_product_code)
-            print(f"Product Code Mismatch: CSV={csv_str}, node={node_str}")
-            msg = ("Product Code Mismatch — configuration NOT uploaded.\n\n"
-                   f"CSV File product code: {csv_str}\n"
-                   f"Active Puck product code: {node_str}\n\n"
-                   "Select a configuration file that matches this Puck "
-                   "variant and try again.")
-            dlg = wx.MessageDialog(None, msg, "Product Code Mismatch",
-                                   wx.OK | wx.ICON_ERROR)
-            dlg.ShowModal()
-            dlg.Destroy()
-            if self.adcWasON == True:
-                self.on_off_adc(self)
-            return
+            # If the puck's product code doesn't map to any known model the
+            # value is effectively garbage — we can't reliably identify the
+            # variant, so blocking the upload would just trap the user. Allow
+            # it through and log the bypass instead.
+            if node_product_code not in self._PRODUCT_CODE_MODELS:
+                print(f"Product code {node_str} not recognized; "
+                      f"allowing upload of {csv_str} anyway.")
+            else:
+                print(f"Product Code Mismatch: CSV={csv_str}, node={node_str}")
+                msg = ("Product Code Mismatch — configuration NOT uploaded.\n\n"
+                       f"CSV File product code: {csv_str}\n"
+                       f"Active Puck product code: {node_str}\n\n"
+                       "Select a configuration file that matches this Puck "
+                       "variant and try again.")
+                dlg = wx.MessageDialog(None, msg, "Product Code Mismatch",
+                                       wx.OK | wx.ICON_ERROR)
+                dlg.ShowModal()
+                dlg.Destroy()
+                if self.adcWasON == True:
+                    self.on_off_adc(self)
+                return
 
         self.frame_statusbar.SetStatusText("Updating Config...", 1)
         self.frame_statusbar.Update()

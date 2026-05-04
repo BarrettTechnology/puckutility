@@ -1,12 +1,23 @@
 # Flashloader v2
 import sys       # Python Standard Library
 import platform  # Python Standard Library
+import os        # Python Standard Library
 import os.path   # Python Standard Library
 import array     # Python Standard Library
 import binascii  # Python Standard Library
 import canopen
 import semver
 import time
+
+# In a PyInstaller --noconsole build, child processes spawned via
+# multiprocessing inherit sys.stdout / sys.stderr == None. Any uncaught
+# exception in the child then dies trying to write its traceback, masking
+# the real error with "'NoneType' object has no attribute 'write'". Route
+# both streams to NUL so tracebacks unwind normally instead.
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, 'w')
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, 'w')
 
 # Python3 incantation for enumeration supporting reverse-lookups
 # return_code = enum(Success=0, Lost_Dog=1, Runaway_Pony=2)
@@ -74,18 +85,36 @@ def flash(can_device, can_id, file_name, progress=None):
     try:
         node.nmt.state = 'RESET'                       # Reboot into flashloader
         node.nmt.wait_for_heartbeat(timeout=1)         # CANopen boot-up message
-        node.sdo["ProgramInfo"]["AutoLaunch"].raw = 0  # Stay in flashloader
+        # Race: the flashloader auto-launches the application after
+        # StartTimeoutMs (0x3410:08, default 100 ms in flashloader.eds).
+        # If AutoLaunch=0 doesn't land before that timer expires, the app
+        # comes up and silently handles ProgramCommand writes by aborting
+        # with 0x06010000 ("Unsupported access"). A pre-emptive settle
+        # sleep here was overshooting the window — instead, send the write
+        # immediately and retry quickly while the SDO server warms up.
+        deadline = time.time() + 0.5
+        last_err = None
+        while time.time() < deadline:
+            try:
+                node.sdo["ProgramInfo"]["AutoLaunch"].raw = 0  # Stay in flashloader
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+                time.sleep(0.005)
+        if last_err is not None:
+            raise last_err
     except:
         print("Failed to reset node: {}".format(can_id))
         return flash_result.RESET_FAILED
-  
+
     # Verify flashloader version
     version = get_version(node.sdo['MfgSoftwareVersion'].raw)
     print("Node: {0}, Flashloader version: {1}".format(can_id, version))
     if semver.match(version, '<2.1.0'):
         print("Flashloader version >= 2.1.0 required.")
         return flash_result.VERSION_INCOMPATIBLE
-  
+
     node.sdo.RESPONSE_TIMEOUT = 10 # Increase SDO timeout, flashing takes time
     try:
         node.sdo['ProgramCommand']['Command'].raw = flash_command.ERASE

@@ -73,6 +73,18 @@ TPDO2 Entry 1 (Actual Velocity),,0x1A01,1,UNSIGNED32,0x606c0020
 TPDO2 Entry 2 (Actual Current),,0x1A01,2,UNSIGNED32,0x60780010
 Enable TPDO2 Entries,,0x1A01,0,UNSIGNED8,2
 
+# Warnings and Faults
+Encoder magnet fault enable (bool),,0x2403,0,UNSIGNED8,0
+Motor temp limit in deg C to 85 (deg C),,0x220A,0,UNSIGNED8,85
+Bus overvoltage timeout (ms),,0x2384,4,UNSIGNED16,500
+Bus undervoltage timeout (ms),,0x2384,5,UNSIGNED16,500
+Bus overvoltage limit (0.1 V),,0x2384,6,UNSIGNED16,520
+Bus undervoltage limit (0.1 V),,0x2384,7,UNSIGNED16,180
+Amplifier overtemperature (deg C),,0x2384,9,UNSIGNED8,85
+CAN overrun fault enable (bool),,0x2404,0,UNSIGNED8,1
+CAN bus-off recovery fault enable (bool),,0x2405,0,UNSIGNED8,1
+SYNC loss fault timeout (ms),,0x2406,0,UNSIGNED16,0
+
 # Puck Specifications
 Product Code (mfg-specific),,0x1018,2,UNSIGNED32,5707
 Revision Number (bits 0-15: minor rev; bits 16-31: major rev),,0x1018,3,UNSIGNED32,0x1
