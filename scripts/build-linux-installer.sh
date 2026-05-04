@@ -17,7 +17,7 @@ else
 fi
 
 VERSION=$(grep -m1 'SetTitle' puckutilityapp.py | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+')
-OUTDIR="build/lin/PuckUtilityApp-${VERSION}"
+OUTDIR="build/lin/PuckUtilityApp-lin-${VERSION}"
 
 # Wipe leftover files from a half-completed previous run. Empty the
 # contents of OUTDIR without removing OUTDIR itself — keeps the script
@@ -26,7 +26,7 @@ OUTDIR="build/lin/PuckUtilityApp-${VERSION}"
 if [ -d "${OUTDIR}" ]; then
     find "${OUTDIR}" -mindepth 1 -delete
 fi
-rm -f "build/PuckUtilityApp-${VERSION}-lin.zip"
+rm -f "build/PuckUtilityApp-lin-${VERSION}.zip"
 
 if [ -n "$PY" ]; then
     "$PY" -m PyInstaller --clean puckutilityapp.py --name PuckUtilityApp --onefile --distpath "${OUTDIR}" --add-data=lib/python3*/site-packages/canopen/:canopen/ --hiddenimport canopen --hiddenimport canopen.network --hiddenimport can --hiddenimport can.interfaces.socketcan
@@ -49,4 +49,4 @@ cp PuckUtilityApp.desktop "${OUTDIR}"/
 cp PuckUtilityAppGuide.pdf "${OUTDIR}"/
 cp -r firmware/ "${OUTDIR}"/
 cd build/lin
-zip -r "../PuckUtilityApp-${VERSION}-lin.zip" "PuckUtilityApp-${VERSION}"
+zip -r "../PuckUtilityApp-lin-${VERSION}.zip" "PuckUtilityApp-lin-${VERSION}"
