@@ -1595,9 +1595,11 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         elif quick_test == 2:  # Velocity
             ctspersec = round(cmd_value * 4096 / 60 * self.gearRatio)
             print(f"Set TargetVelocity = {cmd_value} RPM")
-            self.node.sdo["TargetVelocity"].raw = ctspersec
             self.node.rpdo[2]["TargetVelocity"].raw = ctspersec
+            self.node.rpdo[2].transmit()
             self.node.rpdo[1]["ControlWord"].raw = OP_ENABLED
+            self.node.rpdo[1].transmit()
+            self.node.network.sync.transmit()
 
         elif quick_test == 3:  # Position
             ctsvalue = cmd_value / 360 * 4096 * self.gearRatio
