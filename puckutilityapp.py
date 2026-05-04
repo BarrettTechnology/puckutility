@@ -810,7 +810,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 msg = 'No Pucks Found! \nDebug:\nPower Connection\nCAN Connection\n\nVerify Connection and Retry'
             else:
                 print('No CAN device found!')
-                status_msg = 'No CAN device found'
+                status_msg = 'Scan Error: No CAN device found'
                 msg = 'No CAN device found! \nCheck connection and try again'
             # Hide the gauge so it doesn't keep painting over the error text;
             # Refresh the status bar so its previous gauge area is repainted
@@ -923,7 +923,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                         if selfCALL == False:
                             self.scan_pucks(None,True)
                         else:
-                            print('No Pucks Found') # Establish error for no pucks
+                            print('Scan Error: No Pucks Found') # Establish error for no pucks
                             self._scan_error = True
                             self.progress.Hide()
                             self.frame_statusbar.SetStatusText('No Pucks Found', 1)
