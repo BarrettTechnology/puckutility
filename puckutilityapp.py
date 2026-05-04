@@ -80,7 +80,6 @@ def resource_path(relative_path):
 # KNOWN BUGS
 # If gainfactor is 0 don't run calc and fail
 # Auto focus when coming out of disabled??
-# Add hotkeys to help guide! ******************************
 # Auto reset cob IDs so configuration isn't required??
 # Calibration steps individually still popup issue for multiple cal
 
@@ -772,7 +771,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             wx.CallAfter(_set_idle)
 
 
-    def can_port(self,event,skipADC=False):
+    def can_port(self,event,skipADC=False,silent=False):
         #print("Event handler 'can_port'")
         if skipADC == True:
             pass
@@ -803,16 +802,31 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.network.scanner.reset()
             self.network.scanner.search()
         #   return True
-        except Exception as e: 
+        except Exception as e:
             # print(e)
-            if "buffer" in str(e) or "heavy" in str(e):  
+            if "buffer" in str(e) or "heavy" in str(e):
                 print('No Pucks Found') # Establish error for no pucks
+                status_msg = 'No Pucks Found'
                 msg = 'No Pucks Found! \nDebug:\nPower Connection\nCAN Connection\n\nVerify Connection and Retry'
-            else: 
+            else:
                 print('No CAN device found!')
+                status_msg = 'No CAN device found'
                 msg = 'No CAN device found! \nCheck connection and try again'
-            dlg = wx.MessageDialog(None,msg)
-            dlg.ShowModal()
+            # Hide the gauge so it doesn't keep painting over the error text;
+            # Refresh the status bar so its previous gauge area is repainted
+            # cleanly.
+            self.progress.Hide()
+            self.frame_statusbar.SetStatusText(status_msg, 1)
+            self.frame_statusbar.Refresh()
+            self.frame_statusbar.Update()
+            # silent=True (used at startup) skips the modal dialog so the
+            # app can finish coming up without an interaction wall when no
+            # CAN device is plugged in. The status text still surfaces the
+            # error.
+            if not silent:
+                dlg = wx.MessageDialog(None,msg)
+                dlg.ShowModal()
+                dlg.Destroy()
             # No active puck — clear ID, firmware-version readout, and
             # the Select ID dropdown so stale data isn't shown. On Windows
             # the dropdown is an OwnerDrawnComboBox whose displayed text
@@ -821,7 +835,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.choice_id.SetSelection(wx.NOT_FOUND)
             self.text_id.ChangeValue('')
             self.text_version.ChangeValue('')
-            dlg.Destroy()
             return False
         # We may need to wait a short while here to allow all nodes to respond
         time.sleep(0.05)
@@ -835,7 +848,12 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
     def scan_pucks(self, event,selfCALL=False,skipADC=False):  # wxGlade: wxp3_frame.<event_handler>
         #print("Event handler 'scan_pucks'")
         #print(str(datetime.datetime.now()) + " Event handler 'scan_pucks'")
-        
+
+        # Track whether an error path set a status-bar message during the
+        # scan; if so, the closing "Ready" reset gets skipped so the error
+        # stays visible after the modal dialog dismisses.
+        self._scan_error = False
+
         # Set Mode to IDLE in case test is active
         if skipADC == True:
             pass
@@ -906,6 +924,11 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                             self.scan_pucks(None,True)
                         else:
                             print('No Pucks Found') # Establish error for no pucks
+                            self._scan_error = True
+                            self.progress.Hide()
+                            self.frame_statusbar.SetStatusText('No Pucks Found', 1)
+                            self.frame_statusbar.Refresh()
+                            self.frame_statusbar.Update()
                             msg = 'No Pucks Found! \nDebug:\nPower Connection\nCAN Connection\n\nVerify Connection and Retry'
                             dlg = wx.MessageDialog(None,msg)
                             dlg.ShowModal()
@@ -936,6 +959,11 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 self.text_version.ChangeValue('')
                 self.choice_id.SetItems([])
                 self.choice_id.SetSelection(wx.NOT_FOUND)
+                self._scan_error = True
+                self.progress.Hide()
+                self.frame_statusbar.SetStatusText('No Pucks Found', 1)
+                self.frame_statusbar.Refresh()
+                self.frame_statusbar.Update()
                 msg = 'No Pucks Found! \nDebug:\nPower Connection\nCAN Connection\n\nVerify Connection and Retry'
                 dlg = wx.MessageDialog(None,msg)
                 dlg.ShowModal()
@@ -955,8 +983,11 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.on_off_adc(self)
             self.adcWasON = False
 
-        self.frame_statusbar.SetStatusText("Ready", 1)
-        self.frame_statusbar.Update()
+        # Don't clobber an error message set earlier in this scan — leave
+        # the error visible until the next operation overwrites it.
+        if not self._scan_error:
+            self.frame_statusbar.SetStatusText("Ready", 1)
+            self.frame_statusbar.Update()
         wx.Yield()
 
     def select_id(self, event):  # wxGlade: wxp3_frame.<event_handler>
@@ -1950,8 +1981,17 @@ class MyApp(wx.App):
             # intact (ShowFullScreen strips that chrome, which isn't what we
             # want here).
             self.frame.Maximize(True)
+        # Pump pending events so the splash destroy actually paints out and
+        # the main frame finishes its first paint before we start the
+        # potentially blocking CAN connect below. Without this, a no-CAN
+        # startup would leave the splash visible while can_port hangs on
+        # the network connect call.
+        wx.SafeYield()
 
-        result = self.frame.can_port(None)
+        # silent=True so a missing CAN device at startup surfaces only on
+        # the status bar — no modal dialog walls off the launching app
+        # before the main window is fully usable.
+        result = self.frame.can_port(None, silent=True)
         self.Bind(wx.EVT_KEY_DOWN,self.frame.onKeyDown)
         self.Bind(wx.EVT_KEY_UP,self.frame.onKeyUp)
 

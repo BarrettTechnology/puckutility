@@ -14,6 +14,17 @@ from cli_ops import _resolve_path, FIRMWARE_DIR, CONFIG_DIR
 
 # TODO - No active issues
 
+
+def _sleep_responsive(seconds, chunk=0.05):
+    """Block for `seconds` seconds while letting wx process pending
+    events every `chunk` seconds — keeps Windows from marking the app
+    "Not Responding" during long calibration waits."""
+    end = time.time() + seconds
+    while time.time() < end:
+        time.sleep(min(chunk, max(0, end - time.time())))
+        wx.Yield()
+
+
 class calibrate():
     def calibrate_all_pucks(self, event):
         print(self.network.scanner.nodes)
@@ -102,7 +113,7 @@ class calibrate():
         # Set Mode to Voltage
         print("Setting Mode = VOLTAGE MODE")
         self.node.sdo["SetModeOfOperation"].raw = MODE_PHASE_VOLTAGE_ANGLE
-        time.sleep(1) # Wait at least 75 ms for the filters to settle (2 seconds seems to be the sweet spot)
+        _sleep_responsive(1) # Wait at least 75 ms for the filters to settle (2 seconds seems to be the sweet spot)
 
         # Calibrate iSense
         for channel in ['Alpha', 'Beta']:
@@ -206,7 +217,7 @@ class calibrate():
         if calibration_current > i_peak:
            calibration_current = i_peak
 
-        time.sleep(1) # Wait at least 75 ms for the filters to settle
+        _sleep_responsive(1) # Wait at least 75 ms for the filters to settle
 
         # Increase Motor d-axis voltage (/1000 of i_peak)
         # until measured d-axis current > calibration_current mA or ud > 32000
@@ -222,8 +233,9 @@ class calibrate():
           motor_ud += 100 # 25 # was 100, then 50
           self.node.sdo['Motor']['ud'].raw = motor_ud
           time.sleep(0.05)
+          wx.Yield() # keep wx event loop alive so Windows doesn't mark the app "Not Responding"
 
-        time.sleep(1) # Wait at least 75 ms for the filters to settle
+        _sleep_responsive(1) # Wait at least 75 ms for the filters to settle
 
         a_filt = self.node.sdo['Alpha']['Filtered'].raw # Q12.4
         a_filt = (a_filt >> 4) + ((a_filt & 0x0008) >> 3) # Round Q12.4 to Q12.0
@@ -233,7 +245,7 @@ class calibrate():
           self.node.sdo['Theta_e'].raw / 32768.0 * 3.14159))
 
         self.node.sdo['Theta_e'].raw = -0x4000 # Stall @ Beta Peak (-pi/2)
-        time.sleep(1) # Wait at least 75 ms for the filters to settle
+        _sleep_responsive(1) # Wait at least 75 ms for the filters to settle
 
         b_filt = self.node.sdo['Beta']['Filtered'].raw # Q12.4
         b_filt = (b_filt >> 4) + ((b_filt & 0x0008) >> 3) # Round Q12.4 to Q12.0
@@ -355,6 +367,7 @@ class calibrate():
           motor_ud += 100
           self.node.sdo['Motor']['ud'].raw = motor_ud
           time.sleep(0.05)
+          wx.Yield() # keep wx event loop alive so Windows doesn't mark the app "Not Responding"
 
         # Drive from theta_e = -90 to 0 in 10 steps of 0.05s
         # Capture RawPosition when commanding theta_e = 0
@@ -364,7 +377,8 @@ class calibrate():
         for i in range(int(-0x1000), 0, int(0x1000/32)):
           self.node.sdo['Theta_e'].raw = i
           time.sleep(0.05)
-        time.sleep(0.25)
+          wx.Yield() # keep wx event loop alive so Windows doesn't mark the app "Not Responding"
+        _sleep_responsive(0.25)
         pos1 = self.node.sdo['Encoder']['RawPosition'].raw
         print("After approaching theta_e = 0 from -22.5, Encoder raw = {0}".format(pos1))
 
@@ -373,12 +387,13 @@ class calibrate():
         # Drive from theta_e = +90 to 0 in 10 steps of 0.05s
         # Capture RawPosition when commanding theta_e = 0
         self.node.sdo['Theta_e'].raw = 0x1000
-        time.sleep(1)
+        _sleep_responsive(1)
         startPos2 = self.node.sdo['PositionFeedback'].raw
         for i in range(int(0x1000), 0, int(-0x1000/32)):
           self.node.sdo['Theta_e'].raw = i
           time.sleep(0.05)
-        time.sleep(0.25)
+          wx.Yield() # keep wx event loop alive so Windows doesn't mark the app "Not Responding"
+        _sleep_responsive(0.25)
         pos2 = self.node.sdo['Encoder']['RawPosition'].raw
         print("After approaching theta_e = 0 from +22.5, Encoder raw = {0}".format(pos2))
         zeroPos2 = self.node.sdo['PositionFeedback'].raw
@@ -478,7 +493,7 @@ class calibrate():
         # Set Mode to Idle (0)
         print("Setting Mode = IDLE")
         self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
-        time.sleep(1) # Wait at least 75 ms for the filters to settle
+        _sleep_responsive(1) # Wait at least 75 ms for the filters to settle
 
         # Clear faults, RTSO, OpEnabled
         print("Going OpEnabled")
@@ -498,6 +513,7 @@ class calibrate():
         while True:
          self.node.sdo["TargetTorque"].raw = cmd_value # Send
          time.sleep(0.05)
+         wx.Yield() # keep wx event loop alive so Windows doesn't mark the app "Not Responding"
          q_fbk = self.node.sdo['CurrentFeedback'].raw
          print("TargetTorque = {0}, CurrentFeedback = {1} mA".format(cmd_value, q_fbk))
          if q_fbk > 1000 or cmd_value == 1000:
@@ -530,12 +546,13 @@ class calibrate():
           if cycles > max_cycles:
             break
           time.sleep(0.05)
+          wx.Yield() # keep wx event loop alive so Windows doesn't mark the app "Not Responding"
 
         # Invert TargetTorque
         self.node.sdo["TargetTorque"].raw = -cmd_value # Send
         self.node.sdo['EncoderConfig']['LagFactor'].raw = 0
-        
-        time.sleep(0.5)
+
+        _sleep_responsive(0.5)
 
         # Init: cycles = 0, max = 0, lag = 0
         cycles = 0
@@ -560,6 +577,7 @@ class calibrate():
           if cycles > max_cycles:
             break
           time.sleep(0.05)
+          wx.Yield() # keep wx event loop alive so Windows doesn't mark the app "Not Responding"
 
         # Take the average of the two lags
         lag = (saved_lag_1 + saved_lag_2) / 2
@@ -603,11 +621,12 @@ class calibrate():
         # Set Mode to Idle (0)
         print("Setting Mode = IDLE")
         self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
-        time.sleep(1) # Wait at least 75 ms for the filters to settle
+        _sleep_responsive(1) # Wait at least 75 ms for the filters to settle
         timeEnd = time.time() + 1
         Pos = []
         while time.time() < timeEnd:
           Pos.append(self.node.sdo['PositionFeedback'].raw)
+          wx.Yield() # keep wx event loop alive so Windows doesn't mark the app "Not Responding"
         posDif = max(Pos) - min(Pos)
         print("Max Pos: {} Min Pos: {} Diff: {}".format(max(Pos), min(Pos), posDif))
         maxDif = 8
@@ -660,7 +679,7 @@ class calibrate():
         done = False
         while not done:
           print("Waiting...")
-          time.sleep(1)
+          _sleep_responsive(1)
           ending_position = self.node.sdo['PositionFeedback'].raw
           if abs(starting_position - ending_position) > (encoder_resolution / 8):
             done = True
