@@ -299,12 +299,278 @@ class calibrate():
         except:
           pass
 
-    def calibrate_itiming(self, event):  # wxGlade: wxp3_frame.<event_handler>
-        print("Event handler 'calibrate_itiming' not implemented!")
-        # Tune the current sampling moment to minimize noise
-        # Collect noise statistics at/near falling edge of the widest PWM, in all 6 sectors
-        # TODO new feature coming soon!
-        event.Skip()
+    def calibrate_itiming(self, event, calAll=False):  # wxGlade: wxp3_frame.<event_handler>
+        if calAll == False:
+            if self.check_for_node() == False:
+                return False
+            self.Disable()
+
+        quick_test = self.choice_test.GetSelection()
+        if quick_test != 0:
+            self.lastMode = 0
+            print("Setting Mode = IDLE")
+            self.choice_test.SetSelection(0)
+            self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
+
+        if self.ADC_ON == True:
+            self.on_off_adc(self)
+            self.adcWasON = True
+        else:
+            self.adcWasON = False
+
+        self.frame_statusbar.SetStatusText("Calibrating current timing...", 1)
+        self.frame_statusbar.Update()
+        wx.Yield()
+
+        print("Going OpEnabled")
+        self.node.sdo["ControlWord"].raw = CLEAR_FAULT
+        self.node.sdo["ControlWord"].raw = SHUTDOWN
+        self.node.sdo["ControlWord"].raw = OP_ENABLED
+        self.node.sdo["SetModeOfOperation"].raw = MODE_PHASE_VOLTAGE_ANGLE
+
+        calibration_current = self.node.sdo['Calibration']['i_cal'].raw
+        i_peak = self.node.sdo['Calibration']['i_peak'].raw
+        if calibration_current > i_peak:
+            calibration_current = i_peak
+
+        dead_time         = self.node.sdo['Amp']['DeadTime'].raw         # ns
+        sampling_time     = self.node.sdo['Amp']['SamplingTime'].raw     # ns (fixed, not touched)
+        conversion_time   = self.node.sdo['Amp']['ConversionTime'].raw   # ns
+        original_settling = self.node.sdo['Amp']['MaxSettlingTime'].raw  # ns
+        freq_hz           = self.node.sdo['Amp']['Frequency'].raw
+
+        half_period_ns = 1_000_000_000 // (2 * max(freq_hz, 1))
+
+        # MaxSettlingTime is only read by firmware during initialization — runtime
+        # SDO writes have no effect until the puck is reset.  The sweep must
+        # therefore save→reset→re-init for every timing step.
+
+        # Alpha/Beta raw ADC bias (zero-current midpoint) for centring the signal
+        alpha_bias = self.node.sdo['Alpha']['Bias'].raw
+        beta_bias  = self.node.sdo['Beta']['Bias'].raw
+
+        # 6 SVM sector centers spaced 60° apart (theta_e raw: ±32767 = ±pi)
+        sector_angles = [
+            int( 32767 / 6),      #  30° = pi/6
+            int( 32767 * 3 / 6),  #  90° = pi/2
+            int( 32767 * 5 / 6),  # 150° = 5pi/6
+            int(-32767 * 5 / 6),  # 210° = -5pi/6
+            int(-32767 * 3 / 6),  # 270° = -pi/2
+            int(-32767 / 6),      # 330° = -pi/6
+        ]
+
+        # --- MaxSettlingTime sanity check ---
+        # Two save+reset cycles at opposite extremes confirm whether the parameter
+        # has any effect on Alpha.Raw after the firmware reads it at init.
+        print("--- MaxSettlingTime sanity check (2 resets) ---")
+        node_id = self.node.id
+        _DIAG_SAMPLES = 30
+        _diag_theta = int(32767 / 6)  # 30°
+        _diag_means = {}
+        for _t_diag, _label in [(0, 'min'), (half_period_ns, 'max')]:
+            self.node.sdo['Amp']['MaxSettlingTime'].raw = _t_diag
+            self.node.sdo['Save']['Single'].raw = ((0x3001 << 8) | 0x05)
+            self.network.send_message(0x0, [0x81, int(node_id)])
+            _sleep_responsive(0.5)
+            self.configure_Puck()
+            _readback = self.node.sdo['Amp']['MaxSettlingTime'].raw
+            print("  MaxSettlingTime={:6d} ns  readback after reset={:6d} ns  {}".format(
+                _t_diag, _readback, "OK" if _readback == _t_diag else "MISMATCH"))
+            self.node.sdo["ControlWord"].raw = CLEAR_FAULT
+            self.node.sdo["ControlWord"].raw = SHUTDOWN
+            self.node.sdo["ControlWord"].raw = OP_ENABLED
+            self.node.sdo["SetModeOfOperation"].raw = MODE_PHASE_VOLTAGE_ANGLE
+            self.node.sdo['Theta_e'].raw = _diag_theta
+            self.node.sdo['Motor']['ud'].raw = 0
+            _diag_ud = 0
+            while (self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak < 0.8 * calibration_current
+                   and _diag_ud < 32000):
+                _diag_ud = min(_diag_ud + 500, 32000)
+                self.node.sdo['Motor']['ud'].raw = _diag_ud
+                time.sleep(0.01)
+                wx.Yield()
+            while (self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak < calibration_current
+                   and _diag_ud < 32000):
+                _diag_ud = min(_diag_ud + 100, 32000)
+                self.node.sdo['Motor']['ud'].raw = _diag_ud
+                time.sleep(0.01)
+                wx.Yield()
+            _sleep_responsive(0.2)
+            _s = 0
+            for _ in range(_DIAG_SAMPLES):
+                _s += self.node.sdo['Alpha']['Raw'].raw
+                time.sleep(0.005)
+            _diag_means[_label] = _s / _DIAG_SAMPLES
+            print("  Alpha.Raw mean={:.2f}".format(_diag_means[_label]))
+            self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
+        _diag_diff = abs(_diag_means['max'] - _diag_means['min'])
+        if _diag_diff < 5.0:
+            print("  WARNING: MaxSettlingTime has NO measurable effect on Alpha.Raw "
+                  "after reset (diff={:.3f} counts). Check with firmware team whether "
+                  "0x3001/5 is wired to the ADC trigger in this build.".format(_diag_diff))
+        else:
+            print("  OK: MaxSettlingTime effect confirmed after reset "
+                  "(diff={:.3f} counts).".format(_diag_diff))
+        print("--- End sanity check ---")
+        # ------------------------------------
+
+        sweep_start = 800
+        sweep_max   = 1800
+        step_ns     = 25
+        N_SAMPLES   = 20
+        timing_values = list(range(sweep_start, sweep_max + 1, step_ns))
+
+        print("Sweep: {} to {} ns, {} steps of {} ns  (half period = {} ns)".format(
+            sweep_start, sweep_max, len(timing_values), step_ns, half_period_ns))
+        print("Each step requires a puck reset — est. {:.0f} s total".format(
+            len(timing_values) * (0.5 + len(sector_angles) * 2.5)))
+
+        # step_sector_data[t_idx][sector_idx] = (alpha_raw_mean, beta_raw_mean)
+        step_sector_data = [[None] * len(sector_angles) for _ in range(len(timing_values))]
+
+        for t_idx, t in enumerate(timing_values):
+            print("Step {}/{}: MaxSettlingTime={} ns — saving and rebooting...".format(
+                t_idx + 1, len(timing_values), t))
+            self.frame_statusbar.SetStatusText(
+                "Calibrating timing: step {}/{} ({} ns)".format(
+                    t_idx + 1, len(timing_values), t), 1)
+            self.frame_statusbar.Update()
+            wx.Yield()
+
+            self.node.sdo['Amp']['MaxSettlingTime'].raw = t
+            self.node.sdo['Save']['Single'].raw = ((0x3001 << 8) | 0x05)
+            self.network.send_message(0x0, [0x81, int(node_id)])
+            _sleep_responsive(0.5)
+            self.configure_Puck()
+
+            self.node.sdo["ControlWord"].raw = CLEAR_FAULT
+            self.node.sdo["ControlWord"].raw = SHUTDOWN
+            self.node.sdo["ControlWord"].raw = OP_ENABLED
+            self.node.sdo["SetModeOfOperation"].raw = MODE_PHASE_VOLTAGE_ANGLE
+
+            for sector_idx, theta_e in enumerate(sector_angles):
+                self.node.sdo['Theta_e'].raw = theta_e
+                self.node.sdo['Motor']['ud'].raw = 0
+                motor_ud = 0
+                while (self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak < 0.8 * calibration_current
+                       and motor_ud < 32000):
+                    motor_ud = min(motor_ud + 500, 32000)
+                    self.node.sdo['Motor']['ud'].raw = motor_ud
+                    time.sleep(0.01)
+                    wx.Yield()
+                while (self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak < calibration_current
+                       and motor_ud < 32000):
+                    motor_ud = min(motor_ud + 100, 32000)
+                    self.node.sdo['Motor']['ud'].raw = motor_ud
+                    time.sleep(0.01)
+                    wx.Yield()
+                _sleep_responsive(0.2)
+
+                alpha_sum = 0
+                beta_sum  = 0
+                for _ in range(N_SAMPLES):
+                    alpha_sum += self.node.sdo['Alpha']['Raw'].raw
+                    beta_sum  += self.node.sdo['Beta']['Raw'].raw
+                    time.sleep(0.005)
+                    wx.Yield()
+
+                a_raw = alpha_sum / N_SAMPLES
+                b_raw = beta_sum  / N_SAMPLES
+                step_sector_data[t_idx][sector_idx] = (a_raw, b_raw)
+                print("  sector {}/6  theta_e={:6d}  alpha={:7.1f}  beta={:7.1f}".format(
+                    sector_idx + 1, theta_e, a_raw, b_raw))
+
+            self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
+
+        # --- Analysis: per-sector threshold crossing on bias-subtracted signal ---
+        sector_settling_times = []
+
+        for sector_idx in range(len(sector_angles)):
+            times        = timing_values
+            signal_means = [step_sector_data[t_idx][sector_idx]
+                            for t_idx in range(len(timing_values))]
+            n             = len(times)
+            # Use the last 15% of steps (min 5 points) as the plateau window —
+            # the last 25% can still overlap the settling transition at 25 ns resolution.
+            plateau_start = max(0, n - max(5, n // 7))
+            early_end     = max(1, n // 4)
+
+            print("Sector {}/6 analysis:".format(sector_idx + 1))
+            t_settle = 0.0
+            for ch_name, ch_idx, bias in (('Alpha', 0, alpha_bias),
+                                           ('Beta',  1, beta_bias)):
+                ch_vals   = [s[ch_idx] - bias for s in signal_means]
+                plateau   = sum(ch_vals[plateau_start:]) / len(ch_vals[plateau_start:])
+                devs      = [abs(v - plateau) for v in ch_vals]
+                peak_dev  = max(devs)
+                plat_dev  = sum(devs[plateau_start:]) / len(devs[plateau_start:])
+                early_dev = sum(devs[:early_end]) / early_end
+
+                # 3-point centred moving average to smooth per-step cycle-to-cycle noise
+                smooth = list(devs)
+                for i in range(1, n - 1):
+                    smooth[i] = (devs[i - 1] + devs[i] + devs[i + 1]) / 3.0
+
+                signal_amplitude = peak_dev - plat_dev
+                # Raised flat gate (was max(3,2×plat_dev)) to suppress noise channels
+                threshold = plat_dev + 0.10 * max(signal_amplitude, 1.0)
+
+                # Print per-step raw deviations to show curve shape
+                dev_str = "  {}  devs: ".format(ch_name) + "  ".join(
+                    "{:4d}ns={:.1f}".format(times[i], devs[i]) for i in range(n))
+                print(dev_str)
+
+                t_ch = 0.0
+                if signal_amplitude < max(5.0, 3.0 * plat_dev):
+                    reason = "flat (amplitude={:.2f})".format(signal_amplitude)
+                elif early_dev < 1.5 * plat_dev:
+                    reason = "no early elevation (early_dev={:.2f})".format(early_dev)
+                else:
+                    # Find crossing on the smoothed curve, interpolate for sub-step precision
+                    reason = "no crossing in sweep range"
+                    for i in range(1, n):
+                        if smooth[i - 1] > threshold >= smooth[i]:
+                            span = smooth[i - 1] - smooth[i]
+                            frac = (smooth[i - 1] - threshold) / span if span > 0 else 0.0
+                            t_ch = times[i - 1] + frac * (times[i] - times[i - 1])
+                            reason = "crossed at {:.1f} ns (between {}–{} ns)".format(
+                                t_ch, times[i - 1], times[i])
+                            break
+
+                t_ch = max(0.0, t_ch)
+                print("  {}  threshold={:.2f}  plat_dev={:.2f}  amplitude={:.2f}  "
+                      "t_settle={:.1f} ns  ({})".format(
+                      ch_name, threshold, plat_dev, signal_amplitude, t_ch, reason))
+                t_settle = max(t_settle, t_ch)
+
+            print("  Sector {} settling time: {:.1f} ns".format(sector_idx + 1, t_settle))
+            sector_settling_times.append(t_settle)
+
+        # Conservative choice: maximum settling time required across all sectors
+        optimal_settling = int(max(sector_settling_times))
+        optimal_settling = min(optimal_settling, sweep_max)
+
+        print("Per-sector settling times (ns): {}".format(
+            [round(t, 1) for t in sector_settling_times]))
+        print("Optimal MaxSettlingTime: {} ns  (was {} ns)".format(
+            optimal_settling, original_settling))
+
+        self.node.sdo['Amp']['MaxSettlingTime'].raw = optimal_settling
+        self.node.sdo['Save']['Single'].raw = ((0x3001 << 8) | 0x05)
+        print("Saved Amp.MaxSettlingTime to EEPROM — rebooting to apply...")
+        self.network.send_message(0x0, [0x81, int(node_id)])
+        _sleep_responsive(0.5)
+        self.configure_Puck()
+        print("Puck rebooted with MaxSettlingTime={} ns active.".format(optimal_settling))
+
+        self.frame_statusbar.SetStatusText(
+            "Current timing calibrated: {} ns".format(optimal_settling), 1)
+
+        if self.ADC_ON == False and self.adcWasON == True:
+            self.on_off_adc(self)
+
+        if calAll == False:
+            self.Enable()
 
     def calibrate_islope(self, event):  # wxGlade: wxp3_frame.<event_handler>
         print("Event handler 'calibrate_islope' not implemented!")
