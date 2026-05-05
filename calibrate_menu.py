@@ -300,6 +300,31 @@ class calibrate():
           pass
 
     def calibrate_itiming(self, event, calAll=False):  # wxGlade: wxp3_frame.<event_handler>
+        # ALGORITHM OVERVIEW
+        # MaxSettlingTime is only applied by firmware at initialisation, so each
+        # timing step requires a full save → NMT reset → configure_Puck cycle before
+        # sampling.  The sweep is therefore structured as:
+        #   outer loop: timing values  (one reset per step)
+        #   inner loop: SVM sectors    (ramp + sample within the same boot)
+        #
+        # KNOWN LIMITATION — CYCLE-TO-CYCLE NOISE
+        # The dominant noise source (~2 ADC counts plat_dev) is not within-step
+        # measurement noise but between-step ramp variation: each reset produces a
+        # slightly different motor_ud convergence, so the absolute Alpha.Raw value
+        # drifts by ~2–4 counts even in the fully-settled plateau region.
+        # Increasing N_SAMPLES does not help because the variation is between boots,
+        # not within a single measurement window.
+        #
+        # FUTURE IMPROVEMENT — MULTI-CURRENT SLOPE DETECTION
+        # Sampling at multiple current levels per sector per step (e.g. 25 %, 50 %,
+        # 75 %, 100 % of calibration_current) and fitting a line through
+        # Alpha.Raw vs commanded current would make the settling metric the ADC
+        # gain slope rather than an absolute value.  The slope is insensitive to
+        # the between-boot DC offset variation, and the settling transient shows up
+        # as a nonlinearity / slope deviation that only disappears once MaxSettlingTime
+        # exceeds the true ADC settling time.  This would likely tighten the per-sector
+        # crossing estimates from ~±25 ns to ~±5 ns but at the cost of 3–4× more
+        # ramp time per step (each of the four current levels needs its own ramp).
         if calAll == False:
             if self.check_for_node() == False:
                 return False
@@ -490,9 +515,7 @@ class calibrate():
             signal_means = [step_sector_data[t_idx][sector_idx]
                             for t_idx in range(len(timing_values))]
             n             = len(times)
-            # Use the last 15% of steps (min 5 points) as the plateau window —
-            # the last 25% can still overlap the settling transition at 25 ns resolution.
-            plateau_start = max(0, n - max(5, n // 7))
+            plateau_start = max(0, 3 * n // 4)
             early_end     = max(1, n // 4)
 
             print("Sector {}/6 analysis:".format(sector_idx + 1))
