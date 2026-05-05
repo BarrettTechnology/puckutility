@@ -481,22 +481,22 @@ class calibrate():
                        and motor_ud < 32000):
                     motor_ud = min(motor_ud + 500, 32000)
                     self.node.sdo['Motor']['ud'].raw = motor_ud
-                    time.sleep(0.01)
+                    # time.sleep(0.01)
                     wx.Yield()
                 while (self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak < calibration_current
                        and motor_ud < 32000):
                     motor_ud = min(motor_ud + 100, 32000)
                     self.node.sdo['Motor']['ud'].raw = motor_ud
-                    time.sleep(0.01)
+                    # time.sleep(0.01)
                     wx.Yield()
-                _sleep_responsive(0.2)
+                # _sleep_responsive(0.2)
 
                 alpha_sum = 0
                 beta_sum  = 0
                 for _ in range(N_SAMPLES):
                     alpha_sum += self.node.sdo['Alpha']['Raw'].raw
                     beta_sum  += self.node.sdo['Beta']['Raw'].raw
-                    time.sleep(0.005)
+                    # time.sleep(0.005)
                     wx.Yield()
 
                 a_raw = alpha_sum / N_SAMPLES
