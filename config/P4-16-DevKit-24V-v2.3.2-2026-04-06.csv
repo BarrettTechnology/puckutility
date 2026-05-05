@@ -1,16 +1,21 @@
-# This is a CANopen config file for the Maxon EC-max 16 (283835)
+Name,FILE_INFO,,,STRING,Configure Puck 4 $ID
 
+# This is a CANopen config template for - /home/robot/pucktuner/config/P4-16-DevKit-2026-03-20.csv
 Name,FILE_INFO,,,STRING,Configure Puck $ID
-Version,FILE_VERSION,,,STRING,V2.2.3 (2025-08-14)
-#Set node ID in device,,0x21B0,0,UNSIGNED16,$ID
+Version,FILE_VERSION,,,STRING,V1.0.0 (2026-03-20)
+
+#Set node ID in device,,0x21B0,0,UNSIGNED16,65535
 Set node ID in app,SETTING_NODE_ID,,,UNSIGNED8,$ID
-#Save ID,,0x1010,4,UNSIGNED32,0x21B000
-#Disable CAN Termination,,0x21B2,0,UNSIGNED8,0
-#Save CAN Termination,,0x1010,4,UNSIGNED32,0x21B200
-Set NMT Startup (0x00=Op; 0x04=PreOp),,0x1F80,0,UNSIGNED32,0x00
-#Save NMT Startup,,0x1010,4,UNSIGNED32,0x1F8000
+
+#Save ID,,0x1010,4,UNSIGNED32,0
+Disable CAN Termination,,0x21B2,0,UNSIGNED8,0
+
+#Save CAN Termination,,0x1010,4,UNSIGNED32,0
+Set NMT Startup (0x00=Op; 0x04=PreOp),,0x1F80,0,UNSIGNED32,0
+
+#Save NMT Startup,,0x1010,4,UNSIGNED32,0
 Reset node,CONTROL_NMT,,,UNSIGNED16,0x0101
-Set SYNC COB ID,,0x1005,0,UNSIGNED32,0x0080
+Set SYNC COB ID,,0x1005,0,UNSIGNED32,0x80
 Heartbeat period in ms,,0x1017,0,UNSIGNED16,0
 EMCY inhibit time in 100uS,,0x1015,0,UNSIGNED16,50
 
@@ -35,8 +40,8 @@ Enable RPDO1 Entries,,0x1600,0,UNSIGNED8,3
 
 # Receive PDO - Object Dictionary Mappings
 RPDO2 Receive type (APPLY ON EVERY SYNC),,0x1401,2,UNSIGNED8,0
-RPDO2 Entry 1 (Target Velocity),,0x1601,1,UNSIGNED32,0x60FF0020
-RPDO2 Entry 2 (Target Position),,0x1601,2,UNSIGNED32,0x607A0020
+RPDO2 Entry 1 (Target Velocity),,0x1601,1,UNSIGNED32,0x60ff0020
+RPDO2 Entry 2 (Target Position),,0x1601,2,UNSIGNED32,0x607a0020
 Enable RPDO2 Entries,,0x1601,0,UNSIGNED8,2
 
 # Transmit PDO - Connection Object IDs
@@ -64,42 +69,58 @@ TPDO1 Entry 3 (ACTUAL POSITION),,0x1A00,3,UNSIGNED32,0x60640020
 Enable TPDO1 Entries,,0x1A00,0,UNSIGNED8,3
 
 # Transmit PDO - Object Dictionary Mappings
-TPDO2 Entry 1 (Actual Velocity),,0x1A01,1,UNSIGNED32,0x606C0020
+TPDO2 Entry 1 (Actual Velocity),,0x1A01,1,UNSIGNED32,0x606c0020
 TPDO2 Entry 2 (Actual Current),,0x1A01,2,UNSIGNED32,0x60780010
 Enable TPDO2 Entries,,0x1A01,0,UNSIGNED8,2
 
 # Warnings and Faults
 Encoder magnet fault enable (bool),,0x2403,0,UNSIGNED8,0
-Motor temp limit in deg C to 85 (deg C),,0x220A,0,UNSIGNED8,70
+Motor temp limit in deg C to 85 (deg C),,0x220A,0,UNSIGNED8,85
+Bus overvoltage timeout (ms),,0x2384,4,UNSIGNED16,500
+Bus undervoltage timeout (ms),,0x2384,5,UNSIGNED16,500
 Bus overvoltage limit (0.1 V),,0x2384,6,UNSIGNED16,520
 Bus undervoltage limit (0.1 V),,0x2384,7,UNSIGNED16,180
-Amplifier overtemperature (deg C),,0x2384,9,UNSIGNED8,70
+Amplifier overtemperature (deg C),,0x2384,9,UNSIGNED8,85
 CAN overrun fault enable (bool),,0x2404,0,UNSIGNED8,1
 CAN bus-off recovery fault enable (bool),,0x2405,0,UNSIGNED8,1
 SYNC loss fault timeout (ms),,0x2406,0,UNSIGNED16,0
 
+# Puck Specifications
+Product Code (mfg-specific),,0x1018,2,UNSIGNED32,5707
+Revision Number (bits 0-15: minor rev; bits 16-31: major rev),,0x1018,3,UNSIGNED32,0x1
+
 # Motor specifications (from datasheet)
 Motor rated torque (mNm),,0x6076,0,UNSIGNED32,22
-Max motor vel (cts/sec),,0x6080,0,UNSIGNED32,2000000
+Max motor vel (0.1 cts/sec),,0x6080,0,UNSIGNED32,2000000
 Motor poles,,0x3011,3,UNSIGNED8,2
 Motor Kt (mNm/A),,0x3011,4,UNSIGNED16,19
 Motor Rt (0.01 Ohms),,0x3011,5,UNSIGNED16,2050
 Motor Lt (0.01 mH),,0x3011,6,UNSIGNED16,57
-Max continuous current (mA),,0x3011,8,UNSIGNED16,1170
-Peak current (mA),,0x3011,9,UNSIGNED16,1170
-Peak current duration (ms),,0x3011,10,UNSIGNED16,500
-Motor calibration current (mA),,0x3011,11,UNSIGNED16,461
+Motor J (gcm^2 * 2^15),,0x3011,7,UNSIGNED32,27852
+Max continuous current (mA),,0x3011,8,UNSIGNED16,461 # 645
+Peak current (mA),,0x3011,9,UNSIGNED16,1170 # 1638 # 5000 # 1638
+Peak current duration (ms),,0x3011,10,UNSIGNED16,100
+Motor calibration current (mA),,0x3011,11,UNSIGNED16,300 # was 500
 Gear ratio motor revolution,,0x6091,1,UNSIGNED32,3249
 Gear ratio shaft revolution,,0x6091,2,UNSIGNED32,169
-Motor B (0.001 RPM/mNm),, 0x3024, 1, UNSIGNED16,2400
-Current Control Gain Factor (0.01),, 0x3024, 2, UNSIGNED8, 100
-Current Zeta Damping Factor (0.01),, 0x3024, 3, UNSIGNED8, 100
-Velocity Control Gain Factor (0.01),, 0x3024, 4, UNSIGNED8, 100
-Velocity Zeta Damping Factor (0.01),, 0x3024, 5, UNSIGNED8, 100
+Motor Speed / Torque Gradient (0.01 RPM/mNm),,0x3024,1,UNSIGNED16,56875
+Current Control Gain Factor (0.01),,0x3024,2,UNSIGNED8,55
+Current Zeta Damping Factor (0.01),,0x3024,3,UNSIGNED8,92
+Velocity Control Gain Factor (0.01),,0x3024,4,UNSIGNED8,100
+Velocity Zeta Damping Factor (0.01),,0x3024,5,UNSIGNED8,100
+No load speed (in RPM),,0x3024,6,UNSIGNED16,11900
+Nominal speed (in RPM),,0x3024,7,UNSIGNED16,7350
+Rated Continuous Torque (in mNm),, 0x3024,8,UNSIGNED16,8
 
 # i2t limiting
-Cutoff filter frequency (Hz),, 0x3025,2,INTEGER16, 50
-Temp Limited Current (mA),,0x3025,3,INTEGER16, 1000
+Cutoff filter frequency (Hz),, 0x3025,2,INTEGER16,50
+Temp Limited Current (mA),,0x3025,3,INTEGER16,500
+
+# Thermistor
+Resistance of R in Divider (Ohms),, 0x3026,1,UNSIGNED16,0
+Beta Value,,0x3026,2,UNSIGNED16,3950
+Baseline Temperature (in degrees C),, 0x3026,3,UNSIGNED16,25
+Resistance of Thermistor at baseline Temperature (Ohms),,0x3026,4,UNSIGNED16,10000
 
 # Profile mode
 Acceleration (cts/s^2),,0x6083,0,UNSIGNED32,2000000
@@ -108,44 +129,37 @@ Quick-stop deceleration (cts/s^2),,0x6085,0,UNSIGNED32,2000000
 Torque slope (rated trq/1000/s),,0x6087,0,UNSIGNED32,5000
 
 # Position control
-Kp,,0x2382,1,UNSIGNED16,10
+Kp,,0x2382,1,UNSIGNED16,100
 Velocity feed-forward gain,,0x2382,2,UNSIGNED16,0
 Acceleration feed-forward gain,,0x2382,3,UNSIGNED16,0
 Output multiplier (100=1.0),,0x2382,4,UNSIGNED16,100
-Position minimum (cts),,0x607D,1,INTEGER32,-0x7FFFFFFF
-Position maximum (cts),,0x607D,2,INTEGER32,0x7FFFFFFF
+Position minimum (cts),,0x607D,1,INTEGER32,-0x7fffffff
+Position maximum (cts),,0x607D,2,INTEGER32,0x7fffffff
 Position tracking warning window (cts),,0x6065,0,UNSIGNED32,0
 Position tracking warning timeout (ms),,0x6066,0,UNSIGNED16,500
 Position tracking fault window (cts),,0x2120,0,UNSIGNED32,0
 Position tracking fault timeout (ms),,0x2121,0,UNSIGNED16,500
 
 # Velocity control
-# Gain = 1.0, Zeta = 1.0 1/10 Ki (good)
-#Kp,,0x2381,1,UNSIGNED32,0x3A9D4952
-#Ki,,0x2381,2,UNSIGNED32,0x37CB011B
-# Gain = 1.0, Zeta = 1.0 1/2 Ki (best)
-Kp,,0x2381,1,UNSIGNED32,0x3A9D4952
-Ki,,0x2381,2,UNSIGNED32,0x38FDC161
+Kp,,0x2381,1,UNSIGNED32,0x3a997251
+Ki,,0x2381,2,UNSIGNED32,0x3741fc29
 Encoder velocity low-pass filter (Hz),,0x2100,1,UNSIGNED16,200
 Velocity controller input low-pass filter (Hz),,0x2100,2,UNSIGNED16,0
 Velocity controller output low-pass filter (Hz),,0x2100,3,UNSIGNED16,0
-
 Velocity tracking warning window (cts/sec) - 10%,,0x606D,0,UNSIGNED16,0
 Velocity tracking warning timeout (ms),,0x606E,0,UNSIGNED16,100
 Velocity tracking fault window (cts/sec),,0x2104,0,UNSIGNED16,0
 Velocity tracking fault timeout (ms),,0x2105,0,UNSIGNED16,100
 
 # Current control
-DQ-Axis current Kp,,0x2380,1,UNSIGNED32,0x3CB50B0F
-DQ-Axis current Ki,,0x2380,2,UNSIGNED32,0x48042F87
-#DQ-Axis current Kp,,0x2380,1,UNSIGNED32,0x4130CAC1
-#DQ-Axis current Ki,,0x2380,2,UNSIGNED32,0x4903A893
+DQ-Axis current Kp,,0x2380,1,UNSIGNED32,0x3e07c6b9
+DQ-Axis current Ki,,0x2380,2,UNSIGNED32,0x481e3057
 
 # Amplifier settings
 PWM freq (Hz),,0x3001,1,UNSIGNED32,80000
-Dead time (ns),,0x3001,2,UNSIGNED16,290
-Max prop delay (ns),,0x3001,3,UNSIGNED16,530
-Max settling time (ns),,0x3001,5,UNSIGNED16,1600
+Dead time (ns),,0x3001,2,UNSIGNED16,420 # 930 # 570 # 420 = good!with 1000 settling# 290 # needs max = 420ns # was 290 + 350 nom or 510 max input filter?? 
+Max prop delay (ns),,0x3001,3,UNSIGNED16,940 # 750 # 530 # needs max = 750 + 190 turn on time? # was # 530
+Max settling time (ns),,0x3001,5,UNSIGNED16,1000 # 600 # 1000 = lovely!! # no = 600 # YES = 1000 # 1200 # was 1600 # 1400 latest
 Sampling time (ns),,0x3001,6,UNSIGNED16,400
 Conversion time (ns),,0x3001,7,UNSIGNED16,1475
 Max sensor current (mA),,0x3001,8,UNSIGNED16,10000
@@ -163,8 +177,7 @@ Encoder resolution (cts),,0x3013,1,UNSIGNED32,4096
 Encoder user zero (cts),,0x3013,2,UNSIGNED32,0
 Encoder type,,0x3013,4,UNSIGNED8,0
 Encoder lag factor,,0x3013,5,UNSIGNED16,0
-#Electrical polarity,,0x3011,2,UNSIGNED8,0xFF
-Encoder user polarity,,0x3013,3,UNSIGNED8,0x01
+Encoder hardware filter,,0x3013,6,UNSIGNED8,48
 
-
-
+#Electrical polarity,,0x3011,2,UNSIGNED8,1
+Encoder user polarity,,0x3013,3,UNSIGNED8,1

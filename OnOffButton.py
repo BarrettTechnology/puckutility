@@ -502,7 +502,7 @@ class OnOffButton(wx.Control):
         return self._spacing
 
     def OnOff(self, event):
-        print('State Switch')
+        # print('State Switch')
         # self.liveGraph = True
         state = self._Value
         if state == 0:

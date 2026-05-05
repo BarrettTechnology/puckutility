@@ -12,8 +12,8 @@ This Python3 (wxpython) application is compatible with Barrett's P4 series of mo
 
 ## Installation (set up the Python virtual environment and install dependencies)
 ```
-scripts/setup-venv.sh
-source bin/activate
+./scripts/setup-venv.sh
+source scripts/activate
 scripts/setup-pip.sh
 ```
 

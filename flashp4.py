@@ -1,6 +1,7 @@
 # Flashloader v2
 import sys       # Python Standard Library
 import platform  # Python Standard Library
+import os        # Python Standard Library
 import os.path   # Python Standard Library
 import array     # Python Standard Library
 import binascii  # Python Standard Library
@@ -8,10 +9,27 @@ import canopen
 import semver
 import time
 
+# In a PyInstaller --noconsole build, child processes spawned via
+# multiprocessing inherit sys.stdout / sys.stderr == None. Any uncaught
+# exception in the child then dies trying to write its traceback, masking
+# the real error with "'NoneType' object has no attribute 'write'". Route
+# both streams to NUL so tracebacks unwind normally instead.
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, 'w')
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, 'w')
+
 # Python3 incantation for enumeration supporting reverse-lookups
 # return_code = enum(Success=0, Lost_Dog=1, Runaway_Pony=2)
 # return_code.Lost_Dog (--> 1)
 # return_code.get_string[1] (--> 'Lost_Dog')
+
+def progressbar(update_progress, progress):
+    # No sink (standalone __main__ run): silently drop the update.
+    if update_progress is None:
+        return
+    update_progress.put(progress)
+
 def enum(*sequential, **named):
     enums = dict(zip(sequential, range(len(sequential))), **named)
     enums['get_string'] = dict((value, key) for key, value in enums.items())
@@ -28,19 +46,21 @@ def get_version(vers): # Convert uint32_t to semantic version: Major.Minor.Patch
     return "{0}.{1}.{2}".format(
         (vers >> 24) & 0xFF, (vers >> 8) & 0xFFFF, (vers & 0xFF))
 
-def write(node, data=[]):
+def write(node, progress, data=[]):
     node.sdo['ProgramCommand']['Command'].raw = flash_command.START
     for i, word in enumerate(data):
         node.sdo['ProgramCommand']['Word'].raw = word # Exception on FLASH_FAIL
         if i % 100: # Update 50-step progress bar after every 100 frames
             pct = 100 * i // len(data)
+            # I think this is where we will get percent completion
+            progressbar(progress,pct)
             print("[{0:50}] ({1:3}%)\r".format(pct // 2 * "=", pct), end="")
         
     # flash_command.END: flashloader generates CRC; SDO exception on AUTH_FAIL
     node.sdo['ProgramCommand']['Command'].raw = flash_command.END
     print("[" + "=" * 50 + "] (100%) \n") # Show finished progress bar
 
-def flash(can_device, can_id, file_name):
+def flash(can_device, can_id, file_name, progress=None):
     if not os.path.isfile(file_name): # Check that the given file exists
         return flash_result.FILE_NOT_FOUND
   
@@ -65,18 +85,36 @@ def flash(can_device, can_id, file_name):
     try:
         node.nmt.state = 'RESET'                       # Reboot into flashloader
         node.nmt.wait_for_heartbeat(timeout=1)         # CANopen boot-up message
-        node.sdo["ProgramInfo"]["AutoLaunch"].raw = 0  # Stay in flashloader
+        # Race: the flashloader auto-launches the application after
+        # StartTimeoutMs (0x3410:08, default 100 ms in flashloader.eds).
+        # If AutoLaunch=0 doesn't land before that timer expires, the app
+        # comes up and silently handles ProgramCommand writes by aborting
+        # with 0x06010000 ("Unsupported access"). A pre-emptive settle
+        # sleep here was overshooting the window — instead, send the write
+        # immediately and retry quickly while the SDO server warms up.
+        deadline = time.time() + 0.5
+        last_err = None
+        while time.time() < deadline:
+            try:
+                node.sdo["ProgramInfo"]["AutoLaunch"].raw = 0  # Stay in flashloader
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+                time.sleep(0.005)
+        if last_err is not None:
+            raise last_err
     except:
         print("Failed to reset node: {}".format(can_id))
         return flash_result.RESET_FAILED
-  
+
     # Verify flashloader version
     version = get_version(node.sdo['MfgSoftwareVersion'].raw)
     print("Node: {0}, Flashloader version: {1}".format(can_id, version))
     if semver.match(version, '<2.1.0'):
         print("Flashloader version >= 2.1.0 required.")
         return flash_result.VERSION_INCOMPATIBLE
-  
+
     node.sdo.RESPONSE_TIMEOUT = 10 # Increase SDO timeout, flashing takes time
     try:
         node.sdo['ProgramCommand']['Command'].raw = flash_command.ERASE
@@ -104,7 +142,7 @@ def flash(can_device, can_id, file_name):
         data = input.read() # Read the raw data bytes from the firmware file
 
     try: # NOTE: Flashloader is expecting 4-byte writes, not ia32-friendly!
-        write(node, array.array("I", data)) # Transfer application data via SDOs
+        write(node, progress, array.array("I", data)) # Transfer application data via SDOs
     except:
         return write_failure                # Return code depends on file ext
     
@@ -119,6 +157,64 @@ def flash(can_device, can_id, file_name):
     node.sdo['ProgramCommand']['Command'].raw = flash_command.LAUNCH
     network.disconnect()
     return flash_result.SUCCESS
+
+def start(can_device, can_id, firmfile, progress=None):
+
+    global node
+    # global errors
+
+    # errors = 0
+
+    print("can_device={0}".format(can_device))
+    print("can_id={0}".format(can_id))
+    # print("edsfile={0}".format(edsfile))
+    print("firmware_file={0}".format(firmfile))
+
+    # # Open the CAN device
+    # print("Establishing a new network...")
+    # network = canopen.Network()
+
+    # time.sleep(0.2) # Wait for any bus-off to clear
+
+    # if platform.system() == "Windows":
+    #   network.connect(bustype='pcan', channel='PCAN_USBBUS'+str(int(can_device[-1:])+1), bitrate=1000000)
+    # elif platform.system() == "Linux":
+    #   network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)
+
+    # print("Connection succeeded, adding CANopen node...")
+    # # Add our canopen node along with its object dictionary (for parsing)
+    # node = network.add_node(can_id, edsfile)
+
+      # canopen_runner(csvfile, replace_id, start_id, edsfile, v, force, no_warnings):
+
+    # with open(csvfile,'r') as file:
+    #     reader = csv.reader(file)
+    #     rowcount = len(list(reader)) - 1
+
+    # myfile = open(csvfile, 'r')
+    # canopen_runner(myfile, can_id, can_id, None, False, False, False, progress, rowcount)
+
+    # THIS IS WHERE WE ARE RUNNING IT FROM
+    result = flash(can_device, can_id, firmfile, progress)
+    # print(result)
+    # print("Number of errors: {}".format(errors))
+    # network.disconnect()
+    progressbar(progress, 100)
+    # progressbar(progress, "Done")
+    # need to print a final error count, after "Done" to catch any errors still!!
+    # if errors == 0:
+    # #   return True
+    #     progressbar(progress, "Pass")
+    # else:
+    # #   return False 
+    #     progressbar(progress, "Fail")
+    # return
+    if result:
+        progressbar(progress, "Fail")
+        print("\nFlash failed: " + flash_result.get_string[result])
+    else:
+        progressbar(progress, "Pass")
+        print("Flash succeeded!")
 
 if __name__ == "__main__":
     # Read the command-line arguments

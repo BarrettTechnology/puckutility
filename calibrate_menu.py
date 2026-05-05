@@ -4,23 +4,42 @@ import canopen
 import time
 import math
 import webbrowser
+import configparser
+import platform
+from canopen_runner import (
+    CLEAR_FAULT, SHUTDOWN, OP_ENABLED,
+    MODE_IDLE, MODE_PHASE_VOLTAGE_ANGLE, MODE_PROFILE_TRQ,
+)
+from cli_ops import _resolve_path, FIRMWARE_DIR, CONFIG_DIR
 
-# TODO - added calibrate all pucks feature
+# TODO - No active issues
+
+
+def _sleep_responsive(seconds, chunk=0.05):
+    """Block for `seconds` seconds while letting wx process pending
+    events every `chunk` seconds — keeps Windows from marking the app
+    "Not Responding" during long calibration waits."""
+    end = time.time() + seconds
+    while time.time() < end:
+        time.sleep(min(chunk, max(0, end - time.time())))
+        wx.Yield()
+
 
 class calibrate():
     def calibrate_all_pucks(self, event):
         print(self.network.scanner.nodes)
         starting_id = self.getID()
+        if self.check_for_node() == False:
+            # print("No active puck")
+            return False
         for i in self.network.scanner.nodes:
             print(i)
             indexID = self.network.scanner.nodes.index(i)
             self.choice_id.SetSelection(indexID) # Move to next ID for calibration
             self.select_id(None)
 
-            print("Running full calibration for Puck {}".format(self.getID()))
-            self.calibrate_ibias(None)
-            self.calibrate_igainfactor(None)
-            self.calibrate_enczero(None)
+            # print("Running full calibration for Puck {}".format(self.getID()))
+            self.calibrate_all(None)
 
         indexID = self.network.scanner.nodes.index(starting_id)
         self.choice_id.SetSelection(indexID) # Return to starting ID after completion
@@ -28,33 +47,48 @@ class calibrate():
 
     def calibrate_all(self, event):  # wxGlade: wxp3_frame.<event_handler>
         # Try to add calibrate all step!
+        if self.check_for_node() == False:
+            # print("No active puck")
+            return False
         print("Running full calibration for Puck {}".format(self.getID()))
         continueCal = self.test_encoder(None, True)
+        self.Disable()
         if continueCal == False:
           print('Ending calibration...')
+          self.Enable()
           return
         continueCal = self.calibrate_ibias(None, True)
         if continueCal == False:
           print('Ending calibration...')
+          self.Enable()
           return
         continueCal = self.calibrate_igainfactor(None, True)
         if continueCal == False:
           print('Ending calibration...')
+          self.Enable()
           return
         self.calibrate_enczero(None, True)
         if continueCal == False:
           print('Ending calibration...')
+          self.Enable()
           return
+        
+        self.requireCal = False
+        self.Enable()
         #event.Skip()
 
     def calibrate_ibias(self, event, calAll=False):  # wxGlade: wxp3_frame.<event_handler>
-        print("Event handler 'calibrate_ibias'")
+        # print("Event handler 'calibrate_ibias'")
+        if calAll==False:
+          if self.check_for_node() == False:
+            return False
+          self.Disable()
         quick_test = self.choice_test.GetSelection()
         if quick_test != 0:
             self.lastMode = 0 # Reset lastMode
             print("Setting Mode = IDLE")
             self.choice_test.SetSelection(0)
-            self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
+            self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
         
         if self.ADC_ON == True:
            self.on_off_adc(self)
@@ -65,11 +99,12 @@ class calibrate():
         self.frame_statusbar.Update()
         wx.Yield()
 
+
         # Clear faults, RTSO, OpEnabled
         print("Going OpEnabled")
-        self.node.sdo["ControlWord"].raw = 0x80
-        self.node.sdo["ControlWord"].raw = 0x06
-        self.node.sdo["ControlWord"].raw = 0x0F
+        self.node.sdo["ControlWord"].raw = CLEAR_FAULT
+        self.node.sdo["ControlWord"].raw = SHUTDOWN
+        self.node.sdo["ControlWord"].raw = OP_ENABLED
 
         self.node.sdo['Theta_e'].raw = 0x7FFF # Stall @ Alpha Peak (+pi)
 
@@ -77,8 +112,8 @@ class calibrate():
 
         # Set Mode to Voltage
         print("Setting Mode = VOLTAGE MODE")
-        self.node.sdo["SetModeOfOperation"].raw = 12
-        time.sleep(2) # Wait at least 75 ms for the filters to settle (2 seconds seems to be the sweet spot)
+        self.node.sdo["SetModeOfOperation"].raw = MODE_PHASE_VOLTAGE_ANGLE
+        _sleep_responsive(1) # Wait at least 75 ms for the filters to settle (2 seconds seems to be the sweet spot)
 
         # Calibrate iSense
         for channel in ['Alpha', 'Beta']:
@@ -92,10 +127,15 @@ class calibrate():
         self.node.sdo['Save']['Single'].raw = ((0x3009 << 8) | 0x03) # Save Beta iSense cal to EE
 
         # Check Bounds for error!!
-        error = .03 # 3% error
+        error = 0.5 # 5% error # .03 # 3% error
 
         a_bias = self.node.sdo['Alpha']['Bias'].raw
         b_bias = self.node.sdo['Beta']['Bias'].raw
+
+        # Set Mode to Idle (0)
+        print("Setting Mode = IDLE")
+        self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
+        # time.sleep(1) # Wait at least 75 ms for the filters to settle
 
         if a_bias > 2048 * (1 + error) or a_bias < 2048 * (1 - error) or b_bias > 2048 * (1 + error) or b_bias < 2048 * (1 - error) :
           print('iSense Bias out of bounds!')
@@ -111,35 +151,40 @@ class calibrate():
           answer = dlg.ShowModal()
           dlg.Destroy()
           print("Encoder readings unstable...")
-          if answer == wx.ID_YES:
-             return True
-          if answer == wx.ID_NO:
-             return False
-
-        # Set Mode to Idle (0)
-        print("Setting Mode = IDLE")
-        self.node.sdo["SetModeOfOperation"].raw = 0
-        # time.sleep(1) # Wait at least 75 ms for the filters to settle
 
         self.frame_statusbar.SetStatusText("Ready", 1)
         #self.text_ctrl_6.ChangeValue(str(self.node.sdo['Cal']['iSense1'].raw))
         if self.ADC_ON == False and self.adcWasON == True:
            self.on_off_adc(self)
+        if calAll==False:
+          self.Enable()
+        try:
+          if answer == wx.ID_YES:
+              return True
+          if answer == wx.ID_NO:
+              return False
+        except:
+          pass
 
     def calibrate_igainfactor(self, event, calAll=False):  # wxGlade: wxp3_frame.<event_handler>
-        print("Event handler 'calibrate_igainfactor'")
+        # print("Event handler 'calibrate_igainfactor'")
+        if calAll==False:
+          if self.check_for_node() == False: #len(self.network.scanner.nodes) == 0:
+            return False
+          self.Disable() 
         quick_test = self.choice_test.GetSelection()
         if quick_test != 0:
             self.lastMode = 0 # Reset lastMode
             print("Setting Mode = IDLE")
             self.choice_test.SetSelection(0)
-            self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
+            self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
 
         if self.ADC_ON == True:
            self.on_off_adc(self)
            self.adcWasON = True
         else:
            self.adcWasON = False
+
         self.frame_statusbar.SetStatusText("Calibrating igainfactor...", 1)
         self.frame_statusbar.Update()
         wx.Yield()
@@ -150,13 +195,13 @@ class calibrate():
 
         # Clear faults, RTSO, OpEnabled
         print("Going OpEnabled")
-        self.node.sdo["ControlWord"].raw = 0x80
-        self.node.sdo["ControlWord"].raw = 0x06
-        self.node.sdo["ControlWord"].raw = 0x0F
+        self.node.sdo["ControlWord"].raw = CLEAR_FAULT
+        self.node.sdo["ControlWord"].raw = SHUTDOWN
+        self.node.sdo["ControlWord"].raw = OP_ENABLED
 
         # Set Mode to PhaseVoltageAngle (12)
         print("Setting Mode = VOLTAGE")
-        self.node.sdo["SetModeOfOperation"].raw = 12
+        self.node.sdo["SetModeOfOperation"].raw = MODE_PHASE_VOLTAGE_ANGLE
 
         # Write theta_e, ud, StatsMode, vel
         # theta_e is 16-bit signed from -pi to +pi
@@ -168,7 +213,11 @@ class calibrate():
         # Read the motor.peak (mA)
         i_peak = self.node.sdo['Calibration']['i_peak'].raw
 
-        time.sleep(1) # Wait at least 75 ms for the filters to settle
+        # If calibration current is greater than i_peak, limit
+        if calibration_current > i_peak:
+           calibration_current = i_peak
+
+        _sleep_responsive(1) # Wait at least 75 ms for the filters to settle
 
         # Increase Motor d-axis voltage (/1000 of i_peak)
         # until measured d-axis current > calibration_current mA or ud > 32000
@@ -181,11 +230,12 @@ class calibrate():
             round(self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak, 2), 
             self.node.sdo['CurrentFeedback'].raw / 1000.0 * i_peak,
             self.node.sdo['Motor']['ud'].raw))
-          motor_ud += 100
+          motor_ud += 100 # 25 # was 100, then 50
           self.node.sdo['Motor']['ud'].raw = motor_ud
           time.sleep(0.05)
+          wx.Yield() # keep wx event loop alive so Windows doesn't mark the app "Not Responding"
 
-        time.sleep(1) # Wait at least 75 ms for the filters to settle
+        _sleep_responsive(1) # Wait at least 75 ms for the filters to settle
 
         a_filt = self.node.sdo['Alpha']['Filtered'].raw # Q12.4
         a_filt = (a_filt >> 4) + ((a_filt & 0x0008) >> 3) # Round Q12.4 to Q12.0
@@ -195,7 +245,7 @@ class calibrate():
           self.node.sdo['Theta_e'].raw / 32768.0 * 3.14159))
 
         self.node.sdo['Theta_e'].raw = -0x4000 # Stall @ Beta Peak (-pi/2)
-        time.sleep(1) # Wait at least 75 ms for the filters to settle
+        _sleep_responsive(1) # Wait at least 75 ms for the filters to settle
 
         b_filt = self.node.sdo['Beta']['Filtered'].raw # Q12.4
         b_filt = (b_filt >> 4) + ((b_filt & 0x0008) >> 3) # Round Q12.4 to Q12.0
@@ -204,7 +254,7 @@ class calibrate():
           self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak, 
           self.node.sdo['Theta_e'].raw / 32768.0 * 3.14159))
 
-        self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
+        self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
 
         abias = self.node.sdo['Alpha']['Bias'].raw
         bbias = self.node.sdo['Beta']['Bias'].raw
@@ -230,10 +280,6 @@ class calibrate():
           dlg = wx.MessageDialog(None,msg,'Warning!',wx.YES_NO | wx.ICON_WARNING)
           answer = dlg.ShowModal()
           dlg.Destroy()
-          if answer == wx.ID_YES:
-             return True
-          if answer == wx.ID_NO:
-             return False
 
         self.node.sdo['Save']['Single'].raw = ((0x3008 << 8) | 0x06) # Save Alpha gainfactor to EE
         self.node.sdo['Save']['Single'].raw = ((0x3009 << 8) | 0x06) # Save Beta gainfactor to EE
@@ -243,12 +289,21 @@ class calibrate():
         if self.ADC_ON == False and self.adcWasON == True:
            self.on_off_adc(self)
 
+        if calAll==False:
+          self.Enable()
+        try:
+          if answer == wx.ID_YES:
+              return True
+          if answer == wx.ID_NO:
+              return False
+        except:
+          pass
+
     def calibrate_itiming(self, event):  # wxGlade: wxp3_frame.<event_handler>
         print("Event handler 'calibrate_itiming' not implemented!")
         # Tune the current sampling moment to minimize noise
         # Collect noise statistics at/near falling edge of the widest PWM, in all 6 sectors
-        
-
+        # TODO new feature coming soon!
         event.Skip()
 
     def calibrate_islope(self, event):  # wxGlade: wxp3_frame.<event_handler>
@@ -256,13 +311,17 @@ class calibrate():
         event.Skip()
 
     def calibrate_enczero(self, event, calAll=False):  # wxGlade: wxp3_frame.<event_handler>
-        print("Event handler 'calibrate_enczero'")
+        # print("Event handler 'calibrate_enczero'")
+        if calAll==False:
+          if self.check_for_node() == False: #len(self.network.scanner.nodes) == 0:
+            return False
+          self.Disable()
         quick_test = self.choice_test.GetSelection()
         if quick_test != 0:
             self.lastMode = 0 # Reset lastMode
             print("Setting Mode = IDLE")
             self.choice_test.SetSelection(0)
-            self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
+            self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
         
         if self.ADC_ON == True:
             self.adcWasON = True
@@ -276,17 +335,16 @@ class calibrate():
 
         # Clear faults, RTSO, OpEnabled
         print("Going OpEnabled")
-        self.node.sdo["ControlWord"].raw = 0x80
-        self.node.sdo["ControlWord"].raw = 0x06
-        self.node.sdo["ControlWord"].raw = 0x0F
+        self.node.sdo["ControlWord"].raw = CLEAR_FAULT
+        self.node.sdo["ControlWord"].raw = SHUTDOWN
+        self.node.sdo["ControlWord"].raw = OP_ENABLED
         
         # Set Mode to PhaseVoltageAngle (12)
         print("Setting Mode = VOLTAGE")
-        self.node.sdo["SetModeOfOperation"].raw = 12
+        self.node.sdo["SetModeOfOperation"].raw = MODE_PHASE_VOLTAGE_ANGLE
 
         # Write theta_e, ud, StatsMode, vel
         # theta_e is 16-bit signed from -pi to +pi
-        #self.node.sdo['Calibration']['e_polarity'].raw = 1
         self.node.sdo['Theta_e'].raw = -0x1000 # -pi/2
 
         # Read this motor's calibration current (mA)
@@ -294,6 +352,10 @@ class calibrate():
 
         # Read the motor.peak (mA)
         i_peak = self.node.sdo['Calibration']['i_peak'].raw
+
+        # If calibration current is greater than i_peak, limit
+        if calibration_current > i_peak:
+           calibration_current = i_peak
 
         # Increase Motor d-axis voltage until measured d-axis current > calibration_current mA or ud > 32000
         motor_ud = 0
@@ -305,6 +367,7 @@ class calibrate():
           motor_ud += 100
           self.node.sdo['Motor']['ud'].raw = motor_ud
           time.sleep(0.05)
+          wx.Yield() # keep wx event loop alive so Windows doesn't mark the app "Not Responding"
 
         # Drive from theta_e = -90 to 0 in 10 steps of 0.05s
         # Capture RawPosition when commanding theta_e = 0
@@ -314,7 +377,8 @@ class calibrate():
         for i in range(int(-0x1000), 0, int(0x1000/32)):
           self.node.sdo['Theta_e'].raw = i
           time.sleep(0.05)
-        time.sleep(0.25)
+          wx.Yield() # keep wx event loop alive so Windows doesn't mark the app "Not Responding"
+        _sleep_responsive(0.25)
         pos1 = self.node.sdo['Encoder']['RawPosition'].raw
         print("After approaching theta_e = 0 from -22.5, Encoder raw = {0}".format(pos1))
 
@@ -323,12 +387,13 @@ class calibrate():
         # Drive from theta_e = +90 to 0 in 10 steps of 0.05s
         # Capture RawPosition when commanding theta_e = 0
         self.node.sdo['Theta_e'].raw = 0x1000
-        time.sleep(1)
+        _sleep_responsive(1)
         startPos2 = self.node.sdo['PositionFeedback'].raw
         for i in range(int(0x1000), 0, int(-0x1000/32)):
           self.node.sdo['Theta_e'].raw = i
           time.sleep(0.05)
-        time.sleep(0.25)
+          wx.Yield() # keep wx event loop alive so Windows doesn't mark the app "Not Responding"
+        _sleep_responsive(0.25)
         pos2 = self.node.sdo['Encoder']['RawPosition'].raw
         print("After approaching theta_e = 0 from +22.5, Encoder raw = {0}".format(pos2))
         zeroPos2 = self.node.sdo['PositionFeedback'].raw
@@ -370,7 +435,7 @@ class calibrate():
         error = .25 # 25%
         expected_change = 22.5
 
-        self.node.sdo["SetModeOfOperation"].raw = 0 # IDLE
+        self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
 
         if pos_change1 < round(expected_change * (1 - error)) or pos_change2 < round(expected_change * (1 - error)):
           print('Encoder Zero Failed!')
@@ -387,46 +452,73 @@ class calibrate():
           dlg = wx.MessageDialog(None,msg,'Warning!',wx.YES_NO | wx.ICON_WARNING)
           answer = dlg.ShowModal()
           dlg.Destroy()
-          if answer == wx.ID_YES:
-             return True
-          if answer == wx.ID_NO:
-             return False
 
         self.frame_statusbar.SetStatusText("Ready", 1)
 
         if self.ADC_ON == False and self.adcWasON == True:
             self.on_off_adc(self)
 
+        if calAll==False:
+          self.Enable()
+        try:
+          if answer == wx.ID_YES:
+              return True
+          if answer == wx.ID_NO:
+              return False
+        except:
+          pass
+
     def calibrate_encdir(self, event):  # wxGlade: wxp3_frame.<event_handler>
         print("Event handler 'calibrate_encdir' not implemented!")
         event.Skip()
 
-    def calibrate_enclag(self, event):  # wxGlade: wxp3_frame.<event_handler>
-        print("Event handler 'calibrate_enclag'")
+    def calibrate_enclag(self, event,calAll=False):  # wxGlade: wxp3_frame.<event_handler>
+        # print("Event handler 'calibrate_enclag'")
+
+        if self.ADC_ON == True:
+            self.adcWasON = True
+            self.on_off_adc(self)
+        else:
+            self.adcWasON = False
+
+        if calAll==False:
+          if self.check_for_node() == False: #len(self.network.scanner.nodes) == 0:
+            return False
+          self.Disable()
+
+        self.frame_statusbar.SetStatusText("Calibrating Encoder Lag...", 1)
+        self.frame_statusbar.Update()
+        wx.Yield()
+
+        # Set Mode to Idle (0)
+        print("Setting Mode = IDLE")
+        self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
+        _sleep_responsive(1) # Wait at least 75 ms for the filters to settle
 
         # Clear faults, RTSO, OpEnabled
         print("Going OpEnabled")
-        self.node.sdo["ControlWord"].raw = 0x80
-        self.node.sdo["ControlWord"].raw = 0x06
-        self.node.sdo["ControlWord"].raw = 0x0F
+        self.node.sdo["ControlWord"].raw = CLEAR_FAULT
+        self.node.sdo["ControlWord"].raw = SHUTDOWN
+        self.node.sdo["ControlWord"].raw = OP_ENABLED
       
         # Set Mode to Torque (4)
         print("Setting Mode = TORQUE")
-        self.node.sdo["SetModeOfOperation"].raw = 4
+        self.node.sdo["SetModeOfOperation"].raw = MODE_PROFILE_TRQ
         self.node.sdo['EncoderConfig']['LagFactor'].raw = 0
 
         # Increase TargetTorque until iq.fbk = 1000 mA
-        cmd_value = 500
+        cmd_value = 0
         self.node.sdo["TargetTorque"].raw = cmd_value # Send
-        #q_fbk = 0
-        #while True:
-        #  self.node.sdo["TargetTorque"].raw = cmd_value # Send
-        #  time.sleep(0.05)
-        #  q_fbk = self.node.sdo['CurrentFeedback'].raw
-        #  print("TargetTorque = {0}, CurrentFeedback = {1} mA".format(cmd_value, q_fbk))
-        #  if q_fbk > 1000:
-        #    break
-        #  cmd_value += 50
+        # q_fbk = 0
+        while True:
+         self.node.sdo["TargetTorque"].raw = cmd_value # Send
+         time.sleep(0.05)
+         wx.Yield() # keep wx event loop alive so Windows doesn't mark the app "Not Responding"
+         q_fbk = self.node.sdo['CurrentFeedback'].raw
+         print("TargetTorque = {0}, CurrentFeedback = {1} mA".format(cmd_value, q_fbk))
+         if q_fbk > 1000 or cmd_value == 1000:
+           break
+         cmd_value += 50
           
         # Set the number of lag increments to attempt without setting a new max_vel
         max_cycles = 50
@@ -454,11 +546,13 @@ class calibrate():
           if cycles > max_cycles:
             break
           time.sleep(0.05)
+          wx.Yield() # keep wx event loop alive so Windows doesn't mark the app "Not Responding"
 
         # Invert TargetTorque
         self.node.sdo["TargetTorque"].raw = -cmd_value # Send
         self.node.sdo['EncoderConfig']['LagFactor'].raw = 0
-        time.sleep(0.5)
+
+        _sleep_responsive(0.5)
 
         # Init: cycles = 0, max = 0, lag = 0
         cycles = 0
@@ -483,6 +577,7 @@ class calibrate():
           if cycles > max_cycles:
             break
           time.sleep(0.05)
+          wx.Yield() # keep wx event loop alive so Windows doesn't mark the app "Not Responding"
 
         # Take the average of the two lags
         lag = (saved_lag_1 + saved_lag_2) / 2
@@ -494,12 +589,26 @@ class calibrate():
 
         # Set Mode to Idle (0)
         print("Setting Mode = IDLE")
-        self.node.sdo["SetModeOfOperation"].raw = 0
+        self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
+
+        if calAll==False:
+          self.Enable()
+
+        self.frame_statusbar.SetStatusText("Ready", 1)
+
+        if self.ADC_ON == False and self.adcWasON == True:
+            self.on_off_adc(self)
+        if calAll==False:
+          self.Enable()
 
     def test_encoder(self,event,calAll=False):
-        print("Testing magnetic encoder...")
-
-        self.frame_statusbar.SetStatusText("Testing magnetic encoder...", 1)
+        # print("Testing Encoder...")
+        if calAll==False:
+          if self.check_for_node() == False: #len(self.network.scanner.nodes) == 0:
+            # print("No active puck")
+            return False
+          self.Disable()
+        self.frame_statusbar.SetStatusText("Testing Encoder...", 1)
         self.frame_statusbar.Update()
         wx.Yield()
 
@@ -511,12 +620,13 @@ class calibrate():
 
         # Set Mode to Idle (0)
         print("Setting Mode = IDLE")
-        self.node.sdo["SetModeOfOperation"].raw = 0
-        time.sleep(1) # Wait at least 75 ms for the filters to settle
+        self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
+        _sleep_responsive(1) # Wait at least 75 ms for the filters to settle
         timeEnd = time.time() + 1
         Pos = []
         while time.time() < timeEnd:
           Pos.append(self.node.sdo['PositionFeedback'].raw)
+          wx.Yield() # keep wx event loop alive so Windows doesn't mark the app "Not Responding"
         posDif = max(Pos) - min(Pos)
         print("Max Pos: {} Min Pos: {} Diff: {}".format(max(Pos), min(Pos), posDif))
         maxDif = 8
@@ -537,17 +647,25 @@ class calibrate():
           answer = dlg.ShowModal()
           dlg.Destroy()
           print("Encoder readings unstable...")
-          if answer == wx.ID_YES:
-             return True
-          if answer == wx.ID_NO:
-             return False
-          
+
         self.frame_statusbar.SetStatusText("Ready", 1)
 
         if self.ADC_ON == False and self.adcWasON == True:
             self.on_off_adc(self)
+        if calAll==False:
+          self.Enable()
+        try:
+          if answer == wx.ID_YES:
+              return True
+          if answer == wx.ID_NO:
+              return False
+        except:
+          pass
 
     def set_user_dir(self, event):  # wxGlade: wxp3_frame.<event_handler>
+        if self.check_for_node() == False: #len(self.network.scanner.nodes) == 0:
+          return False
+        
         print("Event handler 'set_user_dir'")
         
         self.node.sdo['EncoderConfig']['UserPolarity'].raw = 1 # Assume positive to start
@@ -561,22 +679,129 @@ class calibrate():
         done = False
         while not done:
           print("Waiting...")
-          time.sleep(1)
+          _sleep_responsive(1)
           ending_position = self.node.sdo['PositionFeedback'].raw
           if abs(starting_position - ending_position) > (encoder_resolution / 8):
             done = True
           
     def open_support_page(self, event):
-      print('Opening support page...')
-      webbrowser.open_new(r'PuckUtilityAppGuide.pdf')
+        print('Opening support page...')
+        webbrowser.open_new(r'PuckUtilityAppGuide.pdf')
 
-    def tune_gains(self, event):  # wxGlade: wxp3_frame.<event_handler>
-        print("Event handler 'tune_gains' not implemented!")
-        event.Skip()
+    def update_all(self, event):
+        print('Updating all Pucks...')
+        if self.check_for_node() == False: #len(self.network.scanner.nodes) == 0:
+            return False
+        print(self.network.scanner.nodes)
+        starting_id = self.getID()
 
-    def save_calibration(self, event):  # wxGlade: wxp3_frame.<event_handler>
-        print("Event handler 'save_calibration' not implemented!")
-        event.Skip()
+        # File browser
+        if platform.system() == "Windows":
+            directory = '../firmware'
+        else:
+            directory = 'firmware/'
+
+        # File browser
+        with wx.FileDialog(self, "Select firmware file", directory, wildcard="BIN files (*.bin;*.ebin)|*.bin;*.ebin",
+                      style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST) as fileDialog:
+            if fileDialog.ShowModal() == wx.ID_CANCEL:
+                if self.adcWasON == True:
+                    self.on_off_adc(self)
+                return     # the user changed their mind
+            # Proceed loading the file chosen by the user
+            pathname = fileDialog.GetPath()
+
+        for i in self.network.scanner.nodes:
+            print(i)
+            indexID = self.network.scanner.nodes.index(i)
+            self.choice_id.SetSelection(indexID) # Move to next ID for calibration
+            self.select_id(None)
+
+            print("Updating firmware for Puck {}".format(self.getID()))
+            self.browse_fw(self,pathname)
+
+        indexID = self.network.scanner.nodes.index(starting_id)
+        self.choice_id.SetSelection(indexID) # Return to starting ID after completion
+        self.select_id(None)
+
+    def get_version(self, vers): # Convert uint32_t to semantic version: Major.Minor.Patch
+        return "{0}.{1}.{2}".format(
+            (vers >> 24) & 0xFF, (vers >> 8) & 0xFFFF, (vers & 0xFF))
+
+    def system_config(self, event, filepath=False): 
+        if self.check_for_node() == False: #len(self.network.scanner.nodes) == 0:
+            return False
+        if filepath == False:
+          # File browser
+          if platform.system() == "Windows":
+              directory = '../'
+          else:
+              directory = ''
+
+          # File browser
+          with wx.FileDialog(self, "Select firmware file", directory, wildcard="Configu files (*.ini|*.ini",
+                        style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST) as fileDialog:
+              if fileDialog.ShowModal() == wx.ID_CANCEL:
+                  return     # the user changed their mind
+              # Proceed loading the file chosen by the user
+              filepath = fileDialog.GetPath()
+        else:
+            filepath = filepath
+    
+        print("Reading config file...")
+        config = configparser.ConfigParser()
+        config.read(filepath)
+        options = config.sections()
+        for option in options:
+            print(option)
+            config_id = int(config[option]['ID'])
+            fw_version = config[option].get('fw_version')
+            fwpath = _resolve_path(config[option].get('fw'), FIRMWARE_DIR)
+            if config_id == self.ID: # Check if config_id is in getNodes()
+                print("Found defaults for Puck {}!".format(config_id))
+                # firmware
+                version = self.get_version(self.node.sdo['MfgSoftwareVersion'].raw)
+                # print(version)
+                if fw_version and fwpath and version != fw_version:
+                  print('Version {} found. Updating firmware to {}'.format(version, fw_version))
+                  self.browse_fw(None, fwpath)
+                else:
+                  print('Version {} found.'.format(version))
+                csvpath = _resolve_path(config[option]['CSV'], CONFIG_DIR)
+                # print(csvpath)
+                self.file_to_p4(None, csvpath)
+                break
+            else:
+                print('Puck {} Not found...'.format(config_id))
+
+        # Should tell user calibration is required, and ask to perform 'calibrate all'
+        msg = "Calibration is required after configuration.\nWould you like to calibrate all Pucks?"
+        dlg = wx.MessageDialog(None,msg,'Warning!',wx.YES_NO | wx.ICON_WARNING)
+        answer = dlg.ShowModal()
+        if answer == wx.ID_YES:
+           self.calibrate_all_pucks(None)
+        else:
+           pass
+        dlg.Destroy()
+
+    def check_for_node(self):
+      #  print('Checking')
+      if len(self.network.scanner.nodes) == 0:
+        print('No Active Puck! Ending process...')
+        return False
+      else:
+        return True
+
+    # def upload_system_config(self,event):
+    #    print('uploading...')
+
+    # def tune_gains(self, event):  # wxGlade: wxp3_frame.<event_handler>
+    #     print("Event handler 'tune_gains' not implemented!")
+    #     event.Skip()
+
+    # def save_calibration(self, event):  # wxGlade: wxp3_frame.<event_handler>
+    #     print("Event handler 'save_calibration' not implemented!")
+    #     event.Skip()
     
     def exit_program(self, event):  # wxGlade: wxp3_frame.<event_handler>
         self.Close()

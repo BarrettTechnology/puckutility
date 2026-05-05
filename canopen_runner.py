@@ -19,6 +19,7 @@ import sys
 from canopen.objectdictionary import import_od
 from canopen.sdo import SdoCommunicationError, SdoAbortedError
 from struct import pack, unpack
+# import pandas as pd
 
 logger = logging.getLogger(__name__)
 verbose = False
@@ -27,6 +28,27 @@ node = 0 # Global CANopen node structure
 ###############################################################################
 ################################ ENUMERATIONS #################################
 ###############################################################################
+
+# DS402 ControlWord (0x6040) state-transition values.
+CLEAR_FAULT = 0x80   # Fault Reset (rising edge of bit 7)
+SHUTDOWN    = 0x06   # Shutdown   -> Ready to Switch On
+OP_ENABLED  = 0x0F   # Enable Operation (bits 0,1,2,3)
+
+# DS402 Modes of Operation (0x6060 / 0x6061).
+MODE_IDLE                  = 0
+MODE_PROFILE_POS           = 1
+MODE_VELOCITY              = 2
+MODE_PROFILE_VEL           = 3
+MODE_PROFILE_TRQ           = 4
+MODE_RESERVED              = 5
+MODE_HOMING                = 6
+MODE_INTERPOLATED_POS      = 7
+MODE_CYCLIC_SYNC_POS       = 8
+MODE_CYCLIC_SYNC_VEL       = 9
+MODE_CYCLIC_SYNC_TRQ       = 10
+MODE_CYCLIC_SYNC_TRQ_ANGLE = 11
+MODE_PHASE_VOLTAGE_ANGLE   = 12
+
 
 class COMMAND(enum.Enum):
     """
@@ -100,6 +122,12 @@ class DATATYPE(enum.Enum):
 ############################# UTILITY FUNCTIONS ###############################
 ###############################################################################
 
+def progressbar(update_progress, progress):
+    # No sink (standalone __main__ run): silently drop the update.
+    if update_progress is None:
+        return
+    update_progress.put(progress)
+    
 def printout(text, override=False):
     """
     Prints the text if global verbose is true or override is true
@@ -243,7 +271,7 @@ def math_eval(node):
 ###############################################################################
 
 def canopen_runner(csvfile, replace_id, start_id, edsfile, v, force,
-                   no_warnings):
+                   no_warnings, progress=None, rowcount=None):
     """
     Main function for Runner, called by cli.py
     First validates the provided CSV file, then conditionally launches runner
@@ -284,7 +312,7 @@ def canopen_runner(csvfile, replace_id, start_id, edsfile, v, force,
     if len(invalid_lines) and not force:
         return
     csvfile.seek(0) #reset CSV file pointer
-    result = execute_canopen_runner(csv.reader(csvfile), replace_id, start_id)
+    result = execute_canopen_runner(csv.reader(csvfile), replace_id, start_id, progress, rowcount)
     # print('result of run = {}'.format(result))
 
     return errors
@@ -418,7 +446,7 @@ def validate(csvfile, replace_id, objdict):
     return (invalid_lines, warning_lines)
 
 
-def execute_canopen_runner(csvfile, replace_id, start_id):
+def execute_canopen_runner(csvfile, replace_id, start_id, progress=None, rowcount=None):
     """
     Actually parses the csv file and sends the proper sequence of CANOpen
     SDO/NMT messages as well as accurately processes other commands as specified
@@ -434,9 +462,19 @@ def execute_canopen_runner(csvfile, replace_id, start_id):
     sdo_b2b = 1 #set to 0 as default
     global node
     global errors
-    
+
+    # rowcount = sum(1 for line in csvfile)
+    # data_copy = list(csvfile)
+    # rowcount = len(data_copy)
+    # rowcount = len(list(csvfile))
+    # print(rowcount)
+    # print(type(csvfile))
     linenum = 0
     for row in csvfile:
+        # Only compute and report percent when a sink is supplied AND we
+        # have a row count to divide by — standalone runs pass neither.
+        if progress is not None and rowcount:
+            progressbar(progress, round(linenum / rowcount * 100))
         linenum += 1
         if len(row) == 0 or (len(row) == 1 and row[0].isspace()): #is empty line
             continue #skip it
@@ -552,7 +590,7 @@ def run_main():
 
     canopen_runner(myfile, can_id, can_id, None, False, False, False)
 
-def start(can_device, can_id, edsfile, csvfile):
+def start(can_device, can_id, edsfile, csvfile, progress=None):
     global node
     global errors
 
@@ -580,15 +618,24 @@ def start(can_device, can_id, edsfile, csvfile):
 
       # canopen_runner(csvfile, replace_id, start_id, edsfile, v, force, no_warnings):
 
+    with open(csvfile,'r') as file:
+        reader = csv.reader(file)
+        rowcount = len(list(reader)) - 1
+
     myfile = open(csvfile, 'r')
     #errors = canopen_runner(myfile, can_id, can_id, None, False, False, False)
-    canopen_runner(myfile, can_id, can_id, None, False, False, False)
+    canopen_runner(myfile, can_id, can_id, None, False, False, False, progress, rowcount)
     print("Number of errors: {}".format(errors))
     network.disconnect()
+    # progressbar(progress, "Done")
+    # need to print a final error count, after "Done" to catch any errors still!!
     if errors == 0:
-      return True
+    #   return True
+        progressbar(progress, "Pass")
     else:
-      return False 
+    #   return False 
+        progressbar(progress, "Fail")
+    return
 
 if __name__ == "__main__":
     run_main()
