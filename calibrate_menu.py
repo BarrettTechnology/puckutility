@@ -113,15 +113,31 @@ class calibrate():
         # Set Mode to Voltage
         print("Setting Mode = VOLTAGE MODE")
         self.node.sdo["SetModeOfOperation"].raw = MODE_PHASE_VOLTAGE_ANGLE
-        _sleep_responsive(1) # Wait at least 75 ms for the filters to settle (2 seconds seems to be the sweet spot)
 
-        # Calibrate iSense
+        # Fixed settle then high-sample-count average for sub-count bias precision.
+        # Convergence polling was abandoned: this ADC's noise floor exceeds any
+        # practical threshold, so a fixed 3 s settle is used instead.
+        _N_AVG  = 100
+        _SETTLE = 3.0
+        print("Waiting {:.0f} s for iSense filters to settle...".format(_SETTLE))
+        _sleep_responsive(_SETTLE)
+
+        # Average N_AVG fresh reads; round mean Q12.4 → Q12.0
+        _sum = {'Alpha': 0, 'Beta': 0}
+        for _ in range(_N_AVG):
+            for _ch in ['Alpha', 'Beta']:
+                _sum[_ch] += self.node.sdo[_ch]['Filtered'].raw
+            wx.Yield()
+
+        # Calibrate iSense — store high-precision float bias for use by igainfactor
+        # in the same session (avoids re-reading the rounded EEPROM value).
+        self._alpha_bias_f = _sum['Alpha'] / _N_AVG / 16.0
+        self._beta_bias_f  = _sum['Beta']  / _N_AVG / 16.0
         for channel in ['Alpha', 'Beta']:
           print("Previous {0} iSense bias = {1}".format(channel, self.node.sdo[channel]['Bias'].raw))
-          filt = self.node.sdo[channel]['Filtered'].raw # Q12.4
-          filt = (filt >> 4) + ((filt & 0x0008) >> 3) # Round Q12.4 to Q12.0
+          filt = int(round(_sum[channel] / _N_AVG / 16))
           self.node.sdo[channel]['Bias'].raw = filt
-          print("New {0} iSense bias = {1}".format(channel, filt))
+          print("New {0} iSense bias = {1}  ({2}-sample avg)".format(channel, filt, _N_AVG))
 
         self.node.sdo['Save']['Single'].raw = ((0x3008 << 8) | 0x03) # Save Alpha iSense cal to EE
         self.node.sdo['Save']['Single'].raw = ((0x3009 << 8) | 0x03) # Save Beta iSense cal to EE
@@ -230,39 +246,101 @@ class calibrate():
             round(self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak, 2), 
             self.node.sdo['CurrentFeedback'].raw / 1000.0 * i_peak,
             self.node.sdo['Motor']['ud'].raw))
-          motor_ud += 100 # 25 # was 100, then 50
+          _id_now = self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak
+          if motor_ud > 0 and _id_now > 0:
+              _ramp_step = max(100, int((motor_ud * calibration_current / _id_now - motor_ud) / 4))
+          else:
+              _ramp_step = max(100, 32000 // 12)
+          motor_ud = min(motor_ud + _ramp_step, 32000)
           self.node.sdo['Motor']['ud'].raw = motor_ud
           time.sleep(0.05)
           wx.Yield() # keep wx event loop alive so Windows doesn't mark the app "Not Responding"
 
-        _sleep_responsive(1) # Wait at least 75 ms for the filters to settle
+        _N_IGAIN_AVG  = 100
+        _HOLD_TOL_A   = 2.0   # mA — acceptable current error at each hold position
+        _HOLD_MAX_S   = 5.0   # s  — max time for closed-loop hold
+        _sleep_responsive(1) # Wait for filter to settle after ramp
 
-        a_filt = self.node.sdo['Alpha']['Filtered'].raw # Q12.4
-        a_filt = (a_filt >> 4) + ((a_filt & 0x0008) >> 3) # Round Q12.4 to Q12.0
-        print("Peak Alpha = {0} at motor current = {1} mA (theta_e = {2:0.2f})".format(
-          a_filt, 
-          round(self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak, 2), 
-          self.node.sdo['Theta_e'].raw / 32768.0 * 3.14159))
+        # Closed-loop hold at Alpha peak: fine-tune motor_ud so id == calibration_current
+        _hold_t0 = time.time()
+        while time.time() - _hold_t0 < _HOLD_MAX_S:
+            _id_now = self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak
+            _err = calibration_current - _id_now
+            if abs(_err) < _HOLD_TOL_A:
+                break
+            if _id_now > 0:
+                _correction = int(motor_ud * _err / _id_now / 4)
+            else:
+                _correction = 200 if _err > 0 else -200
+            motor_ud = max(0, min(32000, motor_ud + _correction))
+            self.node.sdo['Motor']['ud'].raw = motor_ud
+            time.sleep(0.05)
+            wx.Yield()
+        _id_now_a = self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak
+        print("  Alpha hold: id={:.3f} A  ud={}  target={:.1f} A".format(
+            _id_now_a, motor_ud, calibration_current))
+
+        _sum_a = _sum_id_a = 0
+        for _ in range(_N_IGAIN_AVG):
+            _sum_a    += self.node.sdo['Alpha']['Filtered'].raw
+            _sum_id_a += self.node.sdo['Motor']['id'].raw
+            wx.Yield()
+        a_filt_f = _sum_a / _N_IGAIN_AVG / 16.0  # float Q12.0 — no rounding yet
+        _id_at_a = (_sum_id_a / _N_IGAIN_AVG) / 1000.0 * i_peak
+        print("Peak Alpha = {0:.3f}  id={1:.3f} A  theta_e={2:.2f} rad  ({3}-sample avg)".format(
+            a_filt_f, _id_at_a,
+            self.node.sdo['Theta_e'].raw / 32768.0 * 3.14159, _N_IGAIN_AVG))
 
         self.node.sdo['Theta_e'].raw = -0x4000 # Stall @ Beta Peak (-pi/2)
-        _sleep_responsive(1) # Wait at least 75 ms for the filters to settle
+        _sleep_responsive(1) # Wait for current to settle after theta_e change
 
-        b_filt = self.node.sdo['Beta']['Filtered'].raw # Q12.4
-        b_filt = (b_filt >> 4) + ((b_filt & 0x0008) >> 3) # Round Q12.4 to Q12.0
-        print("Peak Beta = {0} at motor current = {1} mA (theta_e = {2:0.2f})".format(
-          b_filt, 
-          self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak, 
-          self.node.sdo['Theta_e'].raw / 32768.0 * 3.14159))
+        # Closed-loop hold at Beta peak: re-tune motor_ud so id == calibration_current
+        _hold_t0 = time.time()
+        while time.time() - _hold_t0 < _HOLD_MAX_S:
+            _id_now = self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak
+            _err = calibration_current - _id_now
+            if abs(_err) < _HOLD_TOL_A:
+                break
+            if _id_now > 0:
+                _correction = int(motor_ud * _err / _id_now / 4)
+            else:
+                _correction = 200 if _err > 0 else -200
+            motor_ud = max(0, min(32000, motor_ud + _correction))
+            self.node.sdo['Motor']['ud'].raw = motor_ud
+            time.sleep(0.05)
+            wx.Yield()
+        _id_now_b = self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak
+        print("  Beta hold:  id={:.3f} A  ud={}  target={:.1f} A".format(
+            _id_now_b, motor_ud, calibration_current))
+
+        _sum_b = _sum_id_b = 0
+        for _ in range(_N_IGAIN_AVG):
+            _sum_b    += self.node.sdo['Beta']['Filtered'].raw
+            _sum_id_b += self.node.sdo['Motor']['id'].raw
+            wx.Yield()
+        b_filt_f = _sum_b / _N_IGAIN_AVG / 16.0  # float Q12.0 — no rounding yet
+        _id_at_b = (_sum_id_b / _N_IGAIN_AVG) / 1000.0 * i_peak
+        print("Peak Beta  = {0:.3f}  id={1:.3f} A  theta_e={2:.2f} rad  ({3}-sample avg)".format(
+            b_filt_f, _id_at_b,
+            self.node.sdo['Theta_e'].raw / 32768.0 * 3.14159, _N_IGAIN_AVG))
 
         self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
 
-        abias = self.node.sdo['Alpha']['Bias'].raw
-        bbias = self.node.sdo['Beta']['Bias'].raw
+        # Use high-precision float bias from ibias (same session) if available;
+        # fall back to rounded EEPROM value when igainfactor runs standalone.
+        if hasattr(self, '_alpha_bias_f') and hasattr(self, '_beta_bias_f'):
+            abias_f = self._alpha_bias_f
+            bbias_f = self._beta_bias_f
+        else:
+            abias_f = float(self.node.sdo['Alpha']['Bias'].raw)
+            bbias_f = float(self.node.sdo['Beta']['Bias'].raw)
 
-        # Scale b by (a-abias)/(b-bbias) to match a's amplitude while accounting for bias
-        gainfactor = self.node.sdo['Beta']['Gainfactor'].raw = 4096 * (a_filt - abias) / (b_filt - bbias) # Gain in Q4.12
+        # Compute gainfactor in full float precision; round only for firmware write
+        gainfactor = 4096.0 * (a_filt_f - abias_f) / (b_filt_f - bbias_f)
         gainfactor = round(gainfactor)
-        print("New Beta Gainfactor = {0}".format(self.node.sdo['Beta']['Gainfactor'].raw))
+        self.node.sdo['Beta']['Gainfactor'].raw = gainfactor
+        print("New Beta Gainfactor = {0}  (a_delta={1:.3f}  b_delta={2:.3f})".format(
+            gainfactor, a_filt_f - abias_f, b_filt_f - bbias_f))
 
         # Check Bounds for error!! Can increase to 10% if needed
         error = 0.10 # 10%
@@ -439,76 +517,183 @@ class calibrate():
         print("--- End sanity check ---")
         # ------------------------------------
 
-        sweep_start = 800
-        sweep_max   = 1800
-        step_ns     = 25
-        N_SAMPLES   = 20
-        timing_values = list(range(sweep_start, sweep_max + 1, step_ns))
+        # Two-pass sweep: coarse (100 ns) locates the crossing region, fine (25 ns) resolves it.
+        # sector_ud is determined once at coarse_max where the ADC is guaranteed settled,
+        # giving an accurate ramp free of settling-transient bias.  Both passes then apply
+        # the stored voltage directly — no re-ramp between passes.
+        coarse_step   = 100
+        fine_step     = 25
+        N_SAMPLES_C   = 10    # fewer samples in coarse pass for speed
+        N_SAMPLES_F   = 20    # full samples in fine pass for accuracy
+        SETTLE_C      = 0.15  # s  coarse inductive-settle wait
+        SETTLE_F      = 0.30  # s  fine inductive-settle wait
+        coarse_start  = 0
+        coarse_max    = 2000
+        coarse_values = list(range(coarse_start, coarse_max + 1, coarse_step))
+        n_coarse      = len(coarse_values)
+        sector_ud     = [None] * len(sector_angles)
 
-        print("Sweep: {} to {} ns, {} steps of {} ns  (half period = {} ns)".format(
-            sweep_start, sweep_max, len(timing_values), step_ns, half_period_ns))
-        print("Each step requires a puck reset — est. {:.0f} s total".format(
-            len(timing_values) * (0.5 + len(sector_angles) * 2.5)))
+        est_pre = len(sector_angles) * 3.0 + 0.5
+        est_c   = n_coarse * (0.5 + len(sector_angles) * (SETTLE_C + N_SAMPLES_C * 0.005))
+        est_f   = 20 * (0.5 + len(sector_angles) * (SETTLE_F + N_SAMPLES_F * 0.005))
+        print("Two-pass sweep: coarse {} to {} ns ({} steps × {} ns)  half period={} ns".format(
+            coarse_start, coarse_max, n_coarse, coarse_step, half_period_ns))
+        print("Est. time: {:.0f} s  "
+              "(pre-ramp {:.0f} s + coarse {:.0f} s + fine ~{:.0f} s, ~20 fine steps assumed)".format(
+              est_pre + est_c + est_f, est_pre, est_c, est_f))
 
-        # step_sector_data[t_idx][sector_idx] = (alpha_raw_mean, beta_raw_mean)
-        step_sector_data = [[None] * len(sector_angles) for _ in range(len(timing_values))]
+        # --- Pre-sweep: ramp at coarse_max where ADC is settled ---
+        print("Pre-sweep ramp at {} ns...".format(coarse_max))
+        self.node.sdo['Amp']['MaxSettlingTime'].raw = coarse_max
+        self.node.sdo['Save']['Single'].raw = ((0x3001 << 8) | 0x05)
+        self.network.send_message(0x0, [0x81, int(node_id)])
+        _sleep_responsive(0.5)
+        self.node.sdo["ControlWord"].raw = CLEAR_FAULT
+        self.node.sdo["ControlWord"].raw = SHUTDOWN
+        self.node.sdo["ControlWord"].raw = OP_ENABLED
+        self.node.sdo["SetModeOfOperation"].raw = MODE_PHASE_VOLTAGE_ANGLE
+        for sector_idx, theta_e in enumerate(sector_angles):
+            self.node.sdo['Theta_e'].raw = theta_e
+            self.node.sdo['Motor']['ud'].raw = 0
+            motor_ud = 0
+            while (self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak < calibration_current
+                   and motor_ud < 32000):
+                _id_now = self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak
+                if motor_ud > 0 and _id_now > 0:
+                    _ramp_step = max(50, int((motor_ud * calibration_current / _id_now - motor_ud) / 4))
+                else:
+                    _ramp_step = max(50, 32000 // 12)
+                motor_ud = min(motor_ud + _ramp_step, 32000)
+                self.node.sdo['Motor']['ud'].raw = motor_ud
+                time.sleep(0.01)
+                wx.Yield()
+            sector_ud[sector_idx] = motor_ud
+            print("  sector {}/6  motor_ud={} (reused for all sweep steps)".format(
+                sector_idx + 1, motor_ud))
+        self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
 
-        for t_idx, t in enumerate(timing_values):
-            print("Step {}/{}: MaxSettlingTime={} ns — saving and rebooting...".format(
-                t_idx + 1, len(timing_values), t))
+        # --- Pass 1: coarse ---
+        coarse_data = [[None] * len(sector_angles) for _ in range(n_coarse)]
+        for t_idx, t in enumerate(coarse_values):
             self.frame_statusbar.SetStatusText(
-                "Calibrating timing: step {}/{} ({} ns)".format(
-                    t_idx + 1, len(timing_values), t), 1)
+                "Timing cal — coarse {}/{} ({} ns)".format(t_idx + 1, n_coarse, t), 1)
             self.frame_statusbar.Update()
             wx.Yield()
-
             self.node.sdo['Amp']['MaxSettlingTime'].raw = t
             self.node.sdo['Save']['Single'].raw = ((0x3001 << 8) | 0x05)
             self.network.send_message(0x0, [0x81, int(node_id)])
             _sleep_responsive(0.5)
-            self.configure_Puck()
-
             self.node.sdo["ControlWord"].raw = CLEAR_FAULT
             self.node.sdo["ControlWord"].raw = SHUTDOWN
             self.node.sdo["ControlWord"].raw = OP_ENABLED
             self.node.sdo["SetModeOfOperation"].raw = MODE_PHASE_VOLTAGE_ANGLE
-
             for sector_idx, theta_e in enumerate(sector_angles):
                 self.node.sdo['Theta_e'].raw = theta_e
-                self.node.sdo['Motor']['ud'].raw = 0
-                motor_ud = 0
-                while (self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak < 0.8 * calibration_current
-                       and motor_ud < 32000):
-                    motor_ud = min(motor_ud + 500, 32000)
-                    self.node.sdo['Motor']['ud'].raw = motor_ud
-                    # time.sleep(0.01)
-                    wx.Yield()
-                while (self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak < calibration_current
-                       and motor_ud < 32000):
-                    motor_ud = min(motor_ud + 100, 32000)
-                    self.node.sdo['Motor']['ud'].raw = motor_ud
-                    # time.sleep(0.01)
-                    wx.Yield()
-                # _sleep_responsive(0.2)
-
+                self.node.sdo['Motor']['ud'].raw = sector_ud[sector_idx]
+                _sleep_responsive(SETTLE_C)
                 alpha_sum = 0
                 beta_sum  = 0
-                for _ in range(N_SAMPLES):
+                for _ in range(N_SAMPLES_C):
                     alpha_sum += self.node.sdo['Alpha']['Raw'].raw
                     beta_sum  += self.node.sdo['Beta']['Raw'].raw
-                    # time.sleep(0.005)
+                    time.sleep(0.005)
                     wx.Yield()
+                coarse_data[t_idx][sector_idx] = (alpha_sum / N_SAMPLES_C,
+                                                   beta_sum  / N_SAMPLES_C)
+                self.node.sdo['Motor']['ud'].raw = 0  # de-energise between sectors
+            self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
+            print("  Coarse {}/{}: {} ns  done".format(t_idx + 1, n_coarse, t))
 
-                a_raw = alpha_sum / N_SAMPLES
-                b_raw = beta_sum  / N_SAMPLES
-                step_sector_data[t_idx][sector_idx] = (a_raw, b_raw)
+        # --- Coarse analysis: find crossing bracket to set fine sweep bounds ---
+        plat_c       = max(0, 3 * n_coarse // 4)
+        cross_lo_all = []
+        cross_hi_all = []
+        for sector_idx in range(len(sector_angles)):
+            for ch_idx, bias in ((0, alpha_bias), (1, beta_bias)):
+                ch_vals_c  = [coarse_data[t_idx][sector_idx][ch_idx] - bias
+                              for t_idx in range(n_coarse)]
+                plateau_c  = sum(ch_vals_c[plat_c:]) / len(ch_vals_c[plat_c:])
+                devs_c     = [abs(v - plateau_c) for v in ch_vals_c]
+                pd_sorted  = sorted(devs_c[plat_c:])
+                pd_mid     = len(pd_sorted) // 2
+                plat_dev_c = (pd_sorted[pd_mid] if len(pd_sorted) % 2
+                              else (pd_sorted[pd_mid - 1] + pd_sorted[pd_mid]) / 2.0)
+                amp_c      = max(devs_c) - plat_dev_c
+                if amp_c < max(8.0, 3.0 * plat_dev_c):
+                    continue  # flat channel, skip
+                thresh_c = plat_dev_c + 0.10 * max(amp_c, 1.0)
+                smooth_c = list(devs_c)
+                for i in range(1, n_coarse - 1):
+                    smooth_c[i] = (devs_c[i - 1] + devs_c[i] + devs_c[i + 1]) / 3.0
+                for i in range(1, n_coarse):
+                    if smooth_c[i - 1] > thresh_c >= smooth_c[i]:
+                        cross_lo_all.append(coarse_values[i - 1])
+                        cross_hi_all.append(coarse_values[i])
+                        break
+
+        if cross_lo_all:
+            fine_start = max(coarse_start, min(cross_lo_all) - coarse_step)
+            fine_end   = min(coarse_max,   max(cross_hi_all) + 3 * coarse_step)
+            print("Coarse crossing bracket: {}–{} ns  →  fine sweep: {}–{} ns  "
+                  "({} steps × {} ns)".format(
+                  min(cross_lo_all), max(cross_hi_all),
+                  fine_start, fine_end,
+                  len(range(fine_start, fine_end + 1, fine_step)), fine_step))
+        else:
+            fine_start = coarse_start
+            fine_end   = coarse_max
+            print("WARNING: no crossing found in coarse pass — "
+                  "using full range for fine sweep")
+
+        fine_values = list(range(fine_start, fine_end + 1, fine_step))
+
+        # --- Pass 2: fine ---
+        print("Pass 2 (fine): {} to {} ns  ({} steps × {} ns)".format(
+            fine_start, fine_end, len(fine_values), fine_step))
+        fine_data = [[None] * len(sector_angles) for _ in range(len(fine_values))]
+        for t_idx, t in enumerate(fine_values):
+            self.frame_statusbar.SetStatusText(
+                "Timing cal — fine {}/{} ({} ns)".format(
+                    t_idx + 1, len(fine_values), t), 1)
+            self.frame_statusbar.Update()
+            wx.Yield()
+            self.node.sdo['Amp']['MaxSettlingTime'].raw = t
+            self.node.sdo['Save']['Single'].raw = ((0x3001 << 8) | 0x05)
+            self.network.send_message(0x0, [0x81, int(node_id)])
+            _sleep_responsive(0.5)
+            self.node.sdo["ControlWord"].raw = CLEAR_FAULT
+            self.node.sdo["ControlWord"].raw = SHUTDOWN
+            self.node.sdo["ControlWord"].raw = OP_ENABLED
+            self.node.sdo["SetModeOfOperation"].raw = MODE_PHASE_VOLTAGE_ANGLE
+            for sector_idx, theta_e in enumerate(sector_angles):
+                self.node.sdo['Theta_e'].raw = theta_e
+                self.node.sdo['Motor']['ud'].raw = sector_ud[sector_idx]
+                _sleep_responsive(SETTLE_F)
+                alpha_sum = 0
+                beta_sum  = 0
+                for _ in range(N_SAMPLES_F):
+                    alpha_sum += self.node.sdo['Alpha']['Raw'].raw
+                    beta_sum  += self.node.sdo['Beta']['Raw'].raw
+                    time.sleep(0.005)
+                    wx.Yield()
+                a_raw = alpha_sum / N_SAMPLES_F
+                b_raw = beta_sum  / N_SAMPLES_F
+                fine_data[t_idx][sector_idx] = (a_raw, b_raw)
                 print("  sector {}/6  theta_e={:6d}  alpha={:7.1f}  beta={:7.1f}".format(
                     sector_idx + 1, theta_e, a_raw, b_raw))
-
+                self.node.sdo['Motor']['ud'].raw = 0  # de-energise between sectors
             self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
+
+        # Analysis uses the fine-pass results
+        timing_values    = fine_values
+        step_sector_data = fine_data
 
         # --- Analysis: per-sector threshold crossing on bias-subtracted signal ---
         sector_settling_times = []
+        sector_sweet_spots    = []   # per-sector centre of valid ADC window
+        sector_upper_bounds   = []   # per-sector upper window limit (None if not detected)
+        # Populated during analysis for the debug plot (devs, smooth, threshold, t_ch per channel)
+        plot_data = {}
 
         for sector_idx in range(len(sector_angles)):
             times        = timing_values
@@ -520,13 +705,21 @@ class calibrate():
 
             print("Sector {}/6 analysis:".format(sector_idx + 1))
             t_settle = 0.0
+            plot_data[sector_idx] = {}
+            ch_sweets  = []   # non-flat channel sweet spots this sector
+            ch_uppers  = []   # non-flat channel upper bounds this sector (None if not found)
             for ch_name, ch_idx, bias in (('Alpha', 0, alpha_bias),
                                            ('Beta',  1, beta_bias)):
                 ch_vals   = [s[ch_idx] - bias for s in signal_means]
+                # Mean for plateau centre: averages Gaussian between-boot noise better than median
                 plateau   = sum(ch_vals[plateau_start:]) / len(ch_vals[plateau_start:])
                 devs      = [abs(v - plateau) for v in ch_vals]
                 peak_dev  = max(devs)
-                plat_dev  = sum(devs[plateau_start:]) / len(devs[plateau_start:])
+                # MAD for noise floor: robust to the occasional outlier step in the plateau window
+                plat_devs = sorted(devs[plateau_start:])
+                plat_mid  = len(plat_devs) // 2
+                plat_dev  = (plat_devs[plat_mid] if len(plat_devs) % 2
+                             else (plat_devs[plat_mid - 1] + plat_devs[plat_mid]) / 2.0)
                 early_dev = sum(devs[:early_end]) / early_end
 
                 # 3-point centred moving average to smooth per-step cycle-to-cycle noise
@@ -544,7 +737,7 @@ class calibrate():
                 print(dev_str)
 
                 t_ch = 0.0
-                if signal_amplitude < max(5.0, 3.0 * plat_dev):
+                if signal_amplitude < max(8.0, 3.0 * plat_dev):
                     reason = "flat (amplitude={:.2f})".format(signal_amplitude)
                 elif early_dev < 1.5 * plat_dev:
                     reason = "no early elevation (early_dev={:.2f})".format(early_dev)
@@ -561,20 +754,164 @@ class calibrate():
                             break
 
                 t_ch = max(0.0, t_ch)
+
+                # --- Sweet spot: timing of minimum smoothed deviation in settled region ---
+                # Settled region starts at the lower-bound crossing; fall back to plateau_start
+                # for flat/no-crossing channels so we still report where the noise is lowest.
+                settled_from = plateau_start
+                if t_ch > 0:
+                    settled_from = next(
+                        (i for i, t in enumerate(times) if t >= t_ch), plateau_start)
+                min_smooth_val = min(smooth[settled_from:])
+                sweet_idx = settled_from + smooth[settled_from:].index(min_smooth_val)
+                t_sweet = times[sweet_idx]
+
+                # --- Upper window bound ---
+                # Scan right-to-left from the penultimate step (skip last step: its smoothed
+                # value is unaveraged and artificially noisy) back to the sweet spot.
+                # Flag if smooth rises above 3×plat_dev AND meaningfully above the sweet-spot
+                # minimum — this indicates the ADC enters a new disturbance region at high timing.
+                tight = 3.0 * plat_dev
+                t_upper = None
+                scan_end = n - 2  # always stop one before last (edge artefact)
+                if sweet_idx < scan_end:
+                    for i in range(scan_end, sweet_idx, -1):
+                        if smooth[i] > tight and smooth[i] > min_smooth_val + tight:
+                            t_upper = times[i]
+                            break
+
+                is_active = signal_amplitude >= max(8.0, 3.0 * plat_dev)
+                if is_active:
+                    ch_sweets.append(t_sweet)
+                    ch_uppers.append(t_upper)
+
+                upper_str = ("  upper={} ns".format(int(t_upper))
+                             if t_upper is not None else "  no upper bound in sweep")
                 print("  {}  threshold={:.2f}  plat_dev={:.2f}  amplitude={:.2f}  "
-                      "t_settle={:.1f} ns  ({})".format(
-                      ch_name, threshold, plat_dev, signal_amplitude, t_ch, reason))
+                      "t_settle={:.1f} ns  t_sweet={} ns{}  ({})".format(
+                      ch_name, threshold, plat_dev, signal_amplitude,
+                      t_ch, int(t_sweet), upper_str, reason))
                 t_settle = max(t_settle, t_ch)
+
+                plot_data[sector_idx][ch_name] = {
+                    'devs': devs, 'smooth': smooth,
+                    'threshold': threshold, 't_ch': t_ch,
+                    't_sweet': t_sweet, 't_upper': t_upper,
+                }
 
             print("  Sector {} settling time: {:.1f} ns".format(sector_idx + 1, t_settle))
             sector_settling_times.append(t_settle)
 
+            if ch_sweets:
+                s_sweet = sum(ch_sweets) / len(ch_sweets)
+                sector_sweet_spots.append(s_sweet)
+                # Upper bound for the sector: minimum detected across channels
+                # (the tightest constraint wins)
+                active_uppers = [u for u in ch_uppers if u is not None]
+                s_upper = min(active_uppers) if active_uppers else None
+                sector_upper_bounds.append(s_upper)
+                upper_note = ("  upper bound ~{} ns".format(int(s_upper))
+                              if s_upper is not None else "  no upper bound in sweep")
+                print("  Sector {} sweet spot: ~{:.0f} ns{}".format(
+                    sector_idx + 1, s_sweet, upper_note))
+            else:
+                sector_sweet_spots.append(None)
+                sector_upper_bounds.append(None)
+
+        # --- Debug plot: deviation curves for all sectors ---
+        try:
+            import matplotlib
+            matplotlib.use('Agg')  # non-interactive; avoids wx/Tk backend conflicts
+            import matplotlib.pyplot as plt
+            import os
+
+            fig, axes = plt.subplots(2, 3, figsize=(16, 9), sharey=False)
+            fig.suptitle(
+                'MaxSettlingTime calibration — ADC deviation vs settling time\n'
+                'fine sweep {} – {} ns, {} ns steps  '
+                '(coarse {} – {} ns, {} ns steps)'.format(
+                    fine_start, fine_end, fine_step,
+                    coarse_start, coarse_max, coarse_step),
+                fontsize=12)
+
+            ch_colors = {'Alpha': ('steelblue', 'royalblue'),
+                         'Beta':  ('tomato',    'firebrick')}
+
+            for sector_idx in range(len(sector_angles)):
+                ax = axes.flat[sector_idx]
+                t_sector = sector_settling_times[sector_idx]
+
+                for ch_name, (light, dark) in ch_colors.items():
+                    pd = plot_data[sector_idx][ch_name]
+                    ax.plot(timing_values, pd['devs'], 'o', color=light,
+                            markersize=3, alpha=0.5, label='{} raw'.format(ch_name))
+                    ax.plot(timing_values, pd['smooth'], '-', color=dark,
+                            linewidth=1.5, label='{} smooth'.format(ch_name))
+                    ax.axhline(pd['threshold'], color=dark, linestyle='--',
+                               linewidth=0.8, alpha=0.7)
+                    if pd['t_ch'] > 0:
+                        ax.axvline(pd['t_ch'], color=dark, linestyle=':',
+                                   linewidth=1.2, alpha=0.8)
+                    if pd['t_sweet'] is not None:
+                        ax.axvline(pd['t_sweet'], color=dark, linestyle=(0, (3, 1, 1, 1)),
+                                   linewidth=1.0, alpha=0.6)
+                    if pd['t_upper'] is not None:
+                        ax.axvline(pd['t_upper'], color=dark, linestyle='--',
+                                   linewidth=1.2, alpha=0.9)
+
+                # Sector result (worst-case channel lower bound)
+                ax.axvline(t_sector, color='black', linewidth=1.5,
+                           label='lower {:.0f} ns'.format(t_sector))
+                # Sector sweet spot (centre of valid window)
+                if sector_sweet_spots[sector_idx] is not None:
+                    ax.axvline(sector_sweet_spots[sector_idx], color='green',
+                               linewidth=1.2, linestyle='--',
+                               label='sweet ~{:.0f} ns'.format(sector_sweet_spots[sector_idx]))
+                if sector_upper_bounds[sector_idx] is not None:
+                    ax.axvline(sector_upper_bounds[sector_idx], color='orange',
+                               linewidth=1.2, linestyle='--',
+                               label='upper {:.0f} ns'.format(sector_upper_bounds[sector_idx]))
+                ax.set_title('Sector {}/6  θ_e={}'.format(
+                    sector_idx + 1, sector_angles[sector_idx]), fontsize=10)
+                ax.set_xlabel('MaxSettlingTime (ns)', fontsize=8)
+                ax.set_ylabel('|deviation| (counts)', fontsize=8)
+                ax.legend(fontsize=7, loc='upper right')
+                ax.grid(True, alpha=0.25)
+
+            plt.tight_layout()
+            plot_path = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                'logs',
+                'itiming_cal_{}.png'.format(
+                    time.strftime('%Y-%m-%d_%H-%M-%S')))
+            fig.savefig(plot_path, dpi=110, bbox_inches='tight')
+            plt.close(fig)
+            print("Calibration plot saved: {}".format(plot_path))
+            webbrowser.open('file://' + plot_path)
+        except ImportError:
+            print("matplotlib not installed — skipping calibration plot")
+        except Exception as _plot_err:
+            print("Plot failed: {}".format(_plot_err))
+
         # Conservative choice: maximum settling time required across all sectors
         optimal_settling = int(max(sector_settling_times))
-        optimal_settling = min(optimal_settling, sweep_max)
+        optimal_settling = min(optimal_settling, fine_end)
 
         print("Per-sector settling times (ns): {}".format(
             [round(t, 1) for t in sector_settling_times]))
+        valid_sweets = [s for s in sector_sweet_spots if s is not None]
+        valid_uppers = [u for u in sector_upper_bounds if u is not None]
+        if valid_sweets:
+            overall_sweet = sum(valid_sweets) / len(valid_sweets)
+            sweet_range   = (int(min(valid_sweets)), int(max(valid_sweets)))
+            print("Per-sector sweet spots  (ns): {}".format(
+                [round(s, 0) if s is not None else None for s in sector_sweet_spots]))
+            print("ADC window: lower bound={} ns  sweet spot=~{:.0f} ns (range {}–{} ns)  "
+                  "upper bound={}".format(
+                      optimal_settling,
+                      overall_sweet, sweet_range[0], sweet_range[1],
+                      "{} ns".format(int(min(valid_uppers))) if valid_uppers
+                      else "not detected in sweep (>{} ns)".format(fine_end)))
         print("Optimal MaxSettlingTime: {} ns  (was {} ns)".format(
             optimal_settling, original_settling))
 
@@ -653,7 +990,12 @@ class calibrate():
           print("id = {0}, ud = {1}".format(
             self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak, 
             self.node.sdo['Motor']['ud'].raw))
-          motor_ud += 100
+          _id_now = self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak
+          if motor_ud > 0 and _id_now > 0:
+              _ramp_step = max(100, int((motor_ud * calibration_current / _id_now - motor_ud) / 4))
+          else:
+              _ramp_step = max(100, 32000 // 12)
+          motor_ud = min(motor_ud + _ramp_step, 32000)
           self.node.sdo['Motor']['ud'].raw = motor_ud
           time.sleep(0.05)
           wx.Yield() # keep wx event loop alive so Windows doesn't mark the app "Not Responding"
