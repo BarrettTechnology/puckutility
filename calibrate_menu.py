@@ -51,33 +51,48 @@ class calibrate():
             # print("No active puck")
             return False
         print("Running full calibration for Puck {}".format(self.getID()))
+
+        self.frame_statusbar.SetStatusText("Progress: 0%", 1)
+        self.progress.Show()
+        self.GetStatusBar().Refresh()
+        self.GetStatusBar().Update()
+
         continueCal = self.test_encoder(None, True)
         self.Disable()
         if continueCal == False:
-          print('Ending calibration...')
-          self.Enable()
-          return
-        continueCal = self.calibrate_ibias(None, True)
+            print('Ending calibration...')
+            self.OnTaskComplete()
+            self.Enable()
+            return
+
+        self.UpdateUI(5)
+        continueCal = self.calibrate_ibias(None, True,
+                          _upd=lambda v: self.UpdateUI(5 + v * 15 // 100))
         if continueCal == False:
-          print('Ending calibration...')
-          self.Enable()
-          return
-        continueCal = self.calibrate_igainfactor(None, True)
+            print('Ending calibration...')
+            self.OnTaskComplete()
+            self.Enable()
+            return
+
+        self.UpdateUI(20)
+        continueCal = self.calibrate_igainfactor(None, True,
+                          _upd=lambda v: self.UpdateUI(20 + v * 52 // 100))
         if continueCal == False:
-          print('Ending calibration...')
-          self.Enable()
-          return
-        self.calibrate_enczero(None, True)
-        if continueCal == False:
-          print('Ending calibration...')
-          self.Enable()
-          return
-        
+            print('Ending calibration...')
+            self.OnTaskComplete()
+            self.Enable()
+            return
+
+        self.UpdateUI(72)
+        self.calibrate_enczero(None, True,
+                          _upd=lambda v: self.UpdateUI(72 + v * 28 // 100))
+
+        self.OnTaskComplete()
         self.requireCal = False
         self.Enable()
         #event.Skip()
 
-    def calibrate_ibias(self, event, calAll=False):  # wxGlade: wxp3_frame.<event_handler>
+    def calibrate_ibias(self, event, calAll=False, _upd=None):  # wxGlade: wxp3_frame.<event_handler>
         # print("Event handler 'calibrate_ibias'")
         if calAll==False:
           if self.check_for_node() == False:
@@ -89,12 +104,19 @@ class calibrate():
             print("Setting Mode = IDLE")
             self.choice_test.SetSelection(0)
             self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
-        
+
         if self.ADC_ON == True:
            self.on_off_adc(self)
            self.adcWasON = True
         else:
            self.adcWasON = False
+
+        if calAll == False:
+            self.OnStartTask(None)
+            _upd = lambda v: self.UpdateUI(v)
+        if _upd is None:
+            _upd = lambda v: None
+
         self.frame_statusbar.SetStatusText("Calibrating ibias...", 1)
         self.frame_statusbar.Update()
         wx.Yield()
@@ -120,11 +142,17 @@ class calibrate():
         _N_AVG  = 100
         _SETTLE = 3.0
         print("Waiting {:.0f} s for iSense filters to settle...".format(_SETTLE))
-        _sleep_responsive(_SETTLE)
+        _settle_end = time.time() + _SETTLE
+        while time.time() < _settle_end:
+            _frac = 1.0 - (_settle_end - time.time()) / _SETTLE
+            _upd(int(_frac * 55))  # 0→55%
+            time.sleep(0.05)
+            wx.Yield()
 
         # Average N_AVG fresh reads; round mean Q12.4 → Q12.0
         _sum = {'Alpha': 0, 'Beta': 0}
-        for _ in range(_N_AVG):
+        for _i in range(_N_AVG):
+            _upd(55 + _i * 40 // _N_AVG)  # 55→95%
             for _ch in ['Alpha', 'Beta']:
                 _sum[_ch] += self.node.sdo[_ch]['Filtered'].raw
             wx.Yield()
@@ -168,11 +196,11 @@ class calibrate():
           dlg.Destroy()
           print("Encoder readings unstable...")
 
-        self.frame_statusbar.SetStatusText("Ready", 1)
-        #self.text_ctrl_6.ChangeValue(str(self.node.sdo['Cal']['iSense1'].raw))
+        _upd(100)
         if self.ADC_ON == False and self.adcWasON == True:
            self.on_off_adc(self)
         if calAll==False:
+          self.OnTaskComplete()
           self.Enable()
         try:
           if answer == wx.ID_YES:
@@ -182,7 +210,7 @@ class calibrate():
         except:
           pass
 
-    def calibrate_igainfactor(self, event, calAll=False):  # wxGlade: wxp3_frame.<event_handler>
+    def calibrate_igainfactor(self, event, calAll=False, _upd=None):  # wxGlade: wxp3_frame.<event_handler>
         # print("Event handler 'calibrate_igainfactor'")
         if calAll==False:
           if self.check_for_node() == False: #len(self.network.scanner.nodes) == 0:
@@ -201,13 +229,19 @@ class calibrate():
         else:
            self.adcWasON = False
 
+        if calAll == False:
+            self.OnStartTask(None)
+            _upd = lambda v: self.UpdateUI(v)
+        if _upd is None:
+            _upd = lambda v: None
+
         self.frame_statusbar.SetStatusText("Calibrating igainfactor...", 1)
         self.frame_statusbar.Update()
         wx.Yield()
 
         # Set Alpha & Beta gainfactors to 1.0 in Q4.12
-        self.node.sdo['Alpha']['Gainfactor'].raw = 4096 
-        self.node.sdo['Beta']['Gainfactor'].raw = 4096 
+        self.node.sdo['Alpha']['Gainfactor'].raw = 4096
+        self.node.sdo['Beta']['Gainfactor'].raw = 4096
 
         # Clear faults, RTSO, OpEnabled
         print("Going OpEnabled")
@@ -241,12 +275,13 @@ class calibrate():
         motor_id = self.node.sdo['Motor']['id'].raw
         while (motor_id < 1000 and self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak) < calibration_current and motor_ud < 32000:
           print("alpha = {0}, beta = {1}, id = {2}, iq = {3}, ud = {4}".format(
-            self.node.sdo['Alpha']['Raw'].raw, 
-            self.node.sdo['Beta']['Raw'].raw, 
-            round(self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak, 2), 
+            self.node.sdo['Alpha']['Raw'].raw,
+            self.node.sdo['Beta']['Raw'].raw,
+            round(self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak, 2),
             self.node.sdo['CurrentFeedback'].raw / 1000.0 * i_peak,
             self.node.sdo['Motor']['ud'].raw))
           _id_now = self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak
+          _upd(3 + int(min(1.0, max(0.0, _id_now / calibration_current)) * 27))  # 3→30%
           if motor_ud > 0 and _id_now > 0:
               _ramp_step = max(100, int((motor_ud * calibration_current / _id_now - motor_ud) / 4))
           else:
@@ -266,6 +301,7 @@ class calibrate():
         while time.time() - _hold_t0 < _HOLD_MAX_S:
             _id_now = self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak
             _err = calibration_current - _id_now
+            _upd(30 + int(min(1.0, (time.time() - _hold_t0) / _HOLD_MAX_S) * 15))  # 30→45%
             if abs(_err) < _HOLD_TOL_A:
                 break
             if _id_now > 0:
@@ -281,7 +317,8 @@ class calibrate():
             _id_now_a, motor_ud, calibration_current))
 
         _sum_a = _sum_id_a = 0
-        for _ in range(_N_IGAIN_AVG):
+        for _i in range(_N_IGAIN_AVG):
+            _upd(45 + _i * 12 // _N_IGAIN_AVG)  # 45→57%
             _sum_a    += self.node.sdo['Alpha']['Filtered'].raw
             _sum_id_a += self.node.sdo['Motor']['id'].raw
             wx.Yield()
@@ -293,12 +330,14 @@ class calibrate():
 
         self.node.sdo['Theta_e'].raw = -0x4000 # Stall @ Beta Peak (-pi/2)
         _sleep_responsive(1) # Wait for current to settle after theta_e change
+        _upd(60)
 
         # Closed-loop hold at Beta peak: re-tune motor_ud so id == calibration_current
         _hold_t0 = time.time()
         while time.time() - _hold_t0 < _HOLD_MAX_S:
             _id_now = self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak
             _err = calibration_current - _id_now
+            _upd(60 + int(min(1.0, (time.time() - _hold_t0) / _HOLD_MAX_S) * 15))  # 60→75%
             if abs(_err) < _HOLD_TOL_A:
                 break
             if _id_now > 0:
@@ -314,7 +353,8 @@ class calibrate():
             _id_now_b, motor_ud, calibration_current))
 
         _sum_b = _sum_id_b = 0
-        for _ in range(_N_IGAIN_AVG):
+        for _i in range(_N_IGAIN_AVG):
+            _upd(75 + _i * 20 // _N_IGAIN_AVG)  # 75→95%
             _sum_b    += self.node.sdo['Beta']['Filtered'].raw
             _sum_id_b += self.node.sdo['Motor']['id'].raw
             wx.Yield()
@@ -362,12 +402,12 @@ class calibrate():
         self.node.sdo['Save']['Single'].raw = ((0x3008 << 8) | 0x06) # Save Alpha gainfactor to EE
         self.node.sdo['Save']['Single'].raw = ((0x3009 << 8) | 0x06) # Save Beta gainfactor to EE
 
-        self.frame_statusbar.SetStatusText("Ready", 1)
-
+        _upd(100)
         if self.ADC_ON == False and self.adcWasON == True:
            self.on_off_adc(self)
 
         if calAll==False:
+          self.OnTaskComplete()
           self.Enable()
         try:
           if answer == wx.ID_YES:
@@ -936,7 +976,7 @@ class calibrate():
         print("Event handler 'calibrate_islope' not implemented!")
         event.Skip()
 
-    def calibrate_enczero(self, event, calAll=False):  # wxGlade: wxp3_frame.<event_handler>
+    def calibrate_enczero(self, event, calAll=False, _upd=None):  # wxGlade: wxp3_frame.<event_handler>
         # print("Event handler 'calibrate_enczero'")
         if calAll==False:
           if self.check_for_node() == False: #len(self.network.scanner.nodes) == 0:
@@ -948,12 +988,18 @@ class calibrate():
             print("Setting Mode = IDLE")
             self.choice_test.SetSelection(0)
             self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
-        
+
         if self.ADC_ON == True:
             self.adcWasON = True
             self.on_off_adc(self)
         else:
             self.adcWasON = False
+
+        if calAll == False:
+            self.OnStartTask(None)
+            _upd = lambda v: self.UpdateUI(v)
+        if _upd is None:
+            _upd = lambda v: None
 
         self.frame_statusbar.SetStatusText("Calibrating encoder...", 1)
         self.frame_statusbar.Update()
@@ -991,6 +1037,7 @@ class calibrate():
             self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak, 
             self.node.sdo['Motor']['ud'].raw))
           _id_now = self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak
+          _upd(int(min(1.0, max(0.0, _id_now / calibration_current)) * 38))  # 0→38%
           if motor_ud > 0 and _id_now > 0:
               _ramp_step = max(100, int((motor_ud * calibration_current / _id_now - motor_ud) / 4))
           else:
@@ -1000,12 +1047,14 @@ class calibrate():
           time.sleep(0.05)
           wx.Yield() # keep wx event loop alive so Windows doesn't mark the app "Not Responding"
 
-        # Drive from theta_e = -90 to 0 in 10 steps of 0.05s
+        # Drive from theta_e = -90 to 0 in 32 steps of 0.05s
         # Capture RawPosition when commanding theta_e = 0
         # Also determine e_polarity by watching the raw encoder direction
         pos0 = self.node.sdo['Encoder']['RawPosition'].raw
         startPos1 = self.node.sdo['PositionFeedback'].raw
-        for i in range(int(-0x1000), 0, int(0x1000/32)):
+        _approach1_steps = list(range(int(-0x1000), 0, int(0x1000/32)))
+        for _si, i in enumerate(_approach1_steps):
+          _upd(38 + _si * 22 // len(_approach1_steps))  # 38→60%
           self.node.sdo['Theta_e'].raw = i
           time.sleep(0.05)
           wx.Yield() # keep wx event loop alive so Windows doesn't mark the app "Not Responding"
@@ -1015,12 +1064,15 @@ class calibrate():
 
         zeroPos1 = self.node.sdo['PositionFeedback'].raw
 
-        # Drive from theta_e = +90 to 0 in 10 steps of 0.05s
+        # Drive from theta_e = +90 to 0 in 32 steps of 0.05s
         # Capture RawPosition when commanding theta_e = 0
         self.node.sdo['Theta_e'].raw = 0x1000
         _sleep_responsive(1)
+        _upd(65)
         startPos2 = self.node.sdo['PositionFeedback'].raw
-        for i in range(int(0x1000), 0, int(-0x1000/32)):
+        _approach2_steps = list(range(int(0x1000), 0, int(-0x1000/32)))
+        for _si, i in enumerate(_approach2_steps):
+          _upd(65 + _si * 23 // len(_approach2_steps))  # 65→88%
           self.node.sdo['Theta_e'].raw = i
           time.sleep(0.05)
           wx.Yield() # keep wx event loop alive so Windows doesn't mark the app "Not Responding"
@@ -1084,12 +1136,12 @@ class calibrate():
           answer = dlg.ShowModal()
           dlg.Destroy()
 
-        self.frame_statusbar.SetStatusText("Ready", 1)
-
+        _upd(100)
         if self.ADC_ON == False and self.adcWasON == True:
             self.on_off_adc(self)
 
         if calAll==False:
+          self.OnTaskComplete()
           self.Enable()
         try:
           if answer == wx.ID_YES:
