@@ -1564,6 +1564,12 @@ class calibrate():
 
             csvpath = _resolve_path(config[option]['CSV'], CONFIG_DIR)
             self.file_to_p4(None, csvpath)
+            # file_to_p4 replaces self.network with a fresh canopen.Network() that has
+            # no scanner data — rescan so subsequent INI entries can be found.
+            self.network.scanner.reset()
+            self.network.scanner.search()
+            time.sleep(0.5)
+            self.choice_id.SetItems([str(i) for i in self.network.scanner.nodes])
             _processed.append(config_id)
 
         if not _processed:
