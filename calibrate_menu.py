@@ -1137,7 +1137,7 @@ class calibrate():
           # Also determine e_polarity by watching the raw encoder direction
           pos0 = self.node.sdo['Encoder']['RawPosition'].raw
           startPos1 = self.node.sdo['PositionFeedback'].raw
-          _approach1_steps = list(range(int(-0x1000), 0, int(0x1000/32)))
+          _approach1_steps = list(range(int(-0x1000), 1, int(0x1000/32)))
           for _si, i in enumerate(_approach1_steps):
             _upd(38 + _si * 22 // len(_approach1_steps))  # 38→60%
             self.node.sdo['Theta_e'].raw = i
@@ -1145,17 +1145,17 @@ class calibrate():
             wx.Yield() # keep wx event loop alive so Windows doesn't mark the app "Not Responding"
           _sleep_responsive(0.25)
           pos1 = self.node.sdo['Encoder']['RawPosition'].raw
-          print("After approaching theta_e = 0 from -22.5, Encoder raw = {0}".format(pos1))
-  
+          print("After approaching theta_e = 0 from -90°, Encoder raw = {0}".format(pos1))
+
           zeroPos1 = self.node.sdo['PositionFeedback'].raw
-  
+
           # Drive from theta_e = +90 to 0 in 32 steps of 0.05s
           # Capture RawPosition when commanding theta_e = 0
           self.node.sdo['Theta_e'].raw = 0x1000
           _sleep_responsive(1)
           _upd(65)
           startPos2 = self.node.sdo['PositionFeedback'].raw
-          _approach2_steps = list(range(int(0x1000), 0, int(-0x1000/32)))
+          _approach2_steps = list(range(int(0x1000), -1, int(-0x1000/32)))
           for _si, i in enumerate(_approach2_steps):
             _upd(65 + _si * 23 // len(_approach2_steps))  # 65→88%
             self.node.sdo['Theta_e'].raw = i
@@ -1163,7 +1163,7 @@ class calibrate():
             wx.Yield() # keep wx event loop alive so Windows doesn't mark the app "Not Responding"
           _sleep_responsive(0.25)
           pos2 = self.node.sdo['Encoder']['RawPosition'].raw
-          print("After approaching theta_e = 0 from +22.5, Encoder raw = {0}".format(pos2))
+          print("After approaching theta_e = 0 from +90°, Encoder raw = {0}".format(pos2))
           zeroPos2 = self.node.sdo['PositionFeedback'].raw
   
           # Take the average of the two measurements, store e_zero
@@ -1175,6 +1175,12 @@ class calibrate():
               pos1 += encoder_resolution
             else:
               pos2 += encoder_resolution
+          friction_spread = abs(pos1 - pos2)
+          friction_pct = friction_spread / cts_per_elec_cyc * 100.0
+          print("Approach spread: {} counts ({:.1f}% of electrical cycle) — friction hysteresis".format(
+              friction_spread, friction_pct))
+          if friction_pct > 10.0:
+              print("  WARNING: large friction spread may bias e_zero — check motor load/friction")
           pos = (pos1 + pos2) / 2
           pos = pos % cts_per_elec_cyc
           pos = int(pos)
