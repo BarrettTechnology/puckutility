@@ -1531,36 +1531,51 @@ class calibrate():
         config = configparser.ConfigParser()
         config.read(filepath)
         options = config.sections()
+        _processed = []
+
         for option in options:
             print(option)
             config_id = int(config[option]['ID'])
             fw_version = config[option].get('fw_version')
             fwpath = _resolve_path(config[option].get('fw'), FIRMWARE_DIR)
-            if config_id == self.ID: # Check if config_id is in getNodes()
-                print("Found defaults for Puck {}!".format(config_id))
-                # firmware
-                version = self.get_version(self.node.sdo['MfgSoftwareVersion'].raw)
-                # print(version)
-                if fw_version and fwpath and version != fw_version:
-                  print('Version {} found. Updating firmware to {}'.format(version, fw_version))
-                  self.browse_fw(None, fwpath)
-                else:
-                  print('Version {} found.'.format(version))
-                csvpath = _resolve_path(config[option]['CSV'], CONFIG_DIR)
-                # print(csvpath)
-                self.file_to_p4(None, csvpath)
-                break
-            else:
-                print('Puck {} Not found...'.format(config_id))
 
-        # Should tell user calibration is required, and ask to perform 'calibrate all'
+            if config_id not in self.network.scanner.nodes:
+                print('Puck {} not found on network, skipping'.format(config_id))
+                continue
+
+            print("Found defaults for Puck {}!".format(config_id))
+
+            # Switch active node to this puck before any operations
+            idx = self.network.scanner.nodes.index(config_id)
+            self.choice_id.SetSelection(idx)
+            self.select_id(None)
+
+            version = self.get_version(self.node.sdo['MfgSoftwareVersion'].raw)
+            if fw_version and fwpath and version != fw_version:
+                print('Version {} found. Updating firmware to {}'.format(version, fw_version))
+                self.browse_fw(None, fwpath)
+                # browse_fw disconnects and rescans — re-select this puck if still present
+                if config_id in self.network.scanner.nodes:
+                    idx = self.network.scanner.nodes.index(config_id)
+                    self.choice_id.SetSelection(idx)
+                    self.select_id(None)
+            else:
+                print('Version {} found.'.format(version))
+
+            csvpath = _resolve_path(config[option]['CSV'], CONFIG_DIR)
+            self.file_to_p4(None, csvpath)
+            _processed.append(config_id)
+
+        if not _processed:
+            print('No matching pucks found in INI file on network.')
+            return
+
+        # All pucks updated — prompt for calibration once
         msg = "Calibration is required after configuration.\nWould you like to calibrate all Pucks?"
-        dlg = wx.MessageDialog(None,msg,'Warning!',wx.YES_NO | wx.ICON_WARNING)
+        dlg = wx.MessageDialog(None, msg, 'Warning!', wx.YES_NO | wx.ICON_WARNING)
         answer = dlg.ShowModal()
         if answer == wx.ID_YES:
-           self.calibrate_all_pucks(None)
-        else:
-           pass
+            self.calibrate_all_pucks(None)
         dlg.Destroy()
 
     def check_for_node(self):
