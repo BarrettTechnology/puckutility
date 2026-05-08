@@ -218,7 +218,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self._set_windows_icon(resource_path(os.path.join('images', 'BarrettIcon.ico')))
         else:
             self.SetIcon(wx.Icon(resource_path(os.path.join('images', 'BarrettIcon.png'))))
-        self.SetTitle("Puck Utility App - v1.2.0")
+        self.SetTitle("Puck Utility App - v1.2.1 - DEV")
         self.button_6.SetBackgroundColour(self.gray) # Initialize with gray button in idle
         self.Bind(wx.EVT_KEY_DOWN,self.onKeyDown)
         self.Bind(wx.EVT_KEY_UP,self.onKeyUp)
@@ -584,7 +584,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
     def getID(self):
         return self.ID
     
-    def configure_Puck(self):
+    def configure_Puck(self, configure_pdos=True):
 
         # Read and set gear ratio from object dictionary
         motor_rev = self.node.sdo.upload(0x6091,1)
@@ -623,73 +623,43 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         if self.node.rpdo[2].cob_id is None:
             self.node.rpdo[2].cob_id = 0x300 + self.node.id
 
-        # Original
-
-        # CLear the local copy of the PDO Configs
-        # print("Clearing PDOs...")
-        # for i in (1,2,3,4):
-        #     self.node.tpdo[i].clear()
-        #     self.node.rpdo[i].clear()
-
-        # 8-bytes (64 bits) per PDO - make sure there is space for each data type || split PDOs to fit (can change sync timing per PDO as well)
-        # print("Configuring TPDO3 and TPDO4 for ADC Monitor...") 
-        # self.node.tpdo[2].add_variable('i2t','Value') # (0x3025,1) i2t Value - "Value" (16 bit)
-        # self.node.tpdo[3].add_variable('CurrentFeedback') # Iq - "CurrentFeedback" (16 bit)
-        # self.node.tpdo[3].add_variable('Amplifier','Temperature') # (0x3000,2) Puck Temp - "Temperature" (16 bit)
-        # self.node.tpdo[3].add_variable('Motor','Therm') # (0x3010,3) Motor Temp - "Therm" (16 bit)
-        # self.node.tpdo[4].add_variable('PositionFeedback') # (0x6064, 0) Position - "PositionFeedback" (32 bit)
-        # self.node.tpdo[4].add_variable('VelocityFeedback')# (0x606C,0) Velocity - "VelocityFeedback" (32 bit)
-        # self.node.tpdo[2].trans_type = 10 # TX on every 10th sync
-        # self.node.tpdo[2].enabled = True
-        # self.node.tpdo[3].trans_type = 10 # TX on every 10th sync
-        # self.node.tpdo[3].enabled = True
-        # self.node.tpdo[4].trans_type = 0 # TX on every sync
-        # self.node.tpdo[4].enabled = True
-
         # NEW
 
-        print("Configuring TPDOs...")
-        try:
-            # Use self.node consistently
-            self.node.tpdo.read()
+        if configure_pdos:
+            print("Configuring TPDOs...")
+            try:
+                self.node.tpdo.read()
+                self.node.tpdo[3].clear()
+                self.node.tpdo[3].add_variable('Amplifier', 'Temperature')
+                self.node.tpdo[3].add_variable('Motor', 'Therm')
+                self.node.tpdo[3].trans_type = 10
+                self.node.tpdo[3].enabled = True
+                self.node.tpdo.save()
+            except Exception as e:
+                print(f"Failed to set up TPDOs: {e}")
+            finally:
+                # Re-sync local map with what firmware actually accepted.
+                # If save() was rejected, this prevents a local/firmware mismatch
+                # that would cause Motor.Therm to read the wrong bytes in TPDO[3].
+                try:
+                    self.node.tpdo.read()
+                except Exception:
+                    pass
 
-            # Configure TPDO 3
-            self.node.tpdo[3].clear()
-            self.node.tpdo[3].add_variable('Amplifier', 'Temperature')
-            self.node.tpdo[3].add_variable('Motor', 'Therm')
-            self.node.tpdo[3].trans_type = 10
-            self.node.tpdo[3].enabled = True
+            self.node.tpdo[1].add_callback(self.tpdo1_callback)
+            self.node.tpdo[2].add_callback(self.tpdo2_callback)
+            self.node.tpdo[3].add_callback(self.tpdo3_callback)
+            self.node.emcy.add_callback(self.on_emcy_received)
 
-            # Apply changes to the hardware
-            self.node.tpdo.save()
-
-        except Exception as e:
-            print(f"Failed to set up TPDOs: {e}")
-
-        # 2. Assign Callbacks
-        self.node.tpdo[1].add_callback(self.tpdo1_callback)
-        self.node.tpdo[2].add_callback(self.tpdo2_callback)
-        self.node.tpdo[3].add_callback(self.tpdo3_callback)
-
-        # Register the callback
-        self.node.emcy.add_callback(self.on_emcy_received)
-
-        # node.tpdo[3].clear()
-        # node.tpdo[3].add_variable('Amplifier', 'Temperature')
-        # node.tpdo[3].add_variable('Motor', 'Therm')
-        # node.tpdo[3].trans_type = 10 
-        # node.tpdo[3].enabled = True
-
-        ###
-
-        print("Writing TPDO's...")
-        try:
-            self.node.tpdo.save()
-            # Write the new (empty) RPDO config to the device
-            self.node.rpdo.save()
-        except Exception as e:
-            print(f"Failed to set up TPDO's. Error: {e}\nDisabling monitor...")
-            pass
+            print("Configuring RPDOs...")
+            try:
+                self.node.rpdo[2].clear()
+                self.node.rpdo[2].add_variable('TargetVelocity')  # 0x60FF, 32-bit
+                self.node.rpdo[2].add_variable('TargetPosition')  # 0x607A, 32-bit
+                self.node.rpdo[2].enabled = True
+                self.node.rpdo.save()
+            except Exception as e:
+                print(f"Failed to configure RPDOs: {e}")
 
         # Each time we receive this PDO from the puck, execute a callback
         # node.tpdo[1].add_callback(self.tpdo1_callback)
@@ -757,7 +727,22 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         error_msg = f"{prefix} {hex(code)}: {emcy_error.get_desc()}"
 
         print(error_msg)
+        if emcy_error.data:
+            print(f"  EMCY data: {emcy_error.data.hex()}")
         wx.CallAfter(self.frame_statusbar.SetStatusText, error_msg, 1)
+
+        if code == 0x3220:  # Voltage fault — read bus voltage vs. limits
+            def _log_voltage():
+                try:
+                    bus_v = self.node.sdo['Amplifier']['BusVoltage'].raw
+                    nom_v = self.node.sdo['Amp']['NominalBusVoltage'].raw
+                    min_v = self.node.sdo['Object2384']['AmplifierMinVoltage'].raw
+                    max_v = self.node.sdo['Object2384']['AmplifierMaxVoltage'].raw
+                    print(f"  BusVoltage={bus_v}  Nominal={nom_v}  "
+                          f"Min={min_v}  Max={max_v}")
+                except Exception as _e:
+                    print(f"  Could not read voltage details: {_e}")
+            wx.CallAfter(_log_voltage)
 
         if is_fault:
             # SetSelection on wxGTK fires EVT_CHOICE, which would trigger
@@ -1538,23 +1523,35 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
         if quick_test == 1:  # Torque
             print("Setting Mode = TORQUE")
+            self.node.sdo["TargetTorque"].raw = 0
+            self.node.rpdo[1]["TargetTorque"].raw = 0
             self.node.sdo["SetModeOfOperation"].raw = MODE_PROFILE_TRQ
             self.node.rpdo[1]["SetModeOfOperation"].raw = MODE_PROFILE_TRQ
             self.node.rpdo[1]["ControlWord"].raw = OP_ENABLED
+            self.text_testvalue.SetValue("0")
 
         elif quick_test == 2:  # Velocity
             print("Setting Mode = VELOCITY")
+            self.node.sdo["TargetVelocity"].raw = 0
+            self.node.rpdo[2]["TargetVelocity"].raw = 0
+            self.node.rpdo[2].transmit()
             self.node.sdo["SetModeOfOperation"].raw = MODE_PROFILE_VEL
             self.node.rpdo[1]["SetModeOfOperation"].raw = MODE_PROFILE_VEL
             self.node.rpdo[1]["ControlWord"].raw = OP_ENABLED
+            self.text_testvalue.SetValue("0")
 
         elif quick_test == 3:  # Position
             print("Setting Mode = POSITION")
+            _cur_pos = self.node.sdo["PositionFeedback"].raw
+            self.node.sdo["TargetPosition"].raw = _cur_pos
+            self.node.rpdo[2]["TargetPosition"].raw = _cur_pos
+            self.node.rpdo[2].transmit()
             self.node.sdo["ProfileVelocity"].raw = 130000
             self.node.sdo["SetModeOfOperation"].raw = MODE_PROFILE_POS
             self.node.sdo["ControlWord"].raw = 0x2F  # OP_ENABLED | new setpoint
             self.node.rpdo[1]["SetModeOfOperation"].raw = MODE_PROFILE_POS
             self.node.rpdo[1]["ControlWord"].raw = 0x2F
+            self.text_testvalue.SetValue("0")
 
         elif quick_test == 4:  # Homing
             print("Setting Mode = HOMING")
