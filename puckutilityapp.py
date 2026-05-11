@@ -206,8 +206,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
         self.peak_factor = 0.75 # % Peak for Current Colors
 
-        self.ctrlKey = False
-
         # Setup Window + Icon. On Windows we have to wire the icon through
         # four channels to cover every shell surface; see _set_windows_icon.
         # Linux GTK ignores .ico, so fall back to the .png there. Resolve
@@ -220,9 +218,10 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.SetIcon(wx.Icon(resource_path(os.path.join('images', 'BarrettIcon.png'))))
         self.SetTitle("Puck Utility App - v1.2.1 - DEV")
         self.button_6.SetBackgroundColour(self.gray) # Initialize with gray button in idle
-        self.Bind(wx.EVT_KEY_DOWN,self.onKeyDown)
-        self.Bind(wx.EVT_KEY_UP,self.onKeyUp)
+        self.Bind(wx.EVT_CHAR_HOOK, self.onKeyDown)  # EVT_CHAR_HOOK fires before focused child consumes the key
+        self.Bind(wx.EVT_KEY_UP, self.onKeyUp)
         self.Bind(wx.EVT_CLOSE, self.onCloseFrame)
+        self.Bind(wx.EVT_ACTIVATE, self._on_activate)  # ensure frame has focus for hotkeys
         self.backgroundBMP = wx.Bitmap(resource_path("images/Background.png")) # recreating the BMP each rewrite causes massive lagging this is much better!
         # Bind backgound function to assign bitmap
         self.Bind(wx.EVT_ERASE_BACKGROUND, self.OnEraseBackground)
@@ -259,7 +258,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         # Disable the unimplemented menu items
         menu = "Menu"
         for item in [#"Calibrate All", 
-          "Current Sense Slope", "Encoder Direction",
+          "Current Sense Slope", "Encoder Direction", "Current Sense Timing", # Comment out Current Sense Timing to enable cal feature
           "Tune Gains...", "Save to CSV..."]:
           menu_item = self.frame_menubar.FindMenuItem(menu, item)
           self.frame_menubar.Enable(menu_item, False)
@@ -279,6 +278,23 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
         # Initial Positioniing
         self.RepositionGauge()
+
+        # Intercept field-1 status writes: keep gauge and text from competing.
+        # "Progress: X%" text  → show gauge (UpdateUI may call this while gauge is hidden).
+        # Any other field-1 text → hide gauge so the full field is available for the text.
+        _orig_set_status = self.frame_statusbar.SetStatusText
+        def _status_sync_gauge(text, number=0):
+            if number == 1:
+                if text.startswith("Progress:"):
+                    if not self.progress.IsShown():
+                        self.progress.Show()
+                        self.frame_statusbar.Refresh()
+                else:
+                    if self.progress.IsShown():
+                        self.progress.Hide()
+                        self.frame_statusbar.Refresh()
+            _orig_set_status(text, number)
+        self.frame_statusbar.SetStatusText = _status_sync_gauge
 
         # NOW need to work on pass the update thread into other programs??
         self.update_queue = multiprocessing.Queue()
@@ -320,7 +336,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             style = child.GetWindowStyle() & (wx.ALIGN_CENTER_HORIZONTAL | wx.ALIGN_RIGHT)
             new = widgets.TransparentText(self, wx.ID_ANY, child.GetLabel(), style=style)
             new.SetFont(child.GetFont())
-            new.SetForegroundColour(child.GetForegroundColour())
+            new.SetForegroundColour(wx.BLACK)  # don't copy system colour — may be white on some Ubuntu themes
             new.SetMinSize(child.GetMinSize())
             sizer = child.GetContainingSizer()
             if sizer:
@@ -547,32 +563,33 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
     # HOTKEYS
 
-    def onKeyUp(self,event):
-        if event.GetKeyCode() == 308:
-            self.ctrlKey = False
-        else:
-            event.Skip()
+    def _on_activate(self, event):
+        # On GTK, EVT_CHAR_HOOK only fires when the top-level frame is the active
+        # (focused) window. Grab focus on activation so hotkeys work immediately
+        # without requiring a click on the frame background first.
+        if event.GetActive():
+            self.SetFocus()
+        event.Skip()
+
+    def onKeyUp(self, event):
+        event.Skip()
 
     def onKeyDown(self,event):
         # https://archie-adams.github.io/keyboard-shortcut-map-maker/ to make map!
         # print(event.GetKeyCode())# Use to print key code
-        if event.GetKeyCode() == 27: # ESC
+        if event.GetKeyCode() == wx.WXK_ESCAPE:
             self.onCloseFrame(None)
-        elif event.GetKeyCode() == 308: # CTRL 
-            self.ctrlKey = True
-        elif self.ctrlKey == True and event.GetKeyCode() == 67: # CTRL-C = Cal
+        elif event.ControlDown() and event.GetKeyCode() == 67: # CTRL-C = Cal
             self.calibrate_all(None)
-        elif self.ctrlKey == True and event.GetKeyCode() == 85: # CTRL-U = Update # allow .ini system config files?
+        elif event.ControlDown() and event.GetKeyCode() == 85: # CTRL-U = Update
             self.update_all(None)
-        elif self.ctrlKey == True and event.GetKeyCode() == 83: # CTRL-S = Scan 
+        elif event.ControlDown() and event.GetKeyCode() == 83: # CTRL-S = Scan
             self.scan_pucks(None)
-        elif self.ctrlKey == True and event.GetKeyCode() == 80: # CTRL-P = Play/Pause ADC Monitor
-            # Trigger button 
+        elif event.ControlDown() and event.GetKeyCode() == 80: # CTRL-P = Play/Pause ADC Monitor
             if self.ADC_ON == False:
                 self.onoff1.SetValue(1)
             elif self.ADC_ON == True:
                 self.onoff1.SetValue(0)
-            # ON/OFF 
             self.on_off_adc(self)
         else:
             event.Skip()

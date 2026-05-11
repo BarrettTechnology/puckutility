@@ -201,10 +201,12 @@ class calibrate():
 
             # Fixed settle then high-sample-count average for sub-count bias precision.
             # Convergence polling was abandoned: this ADC's noise floor exceeds any
-            # practical threshold, so a fixed 3 s settle is used instead.
+            # practical threshold for variance-based settling, so a fixed settle is used.
+            # The mean converges much faster than the noise floor — reduce _SETTLE if
+            # ibias results are consistent (5–10× the firmware filter time constant).
             _N_AVG  = 100
-            _SETTLE = 3.0
-            print("Waiting {:.0f} s for iSense filters to settle...".format(_SETTLE))
+            _SETTLE = 0.5
+            print("Waiting {:.0f} ms for iSense filters to settle...".format(_SETTLE * 1000))
             _settle_end = time.time() + _SETTLE
             while time.time() < _settle_end:
                 _frac = 1.0 - (_settle_end - time.time()) / _SETTLE

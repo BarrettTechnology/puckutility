@@ -258,6 +258,7 @@ class TransparentText(wx.Control):
         align = style & (wx.ALIGN_CENTER_HORIZONTAL | wx.ALIGN_RIGHT)
         self._align = align if align else wx.ALIGN_LEFT
         self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
+        self.SetForegroundColour(wx.BLACK)  # system theme may default to white on some Ubuntu versions
         self.Bind(wx.EVT_PAINT, self._on_paint)
         self.Bind(wx.EVT_ERASE_BACKGROUND, lambda e: None)
 
