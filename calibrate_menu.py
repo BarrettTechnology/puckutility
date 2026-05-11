@@ -236,7 +236,10 @@ class calibrate():
             self.node.sdo['Save']['Single'].raw = ((0x3009 << 8) | 0x03) # Save Beta iSense cal to EE
 
             # Check Bounds for error!!
-            error = 0.5 # 5% error # .03 # 3% error
+            # 5% (~102 counts) is a conservative sentinel. Physical clipping limit is
+            # ~19% (387 counts) for a channel gain of 3530/4096 at 28.24 A peak / 30 A range:
+            #   headroom = 2048 × (gain/4096) × (1 − i_peak/i_range) = 387 counts
+            error = 0.05 # 5%
 
             a_bias = self.node.sdo['Alpha']['Bias'].raw
             b_bias = self.node.sdo['Beta']['Bias'].raw
@@ -245,7 +248,11 @@ class calibrate():
             print("Setting Mode = IDLE")
             self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
 
-            if a_bias > 2048 * (1 + error) or a_bias < 2048 * (1 - error) or b_bias > 2048 * (1 + error) or b_bias < 2048 * (1 - error):
+            out_of_bounds = (
+                a_bias > 2048 * (1 + error) or a_bias < 2048 * (1 - error) or
+                b_bias > 2048 * (1 + error) or b_bias < 2048 * (1 - error)
+            )
+            if out_of_bounds:
                 print('iSense Bias out of bounds!')
                 msg = "iSense Bias out of bounds!" \
                 "\n\nAlpha Bias: {}" \
@@ -259,7 +266,7 @@ class calibrate():
                 dlg = wx.MessageDialog(None, msg, 'Warning!', wx.YES_NO | wx.ICON_WARNING)
                 answer = dlg.ShowModal()
                 dlg.Destroy()
-                print("Encoder readings unstable...")
+                print("iSense Bias readings out of bounds...")
 
             _upd(100)
             if self.ADC_ON == False and self.adcWasON == True:
@@ -267,13 +274,9 @@ class calibrate():
             if calAll == False:
                 self.OnTaskComplete()
                 self.Enable()
-            try:
-                if answer == wx.ID_YES:
-                    return True
-                if answer == wx.ID_NO:
-                    return False
-            except:
-                pass
+            if out_of_bounds:
+                return answer == wx.ID_YES
+            return True
 
         except Exception as _exc:
             if calAll:
@@ -457,7 +460,8 @@ class calibrate():
             # Check Bounds for error!! Can increase to 10% if needed
             error = 0.10 # 10%
 
-            if gainfactor > round(4096 * (1 + error)) or gainfactor < round(4096 * (1 - error)):
+            out_of_bounds = gainfactor > round(4096 * (1 + error)) or gainfactor < round(4096 * (1 - error))
+            if out_of_bounds:
                 print('Beta Gainfactor out of bounds!')
                 msg = "Beta Gainfactor out of bounds! \n\nGainfactor: {}" \
                     "\nAcceptable Range: {} - {}" \
@@ -469,6 +473,8 @@ class calibrate():
                 dlg = wx.MessageDialog(None, msg, 'Warning!', wx.YES_NO | wx.ICON_WARNING)
                 answer = dlg.ShowModal()
                 dlg.Destroy()
+                if answer == wx.ID_NO:
+                    return False
 
             self.node.sdo['Save']['Single'].raw = ((0x3008 << 8) | 0x06) # Save Alpha gainfactor to EE
             self.node.sdo['Save']['Single'].raw = ((0x3009 << 8) | 0x06) # Save Beta gainfactor to EE
@@ -479,13 +485,7 @@ class calibrate():
             if calAll == False:
                 self.OnTaskComplete()
                 self.Enable()
-            try:
-                if answer == wx.ID_YES:
-                    return True
-                if answer == wx.ID_NO:
-                    return False
-            except:
-                pass
+            return True
 
         except Exception as _exc:
             if calAll:
