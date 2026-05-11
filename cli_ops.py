@@ -1,11 +1,13 @@
-# Headless CLI helpers for puckutilityapp. No wx dependency — these run when
-# the app is invoked with --scan / --flash / --config / --calibrate /
-# --system-config (see puckutilityapp.py's __main__).
+# Headless CLI helpers for puckutilityapp. Runs when the app is invoked with
+# --scan / --flash / --config / --calibrate / --system-config.
+#
+# Calibration logic lives entirely in calibrate_menu.py. The _HeadlessCalibrateAdapter
+# class below satisfies the wx-frame interface that the calibrate mixin expects, so
+# the CLI and GUI always execute identical code paths.
 
 import os
 import sys
 import time
-import math
 import platform
 import configparser
 
@@ -17,41 +19,116 @@ from canopen_runner import (
     CLEAR_FAULT, SHUTDOWN, OP_ENABLED,
     MODE_IDLE, MODE_PHASE_VOLTAGE_ANGLE,
 )
+from paths import resource_path, FIRMWARE_DIR, CONFIG_DIR, _resolve_path
 
 
-def resource_path(relative_path):
-    # Anchor sibling-folder lookups on the running .exe in PyInstaller
-    # --onefile builds (where __file__ points at the _MEIPASS temp extract
-    # dir, but the build script copies firmware/, config/, etc. next to
-    # the .exe). Falls back to __file__ for normal `python` runs.
-    if getattr(sys, 'frozen', False):
-        base = os.path.dirname(sys.executable)
-    else:
-        base = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(base, relative_path)
+# ---------------------------------------------------------------------------
+# wx bootstrap — wx is always in the venv (it's listed in requirements.txt).
+# A minimal App is required so that wx.Yield() inside _sleep_responsive() is
+# a safe no-op rather than raising "No wxApp" on some platforms.
+# ---------------------------------------------------------------------------
+import wx as _wx
+if not _wx.GetApp():
+    _wx.App(False)
 
 
-# Conventional locations for system-config payloads.
-FIRMWARE_DIR = resource_path('firmware')
-CONFIG_DIR = resource_path('config')
+# ---------------------------------------------------------------------------
+# Headless adapter — lets calibrate_menu methods run without a live wx frame.
+# ---------------------------------------------------------------------------
+from calibrate_menu import calibrate as _CalibrateMixin
 
 
-def _resolve_path(value, folder):
-    """Resolve a path value read from a system-config INI.
+class _HeadlessStatusBar:
+    def SetStatusText(self, text, number=0):
+        if number == 0 and text:
+            print(f"  [{text}]")
+    def Update(self):  pass
+    def Refresh(self): pass
 
-    Strips optional surrounding double-quotes, then:
-      - bare filenames (no path separator) are resolved under `folder`
-      - absolute paths and any value containing a path separator are
-        returned as-is, so older .ini files with full paths still work.
-    """
-    if not value:
-        return value
-    if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
-        value = value[1:-1]
-    if os.path.isabs(value) or '/' in value or '\\' in value:
-        return value
-    return os.path.join(folder, value)
 
+class _HeadlessChoice:
+    def GetSelection(self):    return 0
+    def SetSelection(self, v): pass
+
+
+class _HeadlessCalibrateAdapter(_CalibrateMixin):
+    """Thin wx-free wrapper around the calibrate mixin for CLI use."""
+
+    def __init__(self, node, network=None):
+        self.node             = node
+        self.network          = network
+        self.ID               = node.id
+        self.ADC_ON           = False
+        self.adcWasON         = False
+        self.lastMode         = 0
+        self.requireCal       = True
+        self.frame_statusbar  = _HeadlessStatusBar()
+        self.choice_test      = _HeadlessChoice()
+
+    # --- interface stubs expected by the calibrate mixin ---
+    def getID(self):               return self.node.id
+    def check_for_node(self):      return True
+    def Disable(self):             pass
+    def Enable(self):              pass
+    def OnStartTask(self, event):  pass
+    def OnTaskComplete(self):      pass
+    def UpdateUI(self, value):     pass
+    def on_off_adc(self, event):   pass
+
+    # --- prompt overrides: CLI uses stdin instead of wx dialogs ---
+    def _prompt(self, title, msg):
+        print(f"\n  WARNING [{title}]\n  {msg}")
+        return input("  Continue calibration? [y/n]: ").strip().lower() == 'y'
+
+    def _prompt_ok(self, title, msg):
+        print(f"\n  ERROR [{title}]\n  {msg}")
+
+
+# ---------------------------------------------------------------------------
+# Public CLI calibration helpers — thin wrappers around the shared methods.
+# ---------------------------------------------------------------------------
+
+def _cli_test_encoder(node, network=None):
+    return _HeadlessCalibrateAdapter(node, network).test_encoder(None, calAll=True)
+
+
+def _cli_calibrate_ibias(node, network=None):
+    return _HeadlessCalibrateAdapter(node, network).calibrate_ibias(
+        None, calAll=True, _upd=lambda v: None)
+
+
+def _cli_calibrate_igainfactor(node, network=None):
+    return _HeadlessCalibrateAdapter(node, network).calibrate_igainfactor(
+        None, calAll=True, _upd=lambda v: None)
+
+
+def _cli_calibrate_enczero(node, network=None):
+    return _HeadlessCalibrateAdapter(node, network).calibrate_enczero(
+        None, calAll=True, _upd=lambda v: None)
+
+
+def _cli_calibrate_all(node, network=None):
+    adapter = _HeadlessCalibrateAdapter(node, network)
+    print(f"  Running full calibration sequence for node {node.id}...")
+    if not adapter.test_encoder(None, calAll=True):
+        print("  Calibration aborted.")
+        return False
+    if not adapter.calibrate_ibias(None, calAll=True, _upd=lambda v: None):
+        print("  Calibration aborted.")
+        return False
+    if not adapter.calibrate_igainfactor(None, calAll=True, _upd=lambda v: None):
+        print("  Calibration aborted.")
+        return False
+    if adapter.calibrate_enczero(None, calAll=True, _upd=lambda v: None) is False:
+        print("  Calibration aborted.")
+        return False
+    print("  Calibration complete!")
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Network / flash / config helpers
+# ---------------------------------------------------------------------------
 
 class CLIProgress:
     """Queue-compatible progress sink for CLI use (replaces multiprocessing.Queue)."""
@@ -113,187 +190,6 @@ def _cli_config(can_device, node_id, csv_path):
     save_net.disconnect()
 
 
-def _cli_test_encoder(node):
-    print("  Testing encoder stability...")
-    node.sdo["SetModeOfOperation"].raw = MODE_IDLE
-    time.sleep(1)
-    t_end = time.time() + 1
-    readings = []
-    while time.time() < t_end:
-        readings.append(node.sdo['PositionFeedback'].raw)
-    variation = max(readings) - min(readings)
-    max_allowed = 8
-    print(f"  Encoder variation: {variation} counts (max {max_allowed})")
-    if variation > max_allowed:
-        print(f"  WARNING: Encoder readings unstable! "
-              f"variation={variation}, max acceptable={max_allowed}")
-        resp = input("  Continue calibration? [y/n]: ").strip().lower()
-        return resp == 'y'
-    return True
-
-
-def _cli_calibrate_ibias(node):
-    print("  Calibrating current sense bias (ibias)...")
-    node.sdo["ControlWord"].raw = CLEAR_FAULT
-    node.sdo["ControlWord"].raw = SHUTDOWN
-    node.sdo["ControlWord"].raw = OP_ENABLED
-    node.sdo['Theta_e'].raw = 0x7FFF
-    node.sdo['Motor']['ud'].raw = 0
-    node.sdo["SetModeOfOperation"].raw = MODE_PHASE_VOLTAGE_ANGLE
-    time.sleep(1)
-    for ch in ['Alpha', 'Beta']:
-        print(f"  Previous {ch} bias = {node.sdo[ch]['Bias'].raw}")
-        filt = node.sdo[ch]['Filtered'].raw
-        filt = (filt >> 4) + ((filt & 0x0008) >> 3)
-        node.sdo[ch]['Bias'].raw = filt
-        print(f"  New {ch} bias = {filt}")
-    node.sdo['Save']['Single'].raw = ((0x3008 << 8) | 0x03)
-    node.sdo['Save']['Single'].raw = ((0x3009 << 8) | 0x03)
-    a_bias = node.sdo['Alpha']['Bias'].raw
-    b_bias = node.sdo['Beta']['Bias'].raw
-    node.sdo["SetModeOfOperation"].raw = MODE_IDLE
-    error = 0.5
-    lo, hi = round(2048 * (1 - error)), round(2048 * (1 + error))
-    if a_bias > hi or a_bias < lo or b_bias > hi or b_bias < lo:
-        print(f"  WARNING: iSense bias out of bounds! "
-              f"Alpha={a_bias}, Beta={b_bias}, acceptable range {lo}-{hi}")
-        resp = input("  Continue calibration? [y/n]: ").strip().lower()
-        return resp == 'y'
-    return True
-
-
-def _cli_calibrate_igainfactor(node):
-    print("  Calibrating current sense gain factor (igainfactor)...")
-    node.sdo['Alpha']['Gainfactor'].raw = 4096
-    node.sdo['Beta']['Gainfactor'].raw = 4096
-    node.sdo["ControlWord"].raw = CLEAR_FAULT
-    node.sdo["ControlWord"].raw = SHUTDOWN
-    node.sdo["ControlWord"].raw = OP_ENABLED
-    node.sdo["SetModeOfOperation"].raw = MODE_PHASE_VOLTAGE_ANGLE
-    node.sdo['Theta_e'].raw = 0x7FFF
-    cal_current = node.sdo['Calibration']['i_cal'].raw
-    i_peak = node.sdo['Calibration']['i_peak'].raw
-    if cal_current > i_peak:
-        cal_current = i_peak
-    time.sleep(1)
-    motor_ud = 0
-    motor_id = node.sdo['Motor']['id'].raw
-    while (motor_id < 1000 and node.sdo['Motor']['id'].raw / 1000.0 * i_peak) < cal_current and motor_ud < 32000:
-        motor_ud += 100
-        node.sdo['Motor']['ud'].raw = motor_ud
-        time.sleep(0.05)
-    time.sleep(1)
-    a_filt = node.sdo['Alpha']['Filtered'].raw
-    a_filt = (a_filt >> 4) + ((a_filt & 0x0008) >> 3)
-    node.sdo['Theta_e'].raw = -0x4000
-    time.sleep(1)
-    b_filt = node.sdo['Beta']['Filtered'].raw
-    b_filt = (b_filt >> 4) + ((b_filt & 0x0008) >> 3)
-    node.sdo["SetModeOfOperation"].raw = MODE_IDLE
-    abias = node.sdo['Alpha']['Bias'].raw
-    bbias = node.sdo['Beta']['Bias'].raw
-    gf_raw = 4096 * (a_filt - abias) / (b_filt - bbias)
-    node.sdo['Beta']['Gainfactor'].raw = gf_raw
-    gainfactor = round(gf_raw)
-    print(f"  New Beta Gainfactor = {gainfactor}")
-    node.sdo['Save']['Single'].raw = ((0x3008 << 8) | 0x06)
-    node.sdo['Save']['Single'].raw = ((0x3009 << 8) | 0x06)
-    error = 0.10
-    lo, hi = round(4096 * (1 - error)), round(4096 * (1 + error))
-    if gainfactor > hi or gainfactor < lo:
-        print(f"  WARNING: Beta Gainfactor out of bounds! "
-              f"{gainfactor}, acceptable range {lo}-{hi}")
-        resp = input("  Continue calibration? [y/n]: ").strip().lower()
-        return resp == 'y'
-    return True
-
-
-def _cli_calibrate_enczero(node):
-    print("  Calibrating encoder zero...")
-    node.sdo["ControlWord"].raw = CLEAR_FAULT
-    node.sdo["ControlWord"].raw = SHUTDOWN
-    node.sdo["ControlWord"].raw = OP_ENABLED
-    node.sdo["SetModeOfOperation"].raw = MODE_PHASE_VOLTAGE_ANGLE
-    node.sdo['Theta_e'].raw = -0x1000
-    cal_current = node.sdo['Calibration']['i_cal'].raw
-    i_peak = node.sdo['Calibration']['i_peak'].raw
-    if cal_current > i_peak:
-        cal_current = i_peak
-    motor_ud = 0
-    motor_id = node.sdo['Motor']['id'].raw
-    while (motor_id < 1000 and node.sdo['Motor']['id'].raw / 1000.0 * i_peak) < cal_current and motor_ud < 32000:
-        motor_ud += 100
-        node.sdo['Motor']['ud'].raw = motor_ud
-        time.sleep(0.05)
-    pos0 = node.sdo['Encoder']['RawPosition'].raw
-    startPos1 = node.sdo['PositionFeedback'].raw
-    for i in range(int(-0x1000), 0, int(0x1000 / 32)):
-        node.sdo['Theta_e'].raw = i
-        time.sleep(0.05)
-    time.sleep(0.25)
-    pos1 = node.sdo['Encoder']['RawPosition'].raw
-    zeroPos1 = node.sdo['PositionFeedback'].raw
-    node.sdo['Theta_e'].raw = 0x1000
-    time.sleep(1)
-    startPos2 = node.sdo['PositionFeedback'].raw
-    for i in range(int(0x1000), 0, int(-0x1000 / 32)):
-        node.sdo['Theta_e'].raw = i
-        time.sleep(0.05)
-    time.sleep(0.25)
-    pos2 = node.sdo['Encoder']['RawPosition'].raw
-    zeroPos2 = node.sdo['PositionFeedback'].raw
-    enc_res = node.sdo['EncoderConfig']['Resolution'].raw
-    poles = node.sdo['Calibration']['poles'].raw
-    cts_per_elec = enc_res * 2 / poles
-    if abs(pos1 - pos2) > enc_res / 2:
-        if pos1 > pos2:
-            pos1 += enc_res
-        else:
-            pos2 += enc_res
-    pos = int(((pos1 + pos2) / 2) % cts_per_elec)
-    if abs(pos1 - pos0) < cts_per_elec / 2:
-        e_polarity = math.copysign(1, pos1 - pos0)
-    else:
-        e_polarity = -math.copysign(1, pos1 - pos0)
-    node.sdo['Calibration']['e_polarity'].raw = e_polarity
-    node.sdo['Save']['Single'].raw = ((0x3011 << 8) | 0x02)
-    print(f"  Electrical polarity = {e_polarity}")
-    print(f"  Previous e_zero = {node.sdo['Calibration']['e_zero'].raw}, new e_zero = {pos}")
-    node.sdo['Calibration']['e_zero'].raw = pos
-    node.sdo['Save']['Single'].raw = ((0x3011 << 8) | 0x01)
-    pos_change1 = round(abs(startPos1 - zeroPos1) * (360 / 4096) * poles)
-    pos_change2 = round(abs(startPos2 - zeroPos2) * (360 / 4096) * poles)
-    node.sdo["SetModeOfOperation"].raw = MODE_IDLE
-    error = 0.25
-    min_jump = round(22.5 * (1 - error))
-    if pos_change1 < min_jump or pos_change2 < min_jump:
-        cal_torque = cal_current * node.sdo['Calibration']['kt'].raw / 1000
-        print(f"  WARNING: Encoder zero failed! "
-              f"Jump1={pos_change1}°, Jump2={pos_change2}°, expected >={min_jump}°, "
-              f"cal torque={cal_torque}mNm")
-        resp = input("  Continue calibration? [y/n]: ").strip().lower()
-        return resp == 'y'
-    return True
-
-
-def _cli_calibrate_all(node):
-    print("  Running full calibration sequence...")
-    if not _cli_test_encoder(node):
-        print("  Calibration aborted.")
-        return False
-    if not _cli_calibrate_ibias(node):
-        print("  Calibration aborted.")
-        return False
-    if not _cli_calibrate_igainfactor(node):
-        print("  Calibration aborted.")
-        return False
-    if _cli_calibrate_enczero(node) is False:
-        print("  Calibration aborted.")
-        return False
-    print("  Calibration complete!")
-    return True
-
-
 def _cli_system_config(can_device, ini_path):
     cfg = configparser.ConfigParser()
     cfg.read(ini_path)
@@ -303,18 +199,18 @@ def _cli_system_config(can_device, ini_path):
 
     configured_ids = []
     for section in cfg.sections():
-        node_id = int(cfg[section]['ID'])
+        node_id  = int(cfg[section]['ID'])
         csv_path = _resolve_path(cfg[section]['CSV'], CONFIG_DIR)
         fw_version = cfg[section].get('fw_version')
-        fw_path = _resolve_path(cfg[section].get('fw'), FIRMWARE_DIR)
+        fw_path  = _resolve_path(cfg[section].get('fw'), FIRMWARE_DIR)
         if node_id not in found_ids:
             print(f"Node {node_id} ({section}) not found on bus, skipping.")
             continue
         print(f"\n--- Configuring node {node_id} ({section}) ---")
         if fw_version and fw_path:
-            ver_net = _cli_make_network(can_device)
+            ver_net  = _cli_make_network(can_device)
             ver_node = ver_net.add_node(node_id, 'puck4.eds')
-            version = get_version(ver_node.sdo['MfgSoftwareVersion'].raw)
+            version  = get_version(ver_node.sdo['MfgSoftwareVersion'].raw)
             ver_net.disconnect()
             if version != fw_version:
                 print(f"  Firmware {version} → updating to {fw_version}...")
@@ -332,7 +228,7 @@ def _cli_system_config(can_device, ini_path):
         if resp == 'y':
             for node_id in configured_ids:
                 print(f"\n--- Calibrating node {node_id} ---")
-                cal_net = _cli_make_network(can_device)
+                cal_net  = _cli_make_network(can_device)
                 cal_node = cal_net.add_node(node_id, 'puck4.eds')
-                _cli_calibrate_all(cal_node)
+                _cli_calibrate_all(cal_node, cal_net)
                 cal_net.disconnect()

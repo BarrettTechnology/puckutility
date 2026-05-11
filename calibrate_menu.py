@@ -10,7 +10,7 @@ from canopen_runner import (
     CLEAR_FAULT, SHUTDOWN, OP_ENABLED,
     MODE_IDLE, MODE_PHASE_VOLTAGE_ANGLE, MODE_PROFILE_TRQ,
 )
-from cli_ops import _resolve_path, FIRMWARE_DIR, CONFIG_DIR
+from paths import _resolve_path, FIRMWARE_DIR, CONFIG_DIR
 
 # TODO - No active issues
 
@@ -81,7 +81,19 @@ class calibrate():
         else:
             _msg = "Calibration fault: {}".format(exc)
 
-        dlg = wx.MessageDialog(None, _msg, "Calibration Fault", wx.OK | wx.ICON_ERROR)
+        self._prompt_ok("Calibration Fault", _msg)
+
+    def _prompt(self, title, msg):
+        """YES/NO dialog — returns True to continue, False to abort.
+        Subclasses (or the headless CLI adapter) override this."""
+        dlg = wx.MessageDialog(None, msg, title, wx.YES_NO | wx.ICON_WARNING)
+        answer = dlg.ShowModal()
+        dlg.Destroy()
+        return answer == wx.ID_YES
+
+    def _prompt_ok(self, title, msg):
+        """Informational OK-only dialog. Subclasses override for headless use."""
+        dlg = wx.MessageDialog(None, msg, title, wx.OK | wx.ICON_ERROR)
         dlg.ShowModal()
         dlg.Destroy()
 
@@ -263,10 +275,6 @@ class calibrate():
                 "\n- Verify phase leads are properly connected" \
                 "\n\nWould you like to continue calibration?".format(
                     a_bias, b_bias, round(2048*(1-error)), round(2048*(1+error)))
-                dlg = wx.MessageDialog(None, msg, 'Warning!', wx.YES_NO | wx.ICON_WARNING)
-                answer = dlg.ShowModal()
-                dlg.Destroy()
-                print("iSense Bias readings out of bounds...")
 
             _upd(100)
             if self.ADC_ON == False and self.adcWasON == True:
@@ -275,7 +283,7 @@ class calibrate():
                 self.OnTaskComplete()
                 self.Enable()
             if out_of_bounds:
-                return answer == wx.ID_YES
+                return self._prompt('Warning!', msg)
             return True
 
         except Exception as _exc:
@@ -470,10 +478,7 @@ class calibrate():
                     "\n- Verify phase leads are properly connected" \
                     "\n\nWould you like to continue calibration?".format(
                         gainfactor, round(4096*(1-error)), round(4096*(1+error)))
-                dlg = wx.MessageDialog(None, msg, 'Warning!', wx.YES_NO | wx.ICON_WARNING)
-                answer = dlg.ShowModal()
-                dlg.Destroy()
-                if answer == wx.ID_NO:
+                if not self._prompt('Warning!', msg):
                     return False
 
             self.node.sdo['Save']['Single'].raw = ((0x3008 << 8) | 0x06) # Save Alpha gainfactor to EE
@@ -1104,7 +1109,7 @@ class calibrate():
   
           # Write theta_e, ud, StatsMode, vel
           # theta_e is 16-bit signed from -pi to +pi
-          self.node.sdo['Theta_e'].raw = -0x1000 # -pi/2
+          self.node.sdo['Theta_e'].raw = -0x1000 # -pi/8 (-22.5°)
   
           # Read this motor's calibration current (mA)
           calibration_current = self.node.sdo['Calibration']['i_cal'].raw
@@ -1147,7 +1152,7 @@ class calibrate():
             wx.Yield() # keep wx event loop alive so Windows doesn't mark the app "Not Responding"
           _sleep_responsive(0.25)
           pos1 = self.node.sdo['Encoder']['RawPosition'].raw
-          print("After approaching theta_e = 0 from -90°, Encoder raw = {0}".format(pos1))
+          print("After approaching theta_e = 0 from -22.5°, Encoder raw = {0}".format(pos1))
 
           zeroPos1 = self.node.sdo['PositionFeedback'].raw
 
@@ -1165,7 +1170,7 @@ class calibrate():
             wx.Yield() # keep wx event loop alive so Windows doesn't mark the app "Not Responding"
           _sleep_responsive(0.25)
           pos2 = self.node.sdo['Encoder']['RawPosition'].raw
-          print("After approaching theta_e = 0 from +90°, Encoder raw = {0}".format(pos2))
+          print("After approaching theta_e = 0 from +22.5°, Encoder raw = {0}".format(pos2))
           zeroPos2 = self.node.sdo['PositionFeedback'].raw
   
           # Take the average of the two measurements, store e_zero
@@ -1412,36 +1417,25 @@ class calibrate():
         print("Max Pos: {} Min Pos: {} Diff: {}".format(max(Pos), min(Pos), posDif))
         maxDif = 8
 
-        if(posDif <= maxDif):
-          # Good, passed test
-          pass
-        if(posDif > maxDif):
-          # Bad Encoder reading (error dialog! debug steps)
-          # Offer to continue or cancel calibration?
+        out_of_bounds = posDif > maxDif
+        if out_of_bounds:
           msg = "Encoder Readings Unstable! \n\nEncoder variation: {} counts" \
           "\nMax Acceptable Variation: {} counts" \
           "\n\nDebugging steps:" \
           "\n- Ensure magnet to encoder spacing is 1.5mm +/- 0.5mm" \
           "\n- Verify magnet concentric to the shaft and rotates properly" \
-          "\n\nWould you like to continue calibration?"  .format(posDif,maxDif)
-          dlg = wx.MessageDialog(None,msg,'Warning!',wx.YES_NO | wx.ICON_WARNING)
-          answer = dlg.ShowModal()
-          dlg.Destroy()
+          "\n\nWould you like to continue calibration?".format(posDif, maxDif)
           print("Encoder readings unstable...")
 
         self.frame_statusbar.SetStatusText("Ready", 1)
-
         if self.ADC_ON == False and self.adcWasON == True:
             self.on_off_adc(self)
-        if calAll==False:
+        if calAll == False:
           self.Enable()
-        try:
-          if answer == wx.ID_YES:
-              return True
-          if answer == wx.ID_NO:
-              return False
-        except:
-          pass
+
+        if out_of_bounds:
+          return self._prompt('Warning!', msg)
+        return True
 
     def set_user_dir(self, event):  # wxGlade: wxp3_frame.<event_handler>
         if self.check_for_node() == False: #len(self.network.scanner.nodes) == 0:
