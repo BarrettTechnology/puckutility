@@ -17,6 +17,10 @@ else
 fi
 
 VERSION=$(grep -m1 'SetTitle' puckutilityapp.py | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+')
+TITLE_LINE=$(grep -m1 'SetTitle' puckutilityapp.py)
+if echo "$TITLE_LINE" | grep -qiE '\bDEV\b'; then
+    VERSION="${VERSION}-dev"
+fi
 OUTDIR="build/lin/PuckUtilityApp-lin-${VERSION}"
 
 # Wipe leftover files from a half-completed previous run. Empty the
