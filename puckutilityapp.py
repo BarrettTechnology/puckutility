@@ -216,7 +216,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self._set_windows_icon(resource_path(os.path.join('images', 'BarrettIcon.ico')))
         else:
             self.SetIcon(wx.Icon(resource_path(os.path.join('images', 'BarrettIcon.png'))))
-        self.SetTitle("Puck Utility App - v1.2.1 - DEV")
+        self.SetTitle("Puck Utility App - v1.2.1")
         self.button_6.SetBackgroundColour(self.gray) # Initialize with gray button in idle
         self.Bind(wx.EVT_CHAR_HOOK, self.onKeyDown)  # EVT_CHAR_HOOK fires before focused child consumes the key
         self.Bind(wx.EVT_KEY_UP, self.onKeyUp)
@@ -2088,12 +2088,23 @@ def _setup_logging():
     # extracted MEIPASS temp dir, which is wiped when the exe exits.
     # Anchor the log directory next to the running executable instead
     # so logs survive (and the user can find them).
+    # When installed to a system directory (e.g. /usr/local/bin) the
+    # executable directory is not user-writable, so fall back to the
+    # XDG user data dir (~/.local/share/PuckUtilityApp/logs).
     if getattr(sys, 'frozen', False):
         base_dir = os.path.dirname(sys.executable)
     else:
         base_dir = os.path.dirname(os.path.abspath(__file__))
     log_dir = os.path.join(base_dir, 'logs')
-    os.makedirs(log_dir, exist_ok=True)
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+        # Confirm the directory is actually writable before committing to it
+        if not os.access(log_dir, os.W_OK):
+            raise OSError("not writable")
+    except OSError:
+        log_dir = os.path.join(
+            os.path.expanduser('~'), '.local', 'share', 'PuckUtilityApp', 'logs')
+        os.makedirs(log_dir, exist_ok=True)
 
     # Rotate: remove oldest logs until fewer than 10 exist (making room for this one)
     existing = sorted(
