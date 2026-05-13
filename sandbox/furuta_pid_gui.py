@@ -187,6 +187,7 @@ class FurutaPIDFrame(wx.Frame):
         self._in_braking       = False
         self._ctrl_thread      = None
         self._torque_limit_pct = 50.0
+        self._debug_val = 0.0
 
         self._build_ui()
         self.Bind(wx.EVT_CLOSE, self._on_close)
@@ -250,15 +251,18 @@ class FurutaPIDFrame(wx.Frame):
         csz2.Add(self._btn_zero, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
         vsz.Add(csz2, 0, wx.EXPAND | wx.BOTTOM, 4)
 
-        # Status + temperature row
+        # Status + debug + temperature row
         ssz = wx.BoxSizer(wx.HORIZONTAL)
-        self._status = wx.StaticText(root, label="Disconnected")
+        self._status = wx.StaticText(root, label="Disconnected", style=wx.ALIGN_CENTER_HORIZONTAL)
         self._status.SetForegroundColour(wx.Colour(160, 60, 60))
         f = self._status.GetFont(); f.MakeBold(); self._status.SetFont(f)
-        ssz.Add(self._status, 1, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 8)
-        self._temp_label = wx.StaticText(root, label="Temp: --°C")
+        ssz.Add(self._status, 1, wx.EXPAND | wx.ALL, 8)
+        self._debug_label = wx.StaticText(root, label="Debug: --", style=wx.ALIGN_CENTER_HORIZONTAL)
+        self._debug_label.SetForegroundColour(wx.Colour(120, 130, 160))
+        ssz.Add(self._debug_label, 1, wx.EXPAND | wx.ALL, 10)
+        self._temp_label = wx.StaticText(root, label="Temp: --°C", style=wx.ALIGN_CENTER_HORIZONTAL)
         self._temp_label.SetForegroundColour(wx.Colour(120, 130, 160))
-        ssz.Add(self._temp_label, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 10)
+        ssz.Add(self._temp_label, 1, wx.EXPAND | wx.ALL, 10)
         vsz.Add(ssz, 0, wx.EXPAND | wx.BOTTOM, 8)
 
         # Canvas
@@ -435,6 +439,7 @@ class FurutaPIDFrame(wx.Frame):
 
             threading.Thread(target=self._auto_zero_thread, daemon=True).start()
             threading.Thread(target=self._temp_monitor_thread, daemon=True).start()
+            threading.Thread(target=self._debug_thread, daemon=True).start()
 
         except Exception as ex:
             self._set_status(f"Connect failed: {ex}", 180, 0, 0)
@@ -457,6 +462,8 @@ class FurutaPIDFrame(wx.Frame):
         self._btn_en.Disable()
         self._btn_zero.Disable()
         self._btn_ctrl.Disable()
+        self._debug_label.SetLabel("Debug: --")
+        self._debug_label.SetForegroundColour(wx.Colour(120, 130, 160))
         self._temp_label.SetLabel("Temp: --°C")
         self._temp_label.SetForegroundColour(wx.Colour(120, 130, 160))
         self._set_status("Disconnected", 160, 60, 60)
@@ -521,6 +528,21 @@ class FurutaPIDFrame(wx.Frame):
             wx.CallAfter(self._set_status,
                          "Pendulum didn't settle — click Zero when hanging at rest",
                          180, 120, 0)
+
+    # ───────────────────────────────────────────────── debug ─────────────
+
+    def _debug_thread(self):
+        while self._connected:
+            try:
+                colour = (120, 130, 160)
+                wx.CallAfter(self._update_debug_label, self._debug_val, colour)
+            except Exception:
+                pass
+            time.sleep(0.1)
+
+    def _update_debug_label(self, val, colour):
+        self._debug_label.SetLabel(f"Debug: {val}")
+        self._debug_label.SetForegroundColour(wx.Colour(*colour))
 
     # ───────────────────────────────────────────────── temperature ───────
 
@@ -767,6 +789,11 @@ class FurutaPIDFrame(wx.Frame):
             vel_fast = a_fast * raw_vel + (1.0 - a_fast) * vel_fast
             prev_pend = pend_rad
 
+            # # Debugging
+            # self._debug_val = raw_vel
+            # self._debug_val = vel_slow
+            # self._debug_val = vel_fast
+
             # Arm angular velocity (continuous — no wrapping needed)
             raw_arm_vel  = (arm_rad - prev_arm_rad) / dt
             arm_vel      = a_slow * raw_arm_vel + (1.0 - a_slow) * arm_vel
@@ -812,6 +839,9 @@ class FurutaPIDFrame(wx.Frame):
                 target = prev_target + step
                 prev_target = target
                 self._in_braking = braking
+
+                # Debugging
+                self._debug_val = de
 
             else:
                 target = prev_target
