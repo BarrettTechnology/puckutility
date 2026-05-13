@@ -258,7 +258,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         # Disable the unimplemented menu items
         menu = "Menu"
         for item in [#"Calibrate All", 
-          "Current Sense Slope", "Encoder Direction", "Current Sense Timing", # Comment out Current Sense Timing to enable cal feature
+          "Current Sense Slope", "Encoder Direction", # "Current Sense Timing", # Comment out Current Sense Timing to enable cal feature
           "Tune Gains...", "Save to CSV..."]:
           menu_item = self.frame_menubar.FindMenuItem(menu, item)
           self.frame_menubar.Enable(menu_item, False)

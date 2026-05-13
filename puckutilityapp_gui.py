@@ -41,6 +41,12 @@ class puckutilityapp_frame(wx.Frame):
         wxglade_tmp_menu.AppendSeparator()
         item = wxglade_tmp_menu.Append(wx.ID_ANY, "Test Magnetic Encoder", "")
         self.Bind(wx.EVT_MENU, self.test_encoder, item)
+        item = wxglade_tmp_menu.Append(wx.ID_ANY, "Encoder Linearity Sweep", "")
+        self.Bind(wx.EVT_MENU, self.test_encoder_linearity, item)
+        item = wxglade_tmp_menu.Append(wx.ID_ANY, "Generate Encoder Correction Table", "")
+        self.Bind(wx.EVT_MENU, self.generate_enc_correction_table, item)
+        item = wxglade_tmp_menu.Append(wx.ID_ANY, "PVCA Torque Control...", "")
+        self.Bind(wx.EVT_MENU, self.test_pvca_torque, item)
         item = wxglade_tmp_menu.Append(wx.ID_ANY, "Current Sense Bias", "")
         self.Bind(wx.EVT_MENU, self.calibrate_ibias, item)
         item = wxglade_tmp_menu.Append(wx.ID_ANY, "Current Sense Gainfactor", "")
@@ -306,6 +312,18 @@ class puckutilityapp_frame(wx.Frame):
 
     def calibrate_enclag(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
         print("Event handler 'calibrate_enclag' not implemented!")
+        event.Skip()
+
+    def test_encoder_linearity(self, event):
+        print("Event handler 'test_encoder_linearity' not implemented!")
+        event.Skip()
+
+    def generate_enc_correction_table(self, event):
+        print("Event handler 'generate_enc_correction_table' not implemented!")
+        event.Skip()
+
+    def test_pvca_torque(self, event):
+        print("Event handler 'test_pvca_torque' not implemented!")
         event.Skip()
 
     def set_user_dir(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>

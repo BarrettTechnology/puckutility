@@ -3,6 +3,8 @@ import wx
 import canopen
 import time
 import math
+import struct
+import threading
 import webbrowser
 import configparser
 import platform
@@ -23,6 +25,278 @@ def _sleep_responsive(seconds, chunk=0.05):
     while time.time() < end:
         time.sleep(min(chunk, max(0, end - time.time())))
         wx.Yield()
+
+
+class _PVCATorqueDialog(wx.Dialog):
+    """
+    PVCA torque control via fire-and-forget SDO, driven by TPDO1 position
+    feedback at ~1 kHz.
+
+    RPDO4 was attempted for Theta_e + Motor.ud but the firmware does not
+    route RPDO data to those objects regardless of the SDO mapping config.
+
+    PDO isolation: RPDO1/2 have trans_type=0, so every SYNC caused the puck
+    to re-apply ControlWord=0 ("Disable Voltage") from their default buffer,
+    killing the motor on each tick.  Fix: disable RPDO1/2 and TPDO2/3 before
+    starting SYNC, restore on stop.
+
+    Control path: SYNC thread → TPDO1 callback (rx thread) → compute → two
+    fire-and-forget SDO writes for Theta_e and Motor.ud.  No blocking on the
+    rx thread; SDO ACK frames arrive later and are silently discarded.
+    """
+    _SYNC_PERIOD_S  = 0.001
+    _STATUS_EVERY_N = 100
+
+    # PDO communication-parameter indices to save/disable around PVCA
+    _RPDO_COMM = [0x1400, 0x1401]        # RPDO1, RPDO2
+    _TPDO_COMM = [0x1801, 0x1802]        # TPDO2, TPDO3
+
+    def __init__(self, parent, node, table, table_path, mp):
+        super().__init__(parent, title="PVCA Torque Control",
+                         style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
+        self._node        = node
+        self._table       = table
+        self._mp          = mp
+        self._torque_val  = 0.0   # GIL-safe; wx thread writes, rx thread reads
+        self._running     = False
+        self._stop_evt    = threading.Event()
+        self._sync_thread = None
+        self._iter_count  = 0
+        self._t_start     = 0.0
+        self._tpdo1_cob   = (0x180 | node.id) & 0x7FF
+        self._sdo_cob     = 0x600 | node.id
+        self._saved_cobs  = {}    # comm_idx → saved COB-ID (for restore)
+        self.Bind(wx.EVT_CLOSE, self._on_close)
+        self._build_ui(table_path)
+
+    def _build_ui(self, table_path):
+        import os
+        panel = wx.Panel(self)
+        vs    = wx.BoxSizer(wx.VERTICAL)
+
+        vs.Add(wx.StaticText(panel,
+            label="Table: {} ({} entries)".format(
+                os.path.basename(table_path), len(self._table))),
+            0, wx.ALL, 8)
+
+        hs = wx.BoxSizer(wx.HORIZONTAL)
+        hs.Add(wx.StaticText(panel, label="Torque (mNm):"),
+               0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
+        self._torque_ctrl = wx.TextCtrl(panel, value="50", size=(90, -1))
+        self._torque_ctrl.Bind(wx.EVT_TEXT, self._on_torque_text)
+        hs.Add(self._torque_ctrl, 0)
+        vs.Add(hs, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
+
+        self._run_btn = wx.Button(panel, label="Start PVCA")
+        self._run_btn.Bind(wx.EVT_BUTTON, self._toggle)
+        vs.Add(self._run_btn, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 8)
+
+        self._status = wx.StaticText(panel, label="Stopped")
+        self._status.SetFont(wx.Font(9, wx.FONTFAMILY_TELETYPE,
+                                     wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+        vs.Add(self._status, 0, wx.ALL, 8)
+
+        close_btn = wx.Button(panel, wx.ID_CANCEL, label="Close")
+        close_btn.Bind(wx.EVT_BUTTON, self._on_close)
+        vs.Add(close_btn, 0, wx.ALIGN_RIGHT | wx.ALL, 8)
+
+        panel.SetSizer(vs)
+        vs.Fit(panel)
+        self.Fit()
+        self.SetMinSize(self.GetSize())
+
+    def _on_torque_text(self, _evt):
+        try:
+            self._torque_val = float(self._torque_ctrl.GetValue())
+        except ValueError:
+            pass
+
+    def _toggle(self, _evt):
+        if self._running:
+            self._stop_from_ui()
+        else:
+            self._start()
+
+    # ------------------------------------------------------------------
+    # PDO isolation — disable interfering PDOs before SYNC starts
+    # ------------------------------------------------------------------
+
+    def _isolate_pdos(self):
+        """Disable RPDO1/2 and TPDO2/3; store originals for restore.
+
+        RPDO1/RPDO2 have trans_type=0.  Every SYNC causes the puck to
+        re-apply their buffered data.  Default buffer = 0 → ControlWord=0
+        = 'Disable Voltage', which kills the motor on every SYNC tick.
+        """
+        n = self._node
+        for idx in self._RPDO_COMM + self._TPDO_COMM:
+            cob = n.sdo[idx][1].raw
+            self._saved_cobs[idx] = cob
+            n.sdo[idx][1].raw = cob | 0x80000000   # set invalid bit → PDO disabled
+        print("PVCA: disabled RPDO1/2, TPDO2/3 to isolate SYNC")
+
+    def _restore_all_pdos(self):
+        """Restore all PDOs saved during _isolate_pdos."""
+        for idx, saved_cob in self._saved_cobs.items():
+            try:
+                self._node.sdo[idx][1].raw = saved_cob
+            except Exception:
+                pass
+        self._saved_cobs.clear()
+        print("PVCA: PDOs restored")
+
+    # ------------------------------------------------------------------
+    # Control (canopen rx thread, called for every TPDO1 frame)
+    # ------------------------------------------------------------------
+
+    def _on_tpdo1(self, can_id: int, data: bytearray, timestamp: float):
+        """Fires on every TPDO1 (every SYNC).  Computes and writes via SDO."""
+        if not self._running or len(data) < 7:
+            return
+        # TPDO1: StatusWord(u16) + ModeDisplay(u8) + ActualPosition(i32)
+        # user_zero=0 per device config → ActualPosition == RawPosition
+        _, _, actual_pos = struct.unpack_from('<HBi', data)
+        mp     = self._mp
+        torque = self._torque_val   # GIL-safe float read
+
+        enc_idx    = int(actual_pos) % mp['enc_resolution']
+        correction = self._table[enc_idx]
+        corrected_pos   = actual_pos + correction
+        theta_e_rotor_f = (corrected_pos - mp['e_zero']) * mp['e_polarity'] \
+                          / mp['cts_per_elec'] * 65536.0
+        theta_e_rotor_i = int(round(theta_e_rotor_f)) % 65536
+        advance     = 16384 if torque >= 0 else -16384
+        theta_e_u   = (theta_e_rotor_i + advance) % 65536
+        theta_e_raw = theta_e_u if theta_e_u < 32768 else theta_e_u - 65536
+        iq_ma = abs(torque) * 1000.0 / mp['Kt']
+        vq    = iq_ma / 1000.0 * mp['Rt']
+        ud    = int(round(vq / mp['V_bus'] * 32767))
+        ud    = max(0, min(ud, int(0.85 * 32767)))
+
+        # Fire-and-forget expedited SDO writes — no blocking on the rx thread.
+        # ACK frames sent by the puck arrive later and are silently discarded.
+        # Expedited INT16 download: [cmd, idx_lo, idx_hi, sub, val_lo, val_hi, 0, 0]
+        sdo = self._sdo_cob
+        net = self._node.network
+        net.send_message(sdo,
+            struct.pack('<BBBBhxx', 0x2B, 0xEA, 0x60, 0x00, theta_e_raw))
+        net.send_message(sdo,
+            struct.pack('<BBBBhxx', 0x2B, 0x10, 0x30, 0x04, ud))
+
+        n = self._iter_count + 1
+        self._iter_count = n
+        if n == 1:
+            print("PVCA: first step — pos={} corr={:+d} θ_e={} ud={}".format(
+                actual_pos, correction, theta_e_rotor_i, ud))
+        if n % self._STATUS_EVERY_N == 0:
+            elapsed = time.monotonic() - self._t_start
+            hz = n / max(elapsed, 1e-9)
+            wx.CallAfter(self._status.SetLabel,
+                "{:.0f} Hz  θ_e={:6d}  corr={:+4d}  "
+                "ud={:5d}  iq_est={:5.0f}mA".format(
+                    hz, theta_e_rotor_i, correction, ud, iq_ma))
+
+    # ------------------------------------------------------------------
+    # SYNC driver (background thread)
+    # ------------------------------------------------------------------
+
+    def _sync_loop(self):
+        """Sends SYNC at ~1 kHz; each SYNC triggers TPDO1 from the puck."""
+        while not self._stop_evt.is_set():
+            t0 = time.monotonic()
+            try:
+                self._node.network.send_message(0x80, bytes())
+            except Exception as e:
+                wx.CallAfter(self._fault_stop, "SYNC error: " + str(e))
+                return
+            rem = self._SYNC_PERIOD_S - (time.monotonic() - t0)
+            if rem > 0.0:
+                time.sleep(rem)
+
+    # ------------------------------------------------------------------
+    # Start / stop / cleanup
+    # ------------------------------------------------------------------
+
+    def _start(self):
+        try:
+            n = self._node
+            n.nmt.state = 'OPERATIONAL'
+
+            n.sdo["ControlWord"].raw = CLEAR_FAULT
+            n.sdo["ControlWord"].raw = SHUTDOWN
+            n.sdo["ControlWord"].raw = OP_ENABLED
+            n.sdo["SetModeOfOperation"].raw = MODE_PHASE_VOLTAGE_ANGLE
+            n.sdo['Theta_e'].raw = 0
+            n.sdo['Motor']['ud'].raw = 0
+            time.sleep(0.1)
+
+            self._isolate_pdos()    # disable RPDO1/2, TPDO2/3 before SYNC
+        except Exception as e:
+            self._restore_all_pdos()
+            wx.MessageBox("Failed to start:\n{}".format(e), "Error",
+                          wx.OK | wx.ICON_ERROR)
+            return
+
+        try:
+            self._torque_val = float(self._torque_ctrl.GetValue())
+        except ValueError:
+            self._torque_val = 0.0
+
+        self._iter_count = 0
+        self._t_start    = time.monotonic()
+        self._running    = True
+
+        self._node.network.subscribe(self._tpdo1_cob, self._on_tpdo1)
+        self._stop_evt.clear()
+        self._sync_thread = threading.Thread(
+            target=self._sync_loop, daemon=True, name="pvca-sync")
+        self._sync_thread.start()
+
+        self._run_btn.SetLabel("Stop PVCA")
+        self._status.SetLabel("Running…")
+
+    def _stop_from_ui(self):
+        self._running = False
+        self._stop_evt.set()
+        if self._sync_thread:
+            self._sync_thread.join(timeout=0.5)
+        try:
+            self._node.network.unsubscribe(self._tpdo1_cob, self._on_tpdo1)
+        except Exception:
+            pass
+        self._motor_off()
+        self._restore_all_pdos()
+        self._run_btn.SetLabel("Start PVCA")
+        self._status.SetLabel("Stopped")
+
+    def _motor_off(self):
+        try:
+            self._node.sdo['Theta_e'].raw = 0
+            self._node.sdo['Motor']['ud'].raw = 0
+            self._node.sdo["SetModeOfOperation"].raw = MODE_IDLE
+        except Exception:
+            pass
+
+    def _fault_stop(self, msg):  # called via wx.CallAfter from any thread
+        self._running = False
+        self._stop_evt.set()
+        self._motor_off()
+        self._restore_all_pdos()
+        self._run_btn.SetLabel("Start PVCA")
+        self._status.SetLabel("FAULT: " + msg)
+
+    def _on_close(self, _evt):
+        self._running = False
+        self._stop_evt.set()
+        if self._sync_thread and self._sync_thread.is_alive():
+            self._sync_thread.join(timeout=0.5)
+        try:
+            self._node.network.unsubscribe(self._tpdo1_cob, self._on_tpdo1)
+        except Exception:
+            pass
+        self._motor_off()
+        self._restore_all_pdos()
+        self.Destroy()
 
 
 class calibrate():
@@ -388,9 +662,10 @@ class calibrate():
                 if abs(_err) < _HOLD_TOL_A:
                     break
                 if _id_now > 0:
-                    _correction = int(motor_ud * _err / _id_now / 4)
+                    _correction = int(motor_ud * _err / _id_now / 8)
                 else:
-                    _correction = 200 if _err > 0 else -200
+                    _correction = 100 if _err > 0 else -100
+                _correction = max(-300, min(300, _correction))
                 motor_ud = max(0, min(32000, motor_ud + _correction))
                 self.node.sdo['Motor']['ud'].raw = motor_ud
                 time.sleep(0.05)
@@ -424,9 +699,10 @@ class calibrate():
                 if abs(_err) < _HOLD_TOL_A:
                     break
                 if _id_now > 0:
-                    _correction = int(motor_ud * _err / _id_now / 4)
+                    _correction = int(motor_ud * _err / _id_now / 8)
                 else:
-                    _correction = 200 if _err > 0 else -200
+                    _correction = 100 if _err > 0 else -100
+                _correction = max(-300, min(300, _correction))
                 motor_ud = max(0, min(32000, motor_ud + _correction))
                 self.node.sdo['Motor']['ud'].raw = motor_ud
                 time.sleep(0.05)
@@ -458,12 +734,17 @@ class calibrate():
                 abias_f = float(self.node.sdo['Alpha']['Bias'].raw)
                 bbias_f = float(self.node.sdo['Beta']['Bias'].raw)
 
-            # Compute gainfactor in full float precision; round only for firmware write
-            gainfactor = 4096.0 * (a_filt_f - abias_f) / (b_filt_f - bbias_f)
+            # Compute gainfactor in full float precision; round only for firmware write.
+            # Normalize each channel's ADC deflection by the actual current at that
+            # measurement position — makes the result correct even when the closed-loop
+            # hold converges to different currents for Alpha vs Beta.
+            a_delta = a_filt_f - abias_f
+            b_delta = b_filt_f - bbias_f
+            gainfactor = 4096.0 * (a_delta / _id_at_a) / (b_delta / _id_at_b)
             gainfactor = round(gainfactor)
             self.node.sdo['Beta']['Gainfactor'].raw = gainfactor
-            print("New Beta Gainfactor = {0}  (a_delta={1:.3f}  b_delta={2:.3f})".format(
-                gainfactor, a_filt_f - abias_f, b_filt_f - bbias_f))
+            print("New Beta Gainfactor = {0}  (a_sens={1:.5f}  b_sens={2:.5f}  counts/mA)".format(
+                gainfactor, a_delta / _id_at_a, b_delta / _id_at_b))
 
             # Check Bounds for error!! Can increase to 10% if needed
             error = 0.10 # 10%
@@ -1177,6 +1458,8 @@ class calibrate():
           encoder_resolution = self.node.sdo['EncoderConfig']['Resolution'].raw
           motor_poles = self.node.sdo['Calibration']['poles'].raw
           cts_per_elec_cyc = encoder_resolution * 2 / motor_poles
+          print("Encoder resolution = {}  Motor poles (EEPROM) = {}  cts/elec_cyc = {:.1f}".format(
+              encoder_resolution, motor_poles, cts_per_elec_cyc))
           if abs(pos1-pos2) >  encoder_resolution / 2:
             if pos1 > pos2:
               pos1 += encoder_resolution
@@ -1202,8 +1485,10 @@ class calibrate():
           self.node.sdo['Save']['Single'].raw = ((0x3011 << 8) | 0x02) # Save e_polarity to EE
           print("Electrical polarity = {0}".format(self.node.sdo['Calibration']['e_polarity'].raw))
   
-          previous_zero = self.node.sdo['Calibration']['e_zero'].raw
-  
+          previous_polarity = self.node.sdo['Calibration']['e_polarity'].raw
+          previous_zero     = self.node.sdo['Calibration']['e_zero'].raw
+
+          print("Previous electrical polarity = {0}".format(previous_polarity))
           print("Previous electrical zero = {0}".format(previous_zero))
           self.node.sdo['Calibration']['e_zero'].raw = pos
           self.node.sdo['Save']['Single'].raw = ((0x3011 << 8) | 0x01) # Save e_zero to EE
@@ -1217,7 +1502,7 @@ class calibrate():
           expected_change = 22.5
   
           self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
-  
+
           if pos_change1 < round(expected_change * (1 - error)) or pos_change2 < round(expected_change * (1 - error)):
             print('Encoder Zero Failed!')
             # Bad Encoder reading (error dialog! debug steps)
@@ -1436,6 +1721,566 @@ class calibrate():
         if out_of_bounds:
           return self._prompt('Warning!', msg)
         return True
+
+    def test_encoder_linearity(self, event):
+        """Sweep theta_e through one full mechanical revolution and compare the
+        actual encoder position to the ideal linear relationship.  Deviations
+        reveal encoder nonlinearity and distinguish electrical errors (repeat at
+        the same electrical angle every cycle) from mechanical errors (repeat at
+        the same mechanical angle, appearing at different electrical angles each
+        cycle)."""
+        if not self.check_for_node():
+            return
+        self.Disable()
+
+        if self.ADC_ON:
+            self.adcWasON = True
+            self.on_off_adc(self)
+        else:
+            self.adcWasON = False
+
+        try:
+            e_zero          = self.node.sdo['Calibration']['e_zero'].raw
+            e_polarity      = int(self.node.sdo['Calibration']['e_polarity'].raw)
+            enc_resolution  = self.node.sdo['EncoderConfig']['Resolution'].raw
+            motor_poles     = self.node.sdo['Calibration']['poles'].raw
+            cts_per_elec    = enc_resolution * 2.0 / motor_poles
+            pole_pairs      = motor_poles // 2
+            cal_current     = self.node.sdo['Calibration']['i_cal'].raw
+            i_peak          = self.node.sdo['Calibration']['i_peak'].raw
+            if cal_current > i_peak:
+                cal_current = i_peak
+
+            print("Encoder linearity sweep — {} pole pairs  {:.1f} cts/elec_cyc  "
+                  "e_zero={}  e_polarity={}".format(
+                pole_pairs, cts_per_elec, e_zero, e_polarity))
+
+            # Enter PHASE_VOLTAGE_ANGLE and ramp to calibration current at theta_e = 0
+            self.node.sdo["ControlWord"].raw = CLEAR_FAULT
+            self.node.sdo["ControlWord"].raw = SHUTDOWN
+            self.node.sdo["ControlWord"].raw = OP_ENABLED
+            self.node.sdo["SetModeOfOperation"].raw = MODE_PHASE_VOLTAGE_ANGLE
+            self.node.sdo['Theta_e'].raw = 0
+            time.sleep(0.3)
+            wx.Yield()
+
+            motor_ud = 0
+            while (self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak) < cal_current and motor_ud < 32000:
+                _id_now = self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak
+                if motor_ud > 0 and _id_now > 0:
+                    _step = max(100, int((motor_ud * cal_current / _id_now - motor_ud) / 4))
+                else:
+                    _step = max(100, 32000 // 12)
+                motor_ud = min(motor_ud + _step, 32000)
+                self.node.sdo['Motor']['ud'].raw = motor_ud
+                time.sleep(0.05)
+                wx.Yield()
+
+            _sleep_responsive(0.3)
+
+            # Sweep: N_PER_CYCLE steps per electrical cycle × pole_pairs cycles = 1 mech rev
+            N_PER_CYCLE = 48          # 7.5° electrical per step
+            N_TOTAL     = N_PER_CYCLE * pole_pairs
+            STEP_S      = 0.08        # seconds per step
+
+            enc_prev       = self.node.sdo['Encoder']['RawPosition'].raw
+            enc_accumulated = 0
+            results        = []       # (mech_deg, elec_deg, cycle, error_deg)
+
+            print("Sweeping {} steps ({} per elec cycle × {} cycles) — ~{:.0f} s ...".format(
+                N_TOTAL, N_PER_CYCLE, pole_pairs, N_TOTAL * STEP_S))
+
+            for step in range(N_TOTAL + 1):
+                step_in_cycle = step % N_PER_CYCLE
+                frac_in_cycle = step_in_cycle / N_PER_CYCLE   # 0 → 1 within cycle
+                total_elec_cycles = step / N_PER_CYCLE         # monotonically increasing
+
+                # Theta_e command for this step (wraps modulo 2π each electrical cycle)
+                theta_e_u = round(frac_in_cycle * 65536) % 65536
+                theta_e_raw = theta_e_u if theta_e_u < 32768 else theta_e_u - 65536
+                self.node.sdo['Theta_e'].raw = theta_e_raw
+                time.sleep(STEP_S)
+                wx.Yield()
+
+                enc = self.node.sdo['Encoder']['RawPosition'].raw
+                delta = enc - enc_prev
+                if delta >  enc_resolution / 2: delta -= enc_resolution
+                if delta < -enc_resolution / 2: delta += enc_resolution
+                enc_accumulated += delta
+                enc_prev = enc
+
+                # Expected accumulated encoder displacement
+                # theta_e = e_polarity × (pos − e_zero) / cts_per_elec × 2π
+                # → Δpos = e_polarity × Δtheta_e / (2π) × cts_per_elec
+                # Δtheta_e over total_elec_cycles full cycles = total_elec_cycles × 2π
+                expected = e_polarity * total_elec_cycles * cts_per_elec
+                error_cts = enc_accumulated - expected
+                error_deg = error_cts / cts_per_elec * 360.0
+
+                mech_deg = total_elec_cycles / pole_pairs * 360.0
+                elec_deg = frac_in_cycle * 360.0
+                cycle_n  = step // N_PER_CYCLE + 1
+                results.append((mech_deg, elec_deg, cycle_n, error_deg))
+
+            self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
+
+            # ---- Report ----
+            errors   = [r[3] for r in results]
+            max_err  = max(errors, key=abs)
+            max_idx  = max(range(len(errors)), key=lambda i: abs(errors[i]))
+            rms_err  = (sum(e * e for e in errors) / len(errors)) ** 0.5
+            PASS_THRESHOLD = 5.0  # engineering pass/fail limit in electrical degrees
+            passed = abs(max_err) <= PASS_THRESHOLD
+
+            print("\nEncoder linearity results:")
+            print("  Max error : {:.2f}° elec  at mech={:.1f}°  elec={:.1f}°  (cycle {})".format(
+                max_err, results[max_idx][0], results[max_idx][1], results[max_idx][2]))
+            print("  RMS error : {:.2f}° elec".format(rms_err))
+            print("  Pass/Fail : {} (threshold ±{:.1f}° elec)".format(
+                "PASS" if passed else "FAIL", PASS_THRESHOLD))
+            print("\n  {:>8}  {:>8}  {:>6}  {:>10}".format(
+                "Mech(°)", "Elec(°)", "Cycle", "Error(°el)"))
+            for mech, elec, cyc, err in results:
+                flag = " <<<" if abs(err) >= PASS_THRESHOLD else ""
+                print("  {:8.1f}  {:8.1f}  {:6d}  {:+10.2f}{}".format(
+                    mech, elec, cyc, err, flag))
+
+            # ---- Plot ----
+            try:
+                import matplotlib
+                matplotlib.use('Agg')
+                import matplotlib.pyplot as plt
+                import matplotlib.gridspec as gridspec
+                import datetime, os
+                from paths import resource_path
+
+                mech_all = [r[0] for r in results]
+                err_all  = [r[3] for r in results]
+
+                fig = plt.figure(figsize=(15, 8))
+                gs  = gridspec.GridSpec(2, 2, figure=fig, width_ratios=[1.2, 1])
+                ax1 = fig.add_subplot(gs[0, 0])
+                ax2 = fig.add_subplot(gs[1, 0])
+                ax3 = fig.add_subplot(gs[:, 1])
+
+                pf_label = 'Pass/Fail limit (±{:.0f}°)'.format(PASS_THRESHOLD)
+                pf_color = 'r'
+                pf_ls    = '--'
+                pf_lw    = 1.5
+                exp_lw   = 2.5
+                exp_ls   = ':'
+
+                ax1.plot(mech_all, err_all, 'b-', linewidth=0.8, label='Measured error')
+                ax1.axhline(0, color='k', linewidth=exp_lw, linestyle=exp_ls,
+                            label='Expected (0° error)', zorder=5)
+                ax1.axhline( PASS_THRESHOLD, color=pf_color, linewidth=pf_lw,
+                             linestyle=pf_ls, label=pf_label)
+                ax1.axhline(-PASS_THRESHOLD, color=pf_color, linewidth=pf_lw,
+                             linestyle=pf_ls)
+                ax1.set_xlabel('Mechanical angle (°)')
+                ax1.set_ylabel('Error (° electrical)')
+                ax1.set_title('Encoder linearity — error vs mechanical angle  [{}]'.format(
+                    'PASS' if passed else 'FAIL'))
+                ax1.legend(fontsize=8)
+                ax1.grid(True, alpha=0.3)
+
+                colors = plt.cm.tab10.colors
+                for cyc in range(1, pole_pairs + 2):
+                    cyc_pts = [(r[1], r[3]) for r in results if r[2] == cyc]
+                    if cyc_pts:
+                        xs, ys = zip(*cyc_pts)
+                        ax2.plot(xs, ys, color=colors[(cyc - 1) % 10],
+                                 alpha=0.8, linewidth=0.9,
+                                 label='Cycle {}'.format(cyc))
+                ax2.axhline(0, color='k', linewidth=exp_lw, linestyle=exp_ls,
+                            label='Expected (0° error)', zorder=5)
+                ax2.axhline( PASS_THRESHOLD, color=pf_color, linewidth=pf_lw,
+                             linestyle=pf_ls, label=pf_label)
+                ax2.axhline(-PASS_THRESHOLD, color=pf_color, linewidth=pf_lw,
+                             linestyle=pf_ls)
+                ax2.set_xlabel('Electrical angle (°)')
+                ax2.set_ylabel('Error (° electrical)')
+                ax2.set_title('Overlaid by electrical cycle — consistent = electrical error; '
+                              'shifting = mechanical encoder error')
+                ax2.legend(fontsize=7, ncol=4)
+                ax2.grid(True, alpha=0.3)
+
+                # --- ax3: Lissajous — one trace per electrical cycle ---
+                # Normalize each cycle to its own starting error so inter-cycle
+                # drift doesn't shift the loops. Overlaid loops that all land on
+                # the same shape = electrical error; loops that spread = mechanical.
+                _cyc_base = {}
+                for _r in results:
+                    if int(round(_r[1] / 360.0 * N_PER_CYCLE)) % N_PER_CYCLE == 0:
+                        _cyc_base.setdefault(_r[2], _r[3])
+                _cyc_profiles = {}
+                for _r in results:
+                    _s = int(round(_r[1] / 360.0 * N_PER_CYCLE)) % N_PER_CYCLE
+                    _cyc_profiles.setdefault(_r[2], {})[_s] = (
+                        _r[3] - _cyc_base.get(_r[2], 0.0))
+                # Radial scale from worst within-cycle error across all cycles
+                _all_wc  = [e for d in _cyc_profiles.values() for e in d.values()]
+                _max_ae  = max(abs(e) for e in _all_wc) if _all_wc else 1.0
+                _r_scale = 0.4 / (_max_ae or 1.0)
+                # Ideal unit circle
+                _circ_t = [i / 360 * 2 * math.pi for i in range(361)]
+                ax3.plot([math.cos(t) for t in _circ_t],
+                         [math.sin(t) for t in _circ_t],
+                         'k', linewidth=2.5, linestyle=':', label='Ideal', zorder=5)
+                # One coloured trace per complete cycle
+                _liss_colors = plt.cm.tab10.colors
+                for _cyc in sorted(_cyc_profiles.keys()):
+                    _prof = _cyc_profiles[_cyc]
+                    if len(_prof) < N_PER_CYCLE:
+                        continue  # skip incomplete trailing stub
+                    _steps = sorted(_prof.keys())
+                    _ts = [s / N_PER_CYCLE * 2.0 * math.pi for s in _steps] + [0.0]
+                    _es = [_prof[s] for s in _steps] + [0.0]
+                    _xs = [(1.0 + _r_scale * e) * math.cos(t) for t, e in zip(_ts, _es)]
+                    _ys = [(1.0 + _r_scale * e) * math.sin(t) for t, e in zip(_ts, _es)]
+                    ax3.plot(_xs, _ys, color=_liss_colors[(_cyc - 1) % 10],
+                             alpha=0.7, linewidth=0.9, label='Cycle {}'.format(_cyc))
+                ax3.set_aspect('equal')
+                ax3.axhline(0, color='gray', linewidth=0.5, zorder=0)
+                ax3.axvline(0, color='gray', linewidth=0.5, zorder=0)
+                ax3.set_xlabel('cos(ε)')
+                ax3.set_ylabel('sin(ε)')
+                ax3.set_title(
+                    'Encoder Lissajous (per elec. cycle)  [{}]\n'
+                    '{:.0f}°/unit  —  overlap=electrical err,  spread=mechanical err'.format(
+                        'PASS' if passed else 'FAIL', 1.0 / _r_scale))
+                ax3.legend(fontsize=7, ncol=4)
+                ax3.grid(True, alpha=0.3)
+
+                plt.tight_layout()
+                ts = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+                plot_path = resource_path(os.path.join(
+                    'logs', 'enc_linearity_{}.png'.format(ts)))
+                os.makedirs(os.path.dirname(plot_path), exist_ok=True)
+                plt.savefig(plot_path, dpi=100)
+                plt.close()
+                print("\nPlot saved: {}".format(plot_path))
+            except ImportError:
+                pass
+
+        except Exception as _exc:
+            self._cal_fault(_exc)
+
+        finally:
+            if self.ADC_ON == False and self.adcWasON:
+                self.on_off_adc(self)
+            self.Enable()
+
+    def generate_enc_correction_table(self, event):
+        """
+        High-resolution encoder sweep → position correction lookup table.
+
+        Sweeps theta_e through one full mechanical revolution at 192 steps per
+        electrical cycle, fits a Fourier series to the measured position errors,
+        and writes two CSV correction tables:
+
+          enc_correction_full_*.csv  — one signed-int entry per encoder count
+                                       (covers both electrical and mechanical errors)
+          enc_correction_elec_*.csv  — one signed-int entry per count within one
+                                       electrical cycle (smaller; electrical errors only)
+
+        Table format:  corrected_pos = raw_pos + table[raw_pos % period]
+        """
+        if not self.check_for_node():
+            return
+        self.Disable()
+        if self.ADC_ON:
+            self.adcWasON = True
+            self.on_off_adc(self)
+        else:
+            self.adcWasON = False
+
+        try:
+            import cmath as _cm
+            import datetime, os
+            from paths import resource_path
+
+            e_zero         = self.node.sdo['Calibration']['e_zero'].raw
+            e_polarity     = int(self.node.sdo['Calibration']['e_polarity'].raw)
+            enc_resolution = self.node.sdo['EncoderConfig']['Resolution'].raw
+            motor_poles    = self.node.sdo['Calibration']['poles'].raw
+            cts_per_elec   = enc_resolution * 2.0 / motor_poles
+            pole_pairs     = motor_poles // 2
+            cal_current    = self.node.sdo['Calibration']['i_cal'].raw
+            i_peak         = self.node.sdo['Calibration']['i_peak'].raw
+            if cal_current > i_peak:
+                cal_current = i_peak
+
+            N_PER_CYCLE = 192   # steps per electrical cycle → 1.875° per step
+            STEP_S      = 0.05  # settle time per step (s)
+            N_HARMONICS = 16    # Fourier harmonics retained
+            N_TOTAL     = N_PER_CYCLE * pole_pairs  # exactly one mechanical revolution
+
+            print("\nEncoder correction table — sweep parameters")
+            print("  {} pole pairs  {:.2f} cts/elec  enc_res={}  "
+                  "e_zero={}  e_polarity={}".format(
+                      pole_pairs, cts_per_elec, enc_resolution, e_zero, e_polarity))
+            print("  {} steps/cycle × {} cycles = {} steps  ~{:.0f} s".format(
+                N_PER_CYCLE, pole_pairs, N_TOTAL, N_TOTAL * STEP_S + 15))
+
+            # ---- Enable in PHASE_VOLTAGE_ANGLE mode and ramp current ----
+            self.node.sdo["ControlWord"].raw = CLEAR_FAULT
+            self.node.sdo["ControlWord"].raw = SHUTDOWN
+            self.node.sdo["ControlWord"].raw = OP_ENABLED
+            self.node.sdo["SetModeOfOperation"].raw = MODE_PHASE_VOLTAGE_ANGLE
+            self.node.sdo['Theta_e'].raw = 0
+            time.sleep(0.3)
+            wx.Yield()
+
+            motor_ud = 0
+            while (self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak) < cal_current \
+                  and motor_ud < 32000:
+                _id_now = self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak
+                if motor_ud > 0 and _id_now > 0:
+                    _step = max(100, int((motor_ud * cal_current / _id_now - motor_ud) / 4))
+                else:
+                    _step = max(100, 32000 // 12)
+                motor_ud = min(motor_ud + _step, 32000)
+                self.node.sdo['Motor']['ud'].raw = motor_ud
+                time.sleep(0.05)
+                wx.Yield()
+            _sleep_responsive(0.3)
+
+            # ---- Sweep one full mechanical revolution ----
+            enc_start       = self.node.sdo['Encoder']['RawPosition'].raw
+            enc_prev        = enc_start
+            enc_accumulated = 0
+            # (step_in_cycle, cycle_n, correction_cts, abs_enc_pos)
+            sweep = []
+
+            print("Sweeping {} steps...".format(N_TOTAL))
+            for step in range(N_TOTAL + 1):
+                step_in_cycle = step % N_PER_CYCLE
+                total_elec    = step / N_PER_CYCLE
+                frac          = step_in_cycle / N_PER_CYCLE
+                theta_e_u     = round(frac * 65536) % 65536
+                theta_e_raw   = theta_e_u if theta_e_u < 32768 else theta_e_u - 65536
+                self.node.sdo['Theta_e'].raw = theta_e_raw
+                time.sleep(STEP_S)
+                wx.Yield()
+                enc   = self.node.sdo['Encoder']['RawPosition'].raw
+                delta = enc - enc_prev
+                if delta >  enc_resolution / 2: delta -= enc_resolution
+                if delta < -enc_resolution / 2: delta += enc_resolution
+                enc_accumulated += delta
+                enc_prev = enc
+                if step < N_TOTAL:  # exclude final return-to-start wrap point
+                    expected   = e_polarity * total_elec * cts_per_elec
+                    correction = expected - enc_accumulated   # counts to ADD for true pos
+                    abs_pos    = (enc_start + enc_accumulated) % enc_resolution
+                    cycle_n    = step // N_PER_CYCLE + 1
+                    sweep.append((step_in_cycle, cycle_n, correction, abs_pos))
+
+            self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
+
+            N_S = len(sweep)   # = N_TOTAL
+
+            # ---- Fourier fitting helpers (stdlib only, no numpy) ----
+            def _dft(samples, n_harm):
+                """DFT of `samples`, return first n_harm+1 complex coefficients."""
+                N, X = len(samples), []
+                for k in range(n_harm + 1):
+                    wk = _cm.exp(-2j * math.pi * k / N)
+                    val, w = 0.0, 1.0 + 0j
+                    for c in samples:
+                        val += c * w
+                        w   *= wk
+                    X.append(val / N)
+                return X
+
+            def _reconstruct(X, out_size):
+                """Evaluate the real Fourier series at `out_size` evenly-spaced points."""
+                table = []
+                for p in range(out_size):
+                    val = X[0].real
+                    for k in range(1, len(X)):
+                        a = 2.0 * math.pi * k * p / out_size
+                        val += 2.0 * (X[k].real * math.cos(a) - X[k].imag * math.sin(a))
+                    table.append(round(val))
+                return table
+
+            print("Fitting Fourier series ({} harmonics)...".format(N_HARMONICS))
+
+            # ---- Full mechanical revolution table ----
+            corr_seq = [s[2] for s in sweep]
+            X_full   = _dft(corr_seq, N_HARMONICS)
+            table_full = _reconstruct(X_full, enc_resolution)
+
+            # ---- Per-electrical-cycle table ----
+            # Normalize each cycle to its own start so mechanical drift doesn't
+            # contaminate the within-cycle (electrical) error shape.
+            cyc_base = {}
+            for s_cyc, cyc_n, corr, _ in sweep:
+                if s_cyc == 0:
+                    cyc_base.setdefault(cyc_n, corr)
+
+            elec_acc   = [0.0] * N_PER_CYCLE
+            elec_cnt   = [0]   * N_PER_CYCLE
+            for s_cyc, cyc_n, corr, _ in sweep:
+                elec_acc[s_cyc] += corr - cyc_base.get(cyc_n, 0.0)
+                elec_cnt[s_cyc] += 1
+            elec_avg = [elec_acc[s] / max(elec_cnt[s], 1) for s in range(N_PER_CYCLE)]
+
+            elec_sz    = round(cts_per_elec)
+            X_elec     = _dft(elec_avg, N_HARMONICS)
+            table_elec = _reconstruct(X_elec, elec_sz)
+
+            # ---- Classify dominant error type ----
+            elec_rms = (sum(e ** 2 for e in elec_avg) / N_PER_CYCLE) ** 0.5
+            full_rms = (sum(c ** 2 for c in corr_seq) / N_S) ** 0.5
+            ratio    = elec_rms / (full_rms + 1e-9)
+            if ratio > 0.65:
+                err_type = "ELECTRICAL  — use per-cycle table (fewer entries, lower latency)"
+            elif ratio < 0.30:
+                err_type = "MECHANICAL  — use full-revolution table"
+            else:
+                err_type = "MIXED       — use full-revolution table"
+
+            max_full = max(abs(c) for c in table_full)
+            rms_full = (sum(c ** 2 for c in table_full) / enc_resolution) ** 0.5
+            max_elec = max(abs(c) for c in table_elec)
+            rms_elec = (sum(c ** 2 for c in table_elec) / elec_sz) ** 0.5
+
+            print("\nCorrection table results:")
+            print("  Dominant error  : {}".format(err_type))
+            print("  Full-rev table  : {} entries  "
+                  "max={:+d} cts ({:.1f}° elec)  RMS={:.1f} cts".format(
+                      enc_resolution, max_full,
+                      max_full / cts_per_elec * 360.0, rms_full))
+            print("  Elec-cyc table  : {} entries  "
+                  "max={:+d} cts ({:.1f}° elec)  RMS={:.1f} cts".format(
+                      elec_sz, max_elec,
+                      max_elec / cts_per_elec * 360.0, rms_elec))
+            print("\n  Mode-12 usage:")
+            print("    corrected_theta_e = (raw_pos + table[raw_pos % {}] - e_zero)".format(
+                elec_sz if ratio > 0.65 else enc_resolution))
+            print("                        * e_polarity / {:.2f} * 65536".format(cts_per_elec))
+
+            # ---- Save CSV files ----
+            ts = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+            node_id = getattr(self.node, 'id', '?')
+            meta = ("# node={} e_zero={} e_polarity={} enc_res={} motor_poles={} "
+                    "cts_per_elec={:.2f} sweep_steps_per_cycle={} harmonics={}\n"
+                    "# corrected_pos = raw_pos + table[index]\n"
+                    ).format(node_id, e_zero, e_polarity, enc_resolution,
+                             motor_poles, cts_per_elec, N_PER_CYCLE, N_HARMONICS)
+
+            full_path = resource_path(os.path.join(
+                'logs', 'enc_correction_full_{}.csv'.format(ts)))
+            os.makedirs(os.path.dirname(full_path), exist_ok=True)
+            with open(full_path, 'w') as _f:
+                _f.write("# Encoder position correction — full mechanical revolution\n")
+                _f.write("# index = raw_encoder_pos % enc_resolution\n")
+                _f.write(meta)
+                _f.write("enc_pos_cts,correction_cts\n")
+                for _p, _c in enumerate(table_full):
+                    _f.write("{},{}\n".format(_p, _c))
+
+            elec_path = resource_path(os.path.join(
+                'logs', 'enc_correction_elec_{}.csv'.format(ts)))
+            with open(elec_path, 'w') as _f:
+                _f.write("# Encoder position correction — per electrical cycle\n")
+                _f.write("# index = (raw_encoder_pos - e_zero) % round(cts_per_elec)\n")
+                _f.write(meta)
+                _f.write("pos_in_elec_cycle_cts,correction_cts\n")
+                for _p, _c in enumerate(table_elec):
+                    _f.write("{},{}\n".format(_p, _c))
+
+            print("\n  Full-rev CSV  → {}".format(full_path))
+            print("  Elec-cyc CSV  → {}".format(elec_path))
+
+        except Exception as _exc:
+            self._cal_fault(_exc)
+        finally:
+            if self.ADC_ON == False and self.adcWasON:
+                self.on_off_adc(self)
+            self.Enable()
+
+    def _load_enc_correction_table(self):
+        """Return (table, path) from the most recent enc_correction_full CSV, or (None, None)."""
+        import os, glob
+        from paths import resource_path
+        log_dir = resource_path('logs')
+        hits = sorted(glob.glob(os.path.join(log_dir, 'enc_correction_full_*.csv')))
+        if not hits:
+            return None, None
+        path  = hits[-1]
+        table = []
+        with open(path) as _f:
+            for _line in _f:
+                _line = _line.strip()
+                if not _line or _line.startswith('#') \
+                        or _line.startswith('enc') or _line.startswith('pos'):
+                    continue
+                _parts = _line.split(',')
+                if len(_parts) == 2:
+                    try:
+                        table.append(int(_parts[1]))
+                    except ValueError:
+                        pass
+        return (table, path) if table else (None, None)
+
+    def test_pvca_torque(self, event):
+        """
+        Open the PVCA Torque Control dialog.
+
+        Loads the most recent encoder correction table from logs/ and starts a
+        50 Hz control loop that applies the user-specified torque using corrected
+        theta_e (Mode 12 — Phase Voltage Commutation Angle).
+        """
+        if not self.check_for_node():
+            return
+
+        table, path = self._load_enc_correction_table()
+        if table is None:
+            wx.MessageBox(
+                "No encoder correction table found in logs/.\n"
+                "Run 'Generate Encoder Correction Table' first.",
+                "PVCA Control", wx.OK | wx.ICON_ERROR)
+            return
+
+        try:
+            import os
+            e_zero         = self.node.sdo['Calibration']['e_zero'].raw
+            e_polarity     = int(self.node.sdo['Calibration']['e_polarity'].raw)
+            enc_resolution = self.node.sdo['EncoderConfig']['Resolution'].raw
+            motor_poles    = self.node.sdo['Calibration']['poles'].raw
+            cts_per_elec   = enc_resolution * 2.0 / motor_poles
+            Kt             = self.node.sdo['Calibration']['kt'].raw           # mNm/A
+            Rt             = self.node.sdo['Calibration']['rt'].raw * 0.01    # 0.01Ω → Ω
+            V_bus          = self.node.sdo['Amp']['NominalBusVoltage'].raw * 0.1  # V×10 → V
+            i_peak         = self.node.sdo['Calibration']['i_peak'].raw       # mA
+        except Exception as e:
+            wx.MessageBox("Error reading motor parameters:\n{}".format(e),
+                          "PVCA Control", wx.OK | wx.ICON_ERROR)
+            return
+
+        if len(table) != enc_resolution:
+            wx.MessageBox(
+                "Table has {} entries but encoder resolution is {} cts.\n"
+                "Re-run 'Generate Encoder Correction Table'.".format(
+                    len(table), enc_resolution),
+                "PVCA Control", wx.OK | wx.ICON_WARNING)
+
+        mp = dict(e_zero=e_zero, e_polarity=e_polarity,
+                  enc_resolution=enc_resolution, cts_per_elec=cts_per_elec,
+                  Kt=Kt, Rt=Rt, V_bus=V_bus, i_peak=i_peak)
+
+        print("PVCA Torque Control — table: {} ({} entries)".format(
+            os.path.basename(path), len(table)))
+        print("  Kt={}mNm/A  Rt={:.2f}Ω  V_bus={:.1f}V  i_peak={}mA".format(
+            Kt, Rt, V_bus, i_peak))
+        print("  e_zero={}  e_polarity={}  cts_per_elec={:.2f}".format(
+            e_zero, e_polarity, cts_per_elec))
+
+        dlg = _PVCATorqueDialog(self, self.node, table, path, mp)
+        dlg.ShowModal()
+        dlg.Destroy()
 
     def set_user_dir(self, event):  # wxGlade: wxp3_frame.<event_handler>
         if self.check_for_node() == False: #len(self.network.scanner.nodes) == 0:
