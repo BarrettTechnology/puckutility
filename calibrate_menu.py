@@ -29,27 +29,22 @@ def _sleep_responsive(seconds, chunk=0.05):
 
 class _PVCATorqueDialog(wx.Dialog):
     """
-    PVCA torque control via fire-and-forget SDO, driven by TPDO1 position
-    feedback at ~1 kHz.
+    PVCA torque control at ~1 kHz.
 
-    RPDO4 was attempted for Theta_e + Motor.ud but the firmware does not
-    route RPDO data to those objects regardless of the SDO mapping config.
+    RPDO1 (trans_type=0) applies its buffer on every SYNC.  The startup buffer
+    contains ControlWord=0 (Disable Voltage), so sending SYNC without
+    preparation disables the motor on every tick — regardless of what was set
+    via SDO.  Attempts to disable RPDO1 via its COB-ID invalid bit are silently
+    ignored by the firmware in NMT Operational state.
 
-    PDO isolation: RPDO1/2 have trans_type=0, so every SYNC caused the puck
-    to re-apply ControlWord=0 ("Disable Voltage") from their default buffer,
-    killing the motor on each tick.  Fix: disable RPDO1/2 and TPDO2/3 before
-    starting SYNC, restore on stop.
+    Fix: pre-fill the RPDO1 CAN buffer with ControlWord=OP_ENABLED +
+    ModeOfOperation=PVCA before the SYNC loop starts.  Every SYNC then
+    actively keeps the drive in "Operation Enabled / PVCA" state.
 
-    Control path: SYNC thread → TPDO1 callback (rx thread) → compute → two
-    fire-and-forget SDO writes for Theta_e and Motor.ud.  No blocking on the
-    rx thread; SDO ACK frames arrive later and are silently discarded.
+    Control path: SYNC thread → TPDO1 callback (rx thread) → compute →
+    RPDO3 PDO frame (Theta_e + Motor.ud, trans_type=255).
     """
-    _SYNC_PERIOD_S  = 0.001
     _STATUS_EVERY_N = 100
-
-    # PDO communication-parameter indices to save/disable around PVCA
-    _RPDO_COMM = [0x1400, 0x1401]        # RPDO1, RPDO2
-    _TPDO_COMM = [0x1801, 0x1802]        # TPDO2, TPDO3
 
     def __init__(self, parent, node, table, table_path, mp):
         super().__init__(parent, title="PVCA Torque Control",
@@ -57,15 +52,18 @@ class _PVCATorqueDialog(wx.Dialog):
         self._node        = node
         self._table       = table
         self._mp          = mp
-        self._torque_val  = 0.0   # GIL-safe; wx thread writes, rx thread reads
+        self._torque_val  = 0.0    # GIL-safe; wx thread writes, rx thread reads
+        self._sync_period = 0.001  # GIL-safe; wx thread writes, sync thread reads
         self._running     = False
         self._stop_evt    = threading.Event()
         self._sync_thread = None
         self._iter_count  = 0
         self._t_start     = 0.0
+        self._prev_pos    = None   # for velocity estimation
+        self._adc_was_on  = False  # restored on close
         self._tpdo1_cob   = (0x180 | node.id) & 0x7FF
-        self._sdo_cob     = 0x600 | node.id
-        self._saved_cobs  = {}    # comm_idx → saved COB-ID (for restore)
+        self._rpdo1_cob   = (0x200 | node.id) & 0x7FF
+        self._rpdo3_cob   = (0x400 | node.id) & 0x7FF
         self.Bind(wx.EVT_CLOSE, self._on_close)
         self._build_ui(table_path)
 
@@ -82,9 +80,15 @@ class _PVCATorqueDialog(wx.Dialog):
         hs = wx.BoxSizer(wx.HORIZONTAL)
         hs.Add(wx.StaticText(panel, label="Torque (mNm):"),
                0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
-        self._torque_ctrl = wx.TextCtrl(panel, value="50", size=(90, -1))
+        self._torque_ctrl = wx.TextCtrl(panel, value="50", size=(80, -1))
         self._torque_ctrl.Bind(wx.EVT_TEXT, self._on_torque_text)
         hs.Add(self._torque_ctrl, 0)
+        hs.AddSpacer(16)
+        hs.Add(wx.StaticText(panel, label="Rate (Hz):"),
+               0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
+        self._rate_ctrl = wx.TextCtrl(panel, value="1000", size=(80, -1))
+        self._rate_ctrl.Bind(wx.EVT_TEXT, self._on_rate_text)
+        hs.Add(self._rate_ctrl, 0)
         vs.Add(hs, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
 
         self._run_btn = wx.Button(panel, label="Start PVCA")
@@ -111,39 +115,18 @@ class _PVCATorqueDialog(wx.Dialog):
         except ValueError:
             pass
 
+    def _on_rate_text(self, _evt):
+        try:
+            hz = float(self._rate_ctrl.GetValue())
+            self._sync_period = 1.0 / hz if hz > 0 else 0.0
+        except ValueError:
+            pass
+
     def _toggle(self, _evt):
         if self._running:
             self._stop_from_ui()
         else:
             self._start()
-
-    # ------------------------------------------------------------------
-    # PDO isolation — disable interfering PDOs before SYNC starts
-    # ------------------------------------------------------------------
-
-    def _isolate_pdos(self):
-        """Disable RPDO1/2 and TPDO2/3; store originals for restore.
-
-        RPDO1/RPDO2 have trans_type=0.  Every SYNC causes the puck to
-        re-apply their buffered data.  Default buffer = 0 → ControlWord=0
-        = 'Disable Voltage', which kills the motor on every SYNC tick.
-        """
-        n = self._node
-        for idx in self._RPDO_COMM + self._TPDO_COMM:
-            cob = n.sdo[idx][1].raw
-            self._saved_cobs[idx] = cob
-            n.sdo[idx][1].raw = cob | 0x80000000   # set invalid bit → PDO disabled
-        print("PVCA: disabled RPDO1/2, TPDO2/3 to isolate SYNC")
-
-    def _restore_all_pdos(self):
-        """Restore all PDOs saved during _isolate_pdos."""
-        for idx, saved_cob in self._saved_cobs.items():
-            try:
-                self._node.sdo[idx][1].raw = saved_cob
-            except Exception:
-                pass
-        self._saved_cobs.clear()
-        print("PVCA: PDOs restored")
 
     # ------------------------------------------------------------------
     # Control (canopen rx thread, called for every TPDO1 frame)
@@ -159,49 +142,72 @@ class _PVCATorqueDialog(wx.Dialog):
         mp     = self._mp
         torque = self._torque_val   # GIL-safe float read
 
-        enc_idx    = int(actual_pos) % mp['enc_resolution']
+        # Velocity estimate from consecutive position readings (counts/sec).
+        period    = self._sync_period
+        prev_pos  = self._prev_pos
+        vel_cts_s = (actual_pos - prev_pos) / period if prev_pos is not None else 0.0
+        self._prev_pos = actual_pos
+
+        # Predict position at the moment RPDO3 voltage is applied (~250 µs ahead).
+        # This compensates for the TPDO1-receive → compute → RPDO3-send latency.
+        pred_pos = actual_pos + vel_cts_s * 0.00025
+
+        enc_idx    = int(pred_pos) % mp['enc_resolution']
         correction = self._table[enc_idx]
-        corrected_pos   = actual_pos + correction
+        corrected_pos   = pred_pos + correction
         theta_e_rotor_f = (corrected_pos - mp['e_zero']) * mp['e_polarity'] \
                           / mp['cts_per_elec'] * 65536.0
         theta_e_rotor_i = int(round(theta_e_rotor_f)) % 65536
         advance     = 16384 if torque >= 0 else -16384
         theta_e_u   = (theta_e_rotor_i + advance) % 65536
         theta_e_raw = theta_e_u if theta_e_u < 32768 else theta_e_u - 65536
-        iq_ma = abs(torque) * 1000.0 / mp['Kt']
-        vq    = iq_ma / 1000.0 * mp['Rt']
-        ud    = int(round(vq / mp['V_bus'] * 32767))
-        ud    = max(0, min(ud, int(0.85 * 32767)))
 
-        # Fire-and-forget expedited SDO writes — no blocking on the rx thread.
-        # ACK frames sent by the puck arrive later and are silently discarded.
-        # Expedited INT16 download: [cmd, idx_lo, idx_hi, sub, val_lo, val_hi, 0, 0]
-        sdo = self._sdo_cob
-        net = self._node.network
-        net.send_message(sdo,
-            struct.pack('<BBBBhxx', 0x2B, 0xEA, 0x60, 0x00, theta_e_raw))
-        net.send_message(sdo,
-            struct.pack('<BBBBhxx', 0x2B, 0x10, 0x30, 0x04, ud))
+        iq_ma = abs(torque) * 1000.0 / mp['Kt']
+        # Back-EMF feed-forward: vq = Rt·iq + ωe·λpm
+        # omega_e is signed (positive = spinning in direction of positive torque).
+        omega_e = vel_cts_s / mp['cts_per_elec'] * mp['e_polarity'] * (2.0 * math.pi)
+        torque_sign = 1.0 if torque >= 0 else -1.0
+        vq  = iq_ma / 1000.0 * mp['Rt'] + torque_sign * omega_e * mp['lambda_pm']
+        ud  = int(round(max(0.0, vq) / mp['V_bus'] * 32767))
+        ud  = min(ud, int(0.85 * 32767))
+
+        # One PDO frame — no ACK, no round-trip penalty.
+        # RPDO3 is configured (in Pre-Operational) with trans_type=255 so the
+        # puck applies the values immediately on receipt, not on the next SYNC.
+        try:
+            self._node.network.send_message(self._rpdo3_cob,
+                struct.pack('<hh', theta_e_raw, ud))
+        except Exception:
+            return  # skip this cycle if TX is momentarily saturated
 
         n = self._iter_count + 1
         self._iter_count = n
         if n == 1:
-            print("PVCA: first step — pos={} corr={:+d} θ_e={} ud={}".format(
-                actual_pos, correction, theta_e_rotor_i, ud))
+            print("PVCA: first step — pos={} corr={:+d} θ_e={} ud={} "
+                  "  RPDO3 cob={:#05x} data={}".format(
+                actual_pos, correction, theta_e_rotor_i, ud,
+                self._rpdo3_cob, struct.pack('<hh', theta_e_raw, ud).hex()))
         if n % self._STATUS_EVERY_N == 0:
             elapsed = time.monotonic() - self._t_start
             hz = n / max(elapsed, 1e-9)
+            rpm = vel_cts_s / mp['enc_resolution'] * 60.0
             wx.CallAfter(self._status.SetLabel,
-                "{:.0f} Hz  θ_e={:6d}  corr={:+4d}  "
-                "ud={:5d}  iq_est={:5.0f}mA".format(
-                    hz, theta_e_rotor_i, correction, ud, iq_ma))
+                "{:.0f} Hz  {:+5.0f}rpm  θ_e={:6d}  "
+                "ud={:5d}  iq={:5.0f}mA".format(
+                    hz, rpm, theta_e_rotor_i, ud, iq_ma))
 
     # ------------------------------------------------------------------
     # SYNC driver (background thread)
     # ------------------------------------------------------------------
 
     def _sync_loop(self):
-        """Sends SYNC at ~1 kHz; each SYNC triggers TPDO1 from the puck."""
+        """Sends SYNC at the configured rate with sleep+spin timing.
+
+        time.sleep() has ~1 ms OS granularity.  For sub-ms periods we sleep
+        most of the interval then busy-wait the last 200 µs so the SYNC
+        fires at the right time without accumulating timer drift.
+        """
+        _SPIN_S = 0.0002  # busy-wait threshold: 200 µs
         while not self._stop_evt.is_set():
             t0 = time.monotonic()
             try:
@@ -209,9 +215,12 @@ class _PVCATorqueDialog(wx.Dialog):
             except Exception as e:
                 wx.CallAfter(self._fault_stop, "SYNC error: " + str(e))
                 return
-            rem = self._SYNC_PERIOD_S - (time.monotonic() - t0)
-            if rem > 0.0:
-                time.sleep(rem)
+            period = self._sync_period   # GIL-safe float read
+            rem = period - (time.monotonic() - t0)
+            if rem > _SPIN_S:
+                time.sleep(rem - _SPIN_S)
+            while (time.monotonic() - t0) < period:
+                pass
 
     # ------------------------------------------------------------------
     # Start / stop / cleanup
@@ -220,19 +229,56 @@ class _PVCATorqueDialog(wx.Dialog):
     def _start(self):
         try:
             n = self._node
-            n.nmt.state = 'OPERATIONAL'
 
+            # Stop the ADC monitor's sync producer so PVCA has exclusive SYNC control.
+            # The ADC and PVCA both send SYNC frames; when both run simultaneously the
+            # Puck receives interleaved SYNCs at irregular intervals and TPDO1 delivery
+            # becomes unreliable.
+            parent = self.GetParent()
+            self._adc_was_on = getattr(parent, 'ADC_ON', False)
+            if self._adc_was_on:
+                parent.on_off_adc(parent)
+
+            # Configure PDOs in NMT Pre-Operational.  Firmware silently ignores PDO
+            # config writes in Operational state, so Pre-Op is required.
+            n.nmt.state = 'PRE-OPERATIONAL'
+            # TPDO1: explicitly enable with trans_type=0 (transmit on every SYNC).
+            # Without this the Puck may not send position feedback if a previous
+            # operation left TPDO1 in a different state.
+            n.sdo[0x1800][2].raw = 0   # trans_type = synchronous (every SYNC)
+            # RPDO1: switch to async so TorqueTarget=0 isn't slammed in on every SYNC.
+            n.sdo[0x1400][2].raw = 255
+            # RPDO3: map Theta_e + Motor.ud
+            n.sdo[0x1402][1].raw = self._rpdo3_cob | 0x80000000  # disable while mapping
+            n.sdo[0x1602][0].raw = 0                               # clear entry count
+            n.sdo[0x1602][1].raw = 0x60EA0010                     # Theta_e, sub0, 16-bit
+            n.sdo[0x1602][2].raw = 0x30100410                     # Motor.ud, sub4, 16-bit
+            n.sdo[0x1602][0].raw = 2
+            n.sdo[0x1402][2].raw = 255                            # async (apply on receipt)
+            n.sdo[0x1402][1].raw = self._rpdo3_cob                # enable
+            print("PVCA RPDO config readback:")
+            print("  RPDO1 trans_type: {}  (expect 255)".format(n.sdo[0x1400][2].raw))
+            print("  RPDO3 COB-ID:     {:#010x}  (expect {:#010x})".format(
+                n.sdo[0x1402][1].raw, self._rpdo3_cob))
+            print("  RPDO3 trans_type: {}  (expect 255)".format(n.sdo[0x1402][2].raw))
+            print("  RPDO3 map[1]:     {:#010x}  (expect 0x60ea0010)".format(n.sdo[0x1602][1].raw))
+            print("  RPDO3 map[2]:     {:#010x}  (expect 0x30100410)".format(n.sdo[0x1602][2].raw))
+
+            n.nmt.state = 'OPERATIONAL'
             n.sdo["ControlWord"].raw = CLEAR_FAULT
             n.sdo["ControlWord"].raw = SHUTDOWN
             n.sdo["ControlWord"].raw = OP_ENABLED
             n.sdo["SetModeOfOperation"].raw = MODE_PHASE_VOLTAGE_ANGLE
             n.sdo['Theta_e'].raw = 0
             n.sdo['Motor']['ud'].raw = 0
+            # Prime RPDO1 once so ControlWord=OP_ENABLED + Mode=PVCA take effect immediately.
+            # RPDO1 is now trans_type=255 (async) so it is NOT re-applied on every SYNC.
+            n.network.send_message(self._rpdo1_cob,
+                struct.pack('<HBh', OP_ENABLED, MODE_PHASE_VOLTAGE_ANGLE, 0))
+            # Pre-fill RPDO3 with safe zeros before first SYNC.
+            n.network.send_message(self._rpdo3_cob, struct.pack('<hh', 0, 0))
             time.sleep(0.1)
-
-            self._isolate_pdos()    # disable RPDO1/2, TPDO2/3 before SYNC
         except Exception as e:
-            self._restore_all_pdos()
             wx.MessageBox("Failed to start:\n{}".format(e), "Error",
                           wx.OK | wx.ICON_ERROR)
             return
@@ -241,9 +287,17 @@ class _PVCATorqueDialog(wx.Dialog):
             self._torque_val = float(self._torque_ctrl.GetValue())
         except ValueError:
             self._torque_val = 0.0
+        try:
+            hz = float(self._rate_ctrl.GetValue())
+            self._sync_period = 1.0 / hz if hz > 0 else 0.0
+        except ValueError:
+            self._sync_period = 0.001
+        print("PVCA: target rate={:.0f} Hz".format(
+            1.0 / self._sync_period if self._sync_period > 0 else float('inf')))
 
         self._iter_count = 0
         self._t_start    = time.monotonic()
+        self._prev_pos   = None
         self._running    = True
 
         self._node.network.subscribe(self._tpdo1_cob, self._on_tpdo1)
@@ -265,11 +319,14 @@ class _PVCATorqueDialog(wx.Dialog):
         except Exception:
             pass
         self._motor_off()
-        self._restore_all_pdos()
         self._run_btn.SetLabel("Start PVCA")
         self._status.SetLabel("Stopped")
 
     def _motor_off(self):
+        try:
+            self._node.network.send_message(self._rpdo3_cob, struct.pack('<hh', 0, 0))
+        except Exception:
+            pass
         try:
             self._node.sdo['Theta_e'].raw = 0
             self._node.sdo['Motor']['ud'].raw = 0
@@ -281,7 +338,6 @@ class _PVCATorqueDialog(wx.Dialog):
         self._running = False
         self._stop_evt.set()
         self._motor_off()
-        self._restore_all_pdos()
         self._run_btn.SetLabel("Start PVCA")
         self._status.SetLabel("FAULT: " + msg)
 
@@ -295,7 +351,13 @@ class _PVCATorqueDialog(wx.Dialog):
         except Exception:
             pass
         self._motor_off()
-        self._restore_all_pdos()
+        if self._adc_was_on:
+            try:
+                parent = self.GetParent()
+                parent.on_off_adc(parent)
+            except Exception:
+                pass
+            self._adc_was_on = False
         self.Destroy()
 
 
@@ -1229,11 +1291,20 @@ class calibrate():
                 import matplotlib.pyplot as plt
                 import os
     
+                _pc = None
+                try:
+                    _pc = int(self.node.sdo[0x1018][2].raw)
+                except Exception:
+                    pass
+                _puck_model = getattr(self, '_PRODUCT_CODE_MODELS', {}).get(_pc, 'unknown')
+                _node_label = 'Node {}  {}'.format(node_id, _puck_model)
+
                 fig, axes = plt.subplots(2, 3, figsize=(16, 9), sharey=False)
                 fig.suptitle(
                     'MaxSettlingTime calibration — ADC deviation vs settling time\n'
-                    'fine sweep {} – {} ns, {} ns steps  '
+                    '{} — fine sweep {} – {} ns, {} ns steps  '
                     '(coarse {} – {} ns, {} ns steps)'.format(
+                        _node_label,
                         fine_start, fine_end, fine_step,
                         coarse_start, coarse_max, coarse_step),
                     fontsize=12)
@@ -1283,11 +1354,10 @@ class calibrate():
                     ax.grid(True, alpha=0.25)
     
                 plt.tight_layout()
-                plot_path = os.path.join(
-                    os.path.dirname(os.path.abspath(__file__)),
-                    'logs',
-                    'itiming_cal_{}.png'.format(
-                        time.strftime('%Y-%m-%d_%H-%M-%S')))
+                from paths import session_path
+                plot_path = session_path('itiming_cal_{}.png'.format(
+                    time.strftime('%Y-%m-%d_%H-%M-%S')))
+                os.makedirs(os.path.dirname(plot_path), exist_ok=True)
                 fig.savefig(plot_path, dpi=110, bbox_inches='tight')
                 plt.close(fig)
                 print("Calibration plot saved: {}".format(plot_path))
@@ -1723,12 +1793,11 @@ class calibrate():
         return True
 
     def test_encoder_linearity(self, event):
-        """Sweep theta_e through one full mechanical revolution and compare the
-        actual encoder position to the ideal linear relationship.  Deviations
-        reveal encoder nonlinearity and distinguish electrical errors (repeat at
-        the same electrical angle every cycle) from mechanical errors (repeat at
-        the same mechanical angle, appearing at different electrical angles each
-        cycle)."""
+        """Merged into generate_enc_correction_table — redirect."""
+        self.generate_enc_correction_table(event)
+
+    def _test_encoder_linearity_legacy_body(self):
+        """Kept for reference only — no longer called."""
         if not self.check_for_node():
             return
         self.Disable()
@@ -1857,7 +1926,17 @@ class calibrate():
                 mech_all = [r[0] for r in results]
                 err_all  = [r[3] for r in results]
 
+                _enc_node_id = getattr(self.node, 'id', '?')
+                _enc_pc = None
+                try:
+                    _enc_pc = int(self.node.sdo[0x1018][2].raw)
+                except Exception:
+                    pass
+                _enc_model = getattr(self, '_PRODUCT_CODE_MODELS', {}).get(_enc_pc, 'unknown')
+
                 fig = plt.figure(figsize=(15, 8))
+                fig.suptitle('Encoder Linearity — Node {}  {}'.format(_enc_node_id, _enc_model),
+                             fontsize=13)
                 gs  = gridspec.GridSpec(2, 2, figure=fig, width_ratios=[1.2, 1])
                 ax1 = fig.add_subplot(gs[0, 0])
                 ax2 = fig.add_subplot(gs[1, 0])
@@ -1954,14 +2033,16 @@ class calibrate():
 
                 plt.tight_layout()
                 ts = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-                plot_path = resource_path(os.path.join(
-                    'logs', 'enc_linearity_{}.png'.format(ts)))
+                from paths import session_path
+                plot_path = session_path('enc_linearity_{}.png'.format(ts))
                 os.makedirs(os.path.dirname(plot_path), exist_ok=True)
                 plt.savefig(plot_path, dpi=100)
                 plt.close()
                 print("\nPlot saved: {}".format(plot_path))
-            except ImportError:
-                pass
+            except ImportError as _e:
+                print("\nWARNING: enc_linearity plot not saved — matplotlib not installed: {}".format(_e))
+            except Exception as _e:
+                print("\nWARNING: enc_linearity plot failed: {}".format(_e))
 
         except Exception as _exc:
             self._cal_fault(_exc)
@@ -1988,6 +2069,43 @@ class calibrate():
         """
         if not self.check_for_node():
             return
+
+        # If compensation is already active, ask whether to recalibrate or retest.
+        # Recalibration always runs an automatic retest sweep afterwards.
+        _retest_only = False
+        try:
+            if self.node.sdo[0x3027][1].raw:
+                _cdlg = wx.Dialog(self, title="Encoder Compensation Active")
+                _cdlg_sizer = wx.BoxSizer(wx.VERTICAL)
+                _cdlg_msg = wx.StaticText(
+                    _cdlg, label=
+                    "Encoder compensation is currently active on this node.\n\n"
+                    "Recalibrate: replace compensation with a new bidirectional sweep\n"
+                    "  (retest runs automatically afterwards).\n\n"
+                    "Retest Linearity: verify current compensation accuracy only.")
+                _cdlg_sizer.Add(_cdlg_msg, 0, wx.ALL, 12)
+                _cdlg_btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
+                _btn_recal  = wx.Button(_cdlg, label="Recalibrate")
+                _btn_retest = wx.Button(_cdlg, label="Retest Linearity")
+                _btn_cancel = wx.Button(_cdlg, wx.ID_CANCEL, label="Cancel")
+                _cdlg_btn_sizer.Add(_btn_recal,  0, wx.ALL, 4)
+                _cdlg_btn_sizer.Add(_btn_retest, 0, wx.ALL, 4)
+                _cdlg_btn_sizer.Add(_btn_cancel, 0, wx.ALL, 4)
+                _cdlg_sizer.Add(_cdlg_btn_sizer, 0, wx.ALIGN_CENTER | wx.BOTTOM, 8)
+                _cdlg.SetSizerAndFit(_cdlg_sizer)
+                _cdlg_choice = [None]
+                def _on_recal(e):  _cdlg_choice[0] = 'recal';  _cdlg.EndModal(wx.ID_YES)
+                def _on_retest(e): _cdlg_choice[0] = 'retest'; _cdlg.EndModal(wx.ID_NO)
+                _btn_recal.Bind(wx.EVT_BUTTON,  _on_recal)
+                _btn_retest.Bind(wx.EVT_BUTTON, _on_retest)
+                _cdlg_result = _cdlg.ShowModal()
+                _cdlg.Destroy()
+                if _cdlg_result == wx.ID_CANCEL:
+                    return
+                _retest_only = (_cdlg_choice[0] == 'retest')
+        except Exception:
+            pass
+
         self.Disable()
         if self.ADC_ON:
             self.adcWasON = True
@@ -1995,10 +2113,15 @@ class calibrate():
         else:
             self.adcWasON = False
 
+        self.OnStartTask(None)
+        self.frame_statusbar.SetStatusText("Generating encoder correction table...", 1)
+        self.frame_statusbar.Update()
+
         try:
             import cmath as _cm
             import datetime, os
-            from paths import resource_path
+            from paths import resource_path, session_path
+            ts = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
 
             e_zero         = self.node.sdo['Calibration']['e_zero'].raw
             e_polarity     = int(self.node.sdo['Calibration']['e_polarity'].raw)
@@ -2011,17 +2134,37 @@ class calibrate():
             if cal_current > i_peak:
                 cal_current = i_peak
 
-            N_PER_CYCLE = 192   # steps per electrical cycle → 1.875° per step
-            STEP_S      = 0.05  # settle time per step (s)
-            N_HARMONICS = 16    # Fourier harmonics retained
-            N_TOTAL     = N_PER_CYCLE * pole_pairs  # exactly one mechanical revolution
+            node_id = getattr(self.node, 'id', '?')
+            _pc = None
+            try:
+                _pc = int(self.node.sdo[0x1018][2].raw)
+            except Exception:
+                pass
+            model_str = getattr(self, '_PRODUCT_CODE_MODELS', {}).get(_pc, 'unknown')
+
+            N_PER_CYCLE        = 64    # steps per electrical cycle → 5.625° per step
+            STEP_S             = 0.025 # settle time per step (s) — calibration sweeps
+            RETEST_STEP_S      = 0.015 # settle time for retest (EncPos is smoother than RawPos)
+            N_HARMONICS        = 16    # Fourier harmonics retained
+            N_TOTAL            = N_PER_CYCLE * pole_pairs  # exactly one mechanical revolution
+            RETEST_N_PER_CYCLE = 48   # retest only needs to verify, not characterise
+            RETEST_N_TOTAL     = RETEST_N_PER_CYCLE * pole_pairs
 
             print("\nEncoder correction table — sweep parameters")
             print("  {} pole pairs  {:.2f} cts/elec  enc_res={}  "
                   "e_zero={}  e_polarity={}".format(
                       pole_pairs, cts_per_elec, enc_resolution, e_zero, e_polarity))
-            print("  {} steps/cycle × {} cycles = {} steps  ~{:.0f} s".format(
-                N_PER_CYCLE, pole_pairs, N_TOTAL, N_TOTAL * STEP_S + 15))
+            if _retest_only:
+                _est_s = RETEST_N_TOTAL * RETEST_STEP_S * 2 + 15
+                print("  {} steps/cycle × {} cycles = {} steps (bidir)  ~{:.0f} s (retest only)".format(
+                    RETEST_N_PER_CYCLE, pole_pairs, RETEST_N_TOTAL, _est_s))
+            else:
+                _est_s = (N_TOTAL * STEP_S * 2                  # forward + reverse cal sweeps
+                          + RETEST_N_TOTAL * RETEST_STEP_S * 2  # retest bidir (motor stays powered)
+                          + 15)                                  # one ramp-up
+                print("  cal: {} steps/cycle × {} cycles = {} steps  "
+                      "retest: {} steps/cycle (bidir)  ~{:.0f} s total".format(
+                    N_PER_CYCLE, pole_pairs, N_TOTAL, RETEST_N_PER_CYCLE, _est_s))
 
             # ---- Enable in PHASE_VOLTAGE_ANGLE mode and ramp current ----
             self.node.sdo["ControlWord"].raw = CLEAR_FAULT
@@ -2047,38 +2190,220 @@ class calibrate():
             _sleep_responsive(0.3)
 
             # ---- Sweep one full mechanical revolution ----
-            enc_start       = self.node.sdo['Encoder']['RawPosition'].raw
+            # Retest uses compensated EncPos (0x3012,2) to verify correction is applied;
+            # calibration uses raw RawPosition (0x3012,1) to measure true encoder error.
+            # Both paths run bidirectional (forward + reverse) to cancel friction bias.
+            _sweep_pos_key = 'EncPos' if _retest_only else 'RawPosition'
+            _sw_n_total = RETEST_N_TOTAL if _retest_only else N_TOTAL
+            _sw_n_cycle = RETEST_N_PER_CYCLE if _retest_only else N_PER_CYCLE
+            _step_s     = RETEST_STEP_S if _retest_only else STEP_S
+            enc_start       = self.node.sdo['Encoder'][_sweep_pos_key].raw
             enc_prev        = enc_start
             enc_accumulated = 0
-            # (step_in_cycle, cycle_n, correction_cts, abs_enc_pos)
-            sweep = []
+            sweep_fwd       = []
 
-            print("Sweeping {} steps...".format(N_TOTAL))
-            for step in range(N_TOTAL + 1):
-                step_in_cycle = step % N_PER_CYCLE
-                total_elec    = step / N_PER_CYCLE
-                frac          = step_in_cycle / N_PER_CYCLE
+            print("Sweeping {} steps ({}) — forward ...".format(
+                _sw_n_total, 'EncPos (compensated)' if _retest_only else 'RawPosition'))
+            for step in range(_sw_n_total + 1):
+                step_in_cycle = step % _sw_n_cycle
+                total_elec    = step / _sw_n_cycle
+                frac          = step_in_cycle / _sw_n_cycle
                 theta_e_u     = round(frac * 65536) % 65536
                 theta_e_raw   = theta_e_u if theta_e_u < 32768 else theta_e_u - 65536
                 self.node.sdo['Theta_e'].raw = theta_e_raw
-                time.sleep(STEP_S)
+                time.sleep(_step_s)
+                self.UpdateUI(5 + step * 30 // (_sw_n_total + 1))
                 wx.Yield()
-                enc   = self.node.sdo['Encoder']['RawPosition'].raw
+                enc   = self.node.sdo['Encoder'][_sweep_pos_key].raw
                 delta = enc - enc_prev
                 if delta >  enc_resolution / 2: delta -= enc_resolution
                 if delta < -enc_resolution / 2: delta += enc_resolution
                 enc_accumulated += delta
                 enc_prev = enc
-                if step < N_TOTAL:  # exclude final return-to-start wrap point
+                if step < _sw_n_total:
                     expected   = e_polarity * total_elec * cts_per_elec
-                    correction = expected - enc_accumulated   # counts to ADD for true pos
+                    correction = expected - enc_accumulated
                     abs_pos    = (enc_start + enc_accumulated) % enc_resolution
-                    cycle_n    = step // N_PER_CYCLE + 1
-                    sweep.append((step_in_cycle, cycle_n, correction, abs_pos))
+                    cycle_n    = step // _sw_n_cycle + 1
+                    sweep_fwd.append((step_in_cycle, cycle_n, correction, abs_pos))
 
-            self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
+            # Reverse sweep: theta_e descends through one full mechanical revolution.
+            # Friction/cogging bias flips sign vs the forward pass; averaging cancels it.
+            # Both calibration and retest paths run bidirectional.
+            enc_prev_rev = self.node.sdo['Encoder'][_sweep_pos_key].raw
+            enc_acc_rev  = 0
+            sweep_rev    = []
+            print("Sweeping {} steps ({} — reverse) ...".format(
+                _sw_n_total, 'EncPos' if _retest_only else 'RawPosition'))
+            for step in range(_sw_n_total + 1):
+                step_in_cycle_r = step % _sw_n_cycle
+                total_elec_r    = step / _sw_n_cycle
+                frac_r      = (_sw_n_cycle - step_in_cycle_r) % _sw_n_cycle / _sw_n_cycle
+                theta_e_u   = round(frac_r * 65536) % 65536
+                theta_e_raw = theta_e_u if theta_e_u < 32768 else theta_e_u - 65536
+                self.node.sdo['Theta_e'].raw = theta_e_raw
+                time.sleep(_step_s)
+                self.UpdateUI(35 + step * 30 // (_sw_n_total + 1))
+                wx.Yield()
+                enc_r   = self.node.sdo['Encoder'][_sweep_pos_key].raw
+                delta_r = enc_r - enc_prev_rev
+                if delta_r >  enc_resolution / 2: delta_r -= enc_resolution
+                if delta_r < -enc_resolution / 2: delta_r += enc_resolution
+                enc_acc_rev  += delta_r
+                enc_prev_rev  = enc_r
+                if step < _sw_n_total:
+                    expected_r   = -e_polarity * total_elec_r * cts_per_elec
+                    correction_r = expected_r - enc_acc_rev
+                    abs_pos_r    = (enc_start + enc_acc_rev) % enc_resolution
+                    sweep_rev.append((step_in_cycle_r, step // _sw_n_cycle + 1,
+                                      correction_r, abs_pos_r))
 
-            N_S = len(sweep)   # = N_TOTAL
+            # Forward step i and reverse step (N_SF - i) % N_SF are at the same
+            # absolute encoder position. Average to cancel friction/cogging bias.
+            N_SF     = len(sweep_fwd)
+            avg_corr = [(sweep_fwd[i][2] + sweep_rev[(N_SF - i) % N_SF][2]) / 2.0
+                        for i in range(N_SF)]
+            sweep    = [(sweep_fwd[i][0], sweep_fwd[i][1], avg_corr[i], sweep_fwd[i][3])
+                        for i in range(N_SF)]
+            print("  Bidirectional average complete ({} points).".format(N_SF))
+
+            if _retest_only:
+                self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
+            self.UpdateUI(95 if _retest_only else 66)
+
+            N_S = len(sweep)
+
+            # ---- Derive linearity results from high-density sweep ----
+            PASS_THRESHOLD = 5.0  # engineering pass/fail limit (° electrical)
+            lin_results = []
+            for _lidx, (s_cyc, cyc_n, corr, _abs) in enumerate(sweep):
+                _mech_deg  = _lidx / N_S * 360.0
+                _elec_deg  = s_cyc / _sw_n_cycle * 360.0
+                _error_deg = -corr / cts_per_elec * 360.0
+                lin_results.append((_mech_deg, _elec_deg, cyc_n, _error_deg))
+
+            _lin_errs = [r[3] for r in lin_results]
+            _lin_max_err  = max(_lin_errs, key=abs)
+            _lin_max_idx  = max(range(len(_lin_errs)), key=lambda i: abs(_lin_errs[i]))
+            _lin_rms_err  = (sum(e * e for e in _lin_errs) / len(_lin_errs)) ** 0.5
+            _lin_passed   = abs(_lin_max_err) <= PASS_THRESHOLD
+
+            print("\nEncoder linearity results:")
+            print("  Max error : {:.2f}° elec  at mech={:.1f}°  elec={:.1f}°  (cycle {})".format(
+                _lin_max_err, lin_results[_lin_max_idx][0],
+                lin_results[_lin_max_idx][1], lin_results[_lin_max_idx][2]))
+            print("  RMS error : {:.2f}° elec".format(_lin_rms_err))
+            print("  Pass/Fail : {} (threshold ±{:.1f}° elec)".format(
+                "PASS" if _lin_passed else "FAIL", PASS_THRESHOLD))
+
+            # ---- Linearity plot (enc_linearity PNG — 3 panels) ----
+            try:
+                import matplotlib
+                matplotlib.use('Agg')
+                import matplotlib.pyplot as _lplt
+                import matplotlib.gridspec as _lgs
+
+                _mech_all = [r[0] for r in lin_results]
+                _err_all  = [r[3] for r in lin_results]
+
+                _lfig = _lplt.figure(figsize=(15, 8))
+                _lfig.suptitle(
+                    'Encoder Linearity{}— Node {}  {}  ({})\n'
+                    '{} pole pairs  {} steps/elec cycle'.format(
+                        ' [COMPENSATION ACTIVE] ' if _retest_only else ' ',
+                        node_id, model_str, ts, pole_pairs, _sw_n_cycle),
+                    fontsize=13)
+                _lgs_obj = _lgs.GridSpec(2, 2, figure=_lfig, width_ratios=[1.2, 1])
+                _lax1 = _lfig.add_subplot(_lgs_obj[0, 0])
+                _lax2 = _lfig.add_subplot(_lgs_obj[1, 0])
+                _lax3 = _lfig.add_subplot(_lgs_obj[:, 1])
+
+                _pf_label = 'Pass/Fail limit (±{:.0f}°)'.format(PASS_THRESHOLD)
+                _lax1.plot(_mech_all, _err_all, 'b-', linewidth=0.8, label='Measured error')
+                _lax1.axhline(0, color='k', linewidth=2.5, linestyle=':',
+                              label='Expected (0° error)', zorder=5)
+                _lax1.axhline( PASS_THRESHOLD, color='r', linewidth=1.5,
+                               linestyle='--', label=_pf_label)
+                _lax1.axhline(-PASS_THRESHOLD, color='r', linewidth=1.5, linestyle='--')
+                _lax1.set_xlabel('Mechanical angle (°)')
+                _lax1.set_ylabel('Error (° electrical)')
+                _lax1.set_title('Encoder linearity — error vs mechanical angle  [{}]'.format(
+                    'PASS' if _lin_passed else 'FAIL'))
+                _lax1.legend(fontsize=8)
+                _lax1.grid(True, alpha=0.3)
+
+                _lcolors = _lplt.cm.tab10.colors
+                for _lcyc in range(1, pole_pairs + 2):
+                    _cyc_pts = [(r[1], r[3]) for r in lin_results if r[2] == _lcyc]
+                    if _cyc_pts:
+                        _xs, _ys = zip(*_cyc_pts)
+                        _lax2.plot(_xs, _ys, color=_lcolors[(_lcyc - 1) % 10],
+                                   alpha=0.8, linewidth=0.9, label='Cycle {}'.format(_lcyc))
+                _lax2.axhline(0, color='k', linewidth=2.5, linestyle=':', zorder=5)
+                _lax2.axhline( PASS_THRESHOLD, color='r', linewidth=1.5, linestyle='--',
+                               label=_pf_label)
+                _lax2.axhline(-PASS_THRESHOLD, color='r', linewidth=1.5, linestyle='--')
+                _lax2.set_xlabel('Electrical angle (°)')
+                _lax2.set_ylabel('Error (° electrical)')
+                _lax2.set_title('Overlaid by electrical cycle — '
+                                'consistent = electrical error; shifting = mechanical error')
+                _lax2.legend(fontsize=7, ncol=4)
+                _lax2.grid(True, alpha=0.3)
+
+                # Lissajous per electrical cycle
+                _lcyc_base = {}
+                for _lr in lin_results:
+                    if int(round(_lr[1] / 360.0 * _sw_n_cycle)) % _sw_n_cycle == 0:
+                        _lcyc_base.setdefault(_lr[2], _lr[3])
+                _lcyc_profiles = {}
+                for _lr in lin_results:
+                    _ls = int(round(_lr[1] / 360.0 * _sw_n_cycle)) % _sw_n_cycle
+                    _lcyc_profiles.setdefault(_lr[2], {})[_ls] = (
+                        _lr[3] - _lcyc_base.get(_lr[2], 0.0))
+                _lall_wc = [e for d in _lcyc_profiles.values() for e in d.values()]
+                _lmax_ae = max(abs(e) for e in _lall_wc) if _lall_wc else 1.0
+                _lr_scale = 0.4 / (_lmax_ae or 1.0)
+                _lcirc_t = [i / 360 * 2 * math.pi for i in range(361)]
+                _lax3.plot([math.cos(t) for t in _lcirc_t],
+                           [math.sin(t) for t in _lcirc_t],
+                           'k', linewidth=2.5, linestyle=':', label='Ideal', zorder=5)
+                for _lcn in sorted(_lcyc_profiles.keys()):
+                    _lprof = _lcyc_profiles[_lcn]
+                    if len(_lprof) < _sw_n_cycle:
+                        continue
+                    _lsteps = sorted(_lprof.keys())
+                    _lts2 = [s / _sw_n_cycle * 2.0 * math.pi for s in _lsteps] + [0.0]
+                    _les2 = [_lprof[s] for s in _lsteps] + [0.0]
+                    _lxs  = [(1.0 + _lr_scale * e) * math.cos(t) for t, e in zip(_lts2, _les2)]
+                    _lys  = [(1.0 + _lr_scale * e) * math.sin(t) for t, e in zip(_lts2, _les2)]
+                    _lax3.plot(_lxs, _lys, color=_lcolors[(_lcn - 1) % 10],
+                               alpha=0.7, linewidth=0.9, label='Cycle {}'.format(_lcn))
+                _lax3.set_aspect('equal')
+                _lax3.axhline(0, color='gray', linewidth=0.5, zorder=0)
+                _lax3.axvline(0, color='gray', linewidth=0.5, zorder=0)
+                _lax3.set_xlabel('cos(ε)')
+                _lax3.set_ylabel('sin(ε)')
+                _lax3.set_title(
+                    'Encoder Lissajous (per elec. cycle)  [{}]\n'
+                    '{:.0f}°/unit  —  overlap=electrical err, spread=mechanical err'.format(
+                        'PASS' if _lin_passed else 'FAIL', 1.0 / _lr_scale))
+                _lax3.legend(fontsize=7, ncol=4)
+                _lax3.grid(True, alpha=0.3)
+
+                _lplt.tight_layout()
+                _lin_plot_path = session_path('enc_linearity_{}.png'.format(ts))
+                os.makedirs(os.path.dirname(_lin_plot_path), exist_ok=True)
+                _lplt.savefig(_lin_plot_path, dpi=100)
+                _lplt.close(_lfig)
+                print("  Linearity plot → {}".format(_lin_plot_path))
+            except ImportError as _le:
+                print("  WARNING: linearity plot skipped — matplotlib not installed: {}".format(_le))
+            except Exception as _le:
+                print("  WARNING: linearity plot failed: {}".format(_le))
+
+            if _retest_only:
+                print("\nRetest complete — compensation active, skipping recalibration.")
+                return
 
             # ---- Fourier fitting helpers (stdlib only, no numpy) ----
             def _dft(samples, n_harm):
@@ -2162,16 +2487,13 @@ class calibrate():
             print("                        * e_polarity / {:.2f} * 65536".format(cts_per_elec))
 
             # ---- Save CSV files ----
-            ts = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-            node_id = getattr(self.node, 'id', '?')
             meta = ("# node={} e_zero={} e_polarity={} enc_res={} motor_poles={} "
                     "cts_per_elec={:.2f} sweep_steps_per_cycle={} harmonics={}\n"
                     "# corrected_pos = raw_pos + table[index]\n"
                     ).format(node_id, e_zero, e_polarity, enc_resolution,
                              motor_poles, cts_per_elec, N_PER_CYCLE, N_HARMONICS)
 
-            full_path = resource_path(os.path.join(
-                'logs', 'enc_correction_full_{}.csv'.format(ts)))
+            full_path = session_path('enc_correction_full_{}.csv'.format(ts))
             os.makedirs(os.path.dirname(full_path), exist_ok=True)
             with open(full_path, 'w') as _f:
                 _f.write("# Encoder position correction — full mechanical revolution\n")
@@ -2181,8 +2503,7 @@ class calibrate():
                 for _p, _c in enumerate(table_full):
                     _f.write("{},{}\n".format(_p, _c))
 
-            elec_path = resource_path(os.path.join(
-                'logs', 'enc_correction_elec_{}.csv'.format(ts)))
+            elec_path = session_path('enc_correction_elec_{}.csv'.format(ts))
             with open(elec_path, 'w') as _f:
                 _f.write("# Encoder position correction — per electrical cycle\n")
                 _f.write("# index = (raw_encoder_pos - e_zero) % round(cts_per_elec)\n")
@@ -2194,9 +2515,804 @@ class calibrate():
             print("\n  Full-rev CSV  → {}".format(full_path))
             print("  Elec-cyc CSV  → {}".format(elec_path))
 
+            # ---- Plot ----
+            try:
+                import matplotlib
+                matplotlib.use('Agg')
+                import matplotlib.pyplot as plt
+
+                fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+                fig.suptitle(
+                    'Encoder Correction Table — Node {}  {}  ({})\n'
+                    '{} pole pairs  {:.2f} cts/elec  '
+                    '{} steps/cycle  {} harmonics'.format(
+                        node_id, model_str, ts,
+                        pole_pairs, cts_per_elec, N_PER_CYCLE, N_HARMONICS))
+
+                colors = plt.cm.tab10.colors
+
+                # Top-left: raw correction vs mechanical angle + full-rev fit
+                ax = axes[0, 0]
+                mech_degs = [i / N_S * 360.0 for i in range(N_S)]
+                ax.plot(mech_degs, corr_seq, 'b.', markersize=2, alpha=0.5, label='Measured')
+                fit_at_pos = [table_full[sweep[i][3]] for i in range(N_S)]
+                ax.plot(mech_degs, fit_at_pos, 'r-', linewidth=1.5,
+                        label='Fourier fit ({} harmonics)'.format(N_HARMONICS))
+                ax.set_xlabel('Mechanical angle (°)')
+                ax.set_ylabel('Correction (cts)')
+                ax.set_title('Full-revolution: measured vs fit  '
+                             '[dominant error: {}]'.format(err_type.split()[0]))
+                ax.legend(fontsize=8)
+                ax.grid(True, alpha=0.3)
+
+                # Top-right: per-cycle overlay (spread = mechanical error)
+                ax = axes[0, 1]
+                for cyc in range(1, pole_pairs + 1):
+                    pts = [(s[0], s[2] - cyc_base.get(s[1], 0.0))
+                           for s in sweep if s[1] == cyc]
+                    if pts:
+                        xs, ys = zip(*pts)
+                        ax.plot([x / N_PER_CYCLE * 360.0 for x in xs], ys,
+                                color=colors[(cyc - 1) % 10], alpha=0.7,
+                                linewidth=0.9, label='Cycle {}'.format(cyc))
+                ax.plot([i / N_PER_CYCLE * 360.0 for i in range(N_PER_CYCLE)],
+                        elec_avg, 'k-', linewidth=2, label='Cycle avg')
+                ax.set_xlabel('Electrical angle (°)')
+                ax.set_ylabel('Correction − cycle base (cts)')
+                ax.set_title('Per-cycle overlay  '
+                             '(overlap=electrical err, spread=mechanical err)')
+                ax.legend(fontsize=7, ncol=4)
+                ax.grid(True, alpha=0.3)
+
+                # Bottom-left: full table indexed by encoder position
+                ax = axes[1, 0]
+                ax.plot(range(enc_resolution), table_full, 'b-', linewidth=0.8)
+                ax.axhline(0, color='k', linewidth=0.5, linestyle='--')
+                ax.set_xlabel('Encoder position (cts)')
+                ax.set_ylabel('Correction (cts)')
+                ax.set_title('Full-rev table  '
+                             '({} entries  max={:+d} cts  RMS={:.1f} cts)'.format(
+                                 enc_resolution, max_full, rms_full))
+                ax.grid(True, alpha=0.3)
+
+                # Bottom-right: electrical-cycle table + raw averaged data
+                ax = axes[1, 1]
+                ax.plot([i / N_PER_CYCLE * elec_sz for i in range(N_PER_CYCLE)],
+                        elec_avg, 'k.', markersize=4, alpha=0.7, label='Cycle avg')
+                ax.plot(range(elec_sz), table_elec, 'g-', linewidth=1.5,
+                        label='Elec-cycle table')
+                ax.axhline(0, color='k', linewidth=0.5, linestyle='--')
+                ax.set_xlabel('Position within electrical cycle (cts)')
+                ax.set_ylabel('Correction (cts)')
+                ax.set_title('Electrical-cycle table  '
+                             '({} entries  max={:+d} cts  RMS={:.1f} cts)'.format(
+                                 elec_sz, max_elec, rms_elec))
+                ax.legend(fontsize=8)
+                ax.grid(True, alpha=0.3)
+
+                plt.tight_layout()
+                plot_path = session_path('enc_correction_{}.png'.format(ts))
+                plt.savefig(plot_path, dpi=100)
+                plt.close()
+                print("  Plot  → {}".format(plot_path))
+            except ImportError as _pe:
+                print("  WARNING: plot skipped — matplotlib not installed: {}".format(_pe))
+            except Exception as _pe:
+                print("  WARNING: plot failed: {}".format(_pe))
+
+            # ── FFT harmonic analysis ─────────────────────────────────────────
+            try:
+                import numpy as _np
+                import json as _json
+
+                # Use raw sweep data so harmonics reflect actual encoder error,
+                # not the 16-harmonic-filtered Fourier table.
+                N = N_S          # sweep points = one full mechanical revolution
+                tf = _np.array(corr_seq, dtype=_np.float64)
+                X = _np.fft.rfft(tf)
+
+                # amplitude and phase per harmonic (k=0 is DC)
+                amps   = 2.0 * _np.abs(X) / N
+                phases = _np.angle(X)
+                amps[0]  /= 2.0  # DC bin is not doubled
+                amps[-1] /= 2.0  # Nyquist bin (if N even) is not doubled
+
+                # sort by amplitude descending (skip DC k=0)
+                order = 1 + _np.argsort(amps[1:])[::-1]
+                top_n = min(40, len(order))
+
+                print("\n  FFT harmonic analysis  (N={})".format(N))
+                print("  {:>4s}  {:>10s}  {:>10s}  {:>12s}  {:>12s}".format(
+                    "k", "Amplitude", "Phase(rad)", "cos coeff", "sin coeff"))
+                print("  " + "-" * 54)
+
+                harmonic_list = []
+                for _ki in range(top_n):
+                    k   = int(order[_ki])
+                    A   = float(amps[k])
+                    phi = float(phases[k])
+                    a_k = A * _np.cos(phi)   # coefficient of cos(2π k pos/N)
+                    b_k = -A * _np.sin(phi)  # coefficient of sin(2π k pos/N)
+                    print("  {:>4d}  {:>10.4f}  {:>10.5f}  {:>12.4f}  {:>12.4f}".format(
+                        k, A, phi, float(a_k), float(b_k)))
+                    harmonic_list.append({
+                        "k": k,
+                        "frequency_cycles_per_rev": k,
+                        "amplitude": A, "phase_rad": phi,
+                        "cos_coeff": float(a_k), "sin_coeff": float(b_k)
+                    })
+
+                # find minimum harmonics needed for <1 ct RMS reconstruction error
+                sorted_ks = [int(order[i]) for i in range(len(order))]
+                X_recon = _np.zeros(N // 2 + 1, dtype=_np.complex128)
+                X_recon[0] = X[0]  # always keep DC
+                best_n = len(sorted_ks)
+                for _ni in range(1, len(sorted_ks) + 1):
+                    for _ki in range(_ni):
+                        X_recon[sorted_ks[_ki]] = X[sorted_ks[_ki]]
+                    recon = _np.fft.irfft(X_recon, n=N)
+                    rms_err = float(_np.sqrt(_np.mean((tf - recon) ** 2)))
+                    if rms_err < 1.0:
+                        best_n = _ni
+                        break
+                print("\n  Harmonics needed for RMS < 1 ct: {}".format(best_n))
+
+                table_bytes    = enc_resolution * 2
+                harmonic_bytes = best_n * (2 + 4 + 4)  # k(u16) + cos(f32) + sin(f32)
+                print("  Memory: lookup table = {} B  |  {} harmonics = {} B  ({}x smaller)".format(
+                    table_bytes, best_n, harmonic_bytes,
+                    int(round(table_bytes / harmonic_bytes)) if harmonic_bytes else "∞"))
+
+                print("\n  Formula:  correction(pos) = Σ A_k · cos(2π·k·pos/{} + φ_k)".format(enc_resolution))
+                print("  where pos = raw encoder count (0..{}),".format(enc_resolution - 1))
+                print("  k = harmonic (cycles/rev), A_k = amplitude (counts),")
+                print("  φ_k = phase (radians). DC offset: {:.3f} cts\n".format(float(amps[0])))
+
+                fft_data = {
+                    "enc_resolution": enc_resolution,
+                    "fft_input": "raw_sweep_{}_points".format(N),
+                    "formula": "correction(pos) = dc + sum(A_k * cos(2*pi*k*pos/{} + phi_k))".format(enc_resolution),
+                    "harmonics_for_1ct_rms": best_n,
+                    "table_bytes": table_bytes,
+                    "harmonic_bytes": harmonic_bytes,
+                    "dc_offset_cts": float(amps[0]),
+                    "harmonics_by_amplitude": harmonic_list
+                }
+                fft_path = session_path('enc_correction_harmonics_{}.json'.format(ts))
+                with open(fft_path, 'w') as _jf:
+                    _json.dump(fft_data, _jf, indent=2)
+                print("  FFT JSON → {}".format(fft_path))
+
+                # ── Upload top-10 harmonic bins to Puck (0x3027) ─────────────
+                N_BINS = 10
+                # Top 10 AC harmonics by amplitude (k≥1). DC offset is not uploaded
+                # to the puck; it is subtracted from the retest plots for display only.
+                _top_bins = sorted_ks[:N_BINS]  # top 10 by amplitude, most impactful first
+                n_upload  = len(_top_bins)
+
+                print("\n  Top {} harmonics by amplitude (most impactful first):".format(n_upload))
+                print("  Rank  {:>4}  {:>10}".format("k", "Amplitude"))
+                print("  " + "-" * 24)
+                for _ri, _rk in enumerate(_top_bins):
+                    print("  {:>4d}  {:>4d}  {:>10.4f}".format(_ri + 1, _rk, float(amps[_rk])))
+
+                print("\n  Uploading encoder compensation harmonics to node {} ...".format(node_id))
+                print("  {:>4}  {:>6}  {:>6}  {:>10}  {:>10}".format(
+                    "Bin", "k", "Amp", "Phase(mrad)", "Phase(rad)"))
+                print("  " + "-" * 42)
+
+                # Disable compensation while writing bins
+                self.node.sdo[0x3027][1].raw = 0
+
+                for _bi in range(N_BINS):
+                    _amp_sub   = 2 + _bi * 3
+                    _k_sub     = 3 + _bi * 3
+                    _phase_sub = 4 + _bi * 3
+
+                    if _bi < n_upload:
+                        _bk        = int(_top_bins[_bi])
+                        _bA        = float(amps[_bk])
+                        _bphi      = float(phases[_bk])
+                        _amp_val   = max(0, int(round(_bA)))
+                        _k_val     = _bk
+                        # Two corrections applied to the raw FFT phase:
+                        # 1. enc_start offset: FFT phase is relative to wherever the
+                        #    sweep started; firmware uses absolute encoder position,
+                        #    so subtract 2π·k·enc_start/enc_resolution.
+                        # 2. Sign correction (+π): firmware applies -compensation
+                        #    internally, so flip sign via cos(θ+π) = -cos(θ).
+                        _phi_abs    = (_bphi
+                                       - 2.0 * math.pi * _bk * float(enc_start) / float(enc_resolution)
+                                       + math.pi)
+                        _phase_mrad = int(round((_phi_abs % (2.0 * math.pi)) * 1000.0))
+                        print("  {:>4d}  {:>6d}  {:>6d}  {:>10d}  {:>10.4f}".format(
+                            _bi, _k_val, _amp_val, _phase_mrad, _bphi))
+                    else:
+                        _amp_val = _k_val = _phase_mrad = 0
+
+                    self.node.sdo[0x3027][_amp_sub].raw   = _amp_val
+                    self.node.sdo[0x3027][_k_sub].raw     = _k_val
+                    self.node.sdo[0x3027][_phase_sub].raw = _phase_mrad
+
+                # Enable compensation
+                self.node.sdo[0x3027][1].raw = 1
+                print("  Encoder Compensation Active → 1")
+                if n_upload < N_BINS:
+                    print("  (Bins {}–{} zeroed — only {} needed for <1ct RMS)".format(
+                        n_upload, N_BINS - 1, n_upload))
+
+                # Readback verification
+                print("\n  Readback verification:")
+                print("  {:>4}  {:>6}  {:>6}  {:>10}  {}".format(
+                    "Bin", "k", "Amp", "Phase(mrad)", "OK?"))
+                print("  " + "-" * 40)
+                _active_rb = self.node.sdo[0x3027][1].raw
+                print("  Active flag readback: {}".format(_active_rb))
+                _rb_ok = True
+                for _bi in range(N_BINS):
+                    _amp_rb   = self.node.sdo[0x3027][2 + _bi * 3].raw
+                    _k_rb     = self.node.sdo[0x3027][3 + _bi * 3].raw
+                    _phase_rb = self.node.sdo[0x3027][4 + _bi * 3].raw
+                    if _bi < n_upload:
+                        _bk_exp    = int(_top_bins[_bi])
+                        _bA_exp    = max(0, int(round(float(amps[_top_bins[_bi]]))))
+                        _phi_abs_exp = (float(phases[_top_bins[_bi]])
+                                        - 2.0 * math.pi * _bk_exp * float(enc_start) / float(enc_resolution)
+                                        + math.pi)
+                        _bph_exp   = int(round((_phi_abs_exp % (2.0 * math.pi)) * 1000.0))
+                    else:
+                        _bk_exp = _bA_exp = _bph_exp = 0
+                    _ok = (_amp_rb == _bA_exp and _k_rb == _bk_exp
+                           and _phase_rb == _bph_exp)
+                    if not _ok:
+                        _rb_ok = False
+                    print("  {:>4d}  {:>6}  {:>6}  {:>10}  {}".format(
+                        _bi,
+                        "{} (exp {})".format(_k_rb, _bk_exp) if _k_rb != _bk_exp
+                            else str(_k_rb),
+                        "{} (exp {})".format(_amp_rb, _bA_exp) if _amp_rb != _bA_exp
+                            else str(_amp_rb),
+                        "{} (exp {})".format(_phase_rb, _bph_exp) if _phase_rb != _bph_exp
+                            else str(_phase_rb),
+                        "OK" if _ok else "MISMATCH"))
+                if _rb_ok:
+                    print("  All bins verified OK.")
+                else:
+                    print("  WARNING: one or more bins did not readback correctly.")
+
+                # Save all 31 NV subindices of 0x3027 to EEPROM
+                print("\n  Saving 0x3027 to EEPROM ...")
+                for _si in range(1, 32):
+                    self.node.sdo['Save']['Single'].raw = ((0x3027 << 8) | _si)
+                print("  Saved.")
+
+                # Retest always runs automatically after calibration.
+                # Motor stays powered in PVCA throughout analysis/upload — no ramp-up needed.
+                print("\n  Retesting linearity with compensation active ...")
+                self.node.sdo['Theta_e'].raw = 0
+                _sleep_responsive(0.3)
+                wx.Yield()
+
+                # Sweep: use RawPosition for delta tracking and EncPos for compensation.
+                # Forward pass.
+                _rt_raw_prev = self.node.sdo['Encoder']['RawPosition'].raw
+                _rt_raw_acc  = 0
+                _rt_results_fwd = []
+                print("  Retest forward sweep ({} steps) ...".format(RETEST_N_TOTAL))
+                for _rts in range(RETEST_N_TOTAL + 1):
+                    _rts_cyc  = _rts % RETEST_N_PER_CYCLE
+                    _rts_elec = _rts / RETEST_N_PER_CYCLE
+                    _rts_frac = _rts_cyc / RETEST_N_PER_CYCLE
+                    _rts_teu  = round(_rts_frac * 65536) % 65536
+                    _rts_ter  = _rts_teu if _rts_teu < 32768 else _rts_teu - 65536
+                    self.node.sdo['Theta_e'].raw = _rts_ter
+                    time.sleep(RETEST_STEP_S)
+                    self.UpdateUI(70 + _rts * 13 // (RETEST_N_TOTAL + 1))
+                    wx.Yield()
+                    _rt_raw = self.node.sdo['Encoder']['RawPosition'].raw
+                    _rt_enc = self.node.sdo['Encoder']['EncPos'].raw
+                    _rt_d   = _rt_raw - _rt_raw_prev
+                    if _rt_d >  enc_resolution / 2: _rt_d -= enc_resolution
+                    if _rt_d < -enc_resolution / 2: _rt_d += enc_resolution
+                    _rt_raw_acc  += _rt_d
+                    _rt_raw_prev  = _rt_raw
+                    _rt_comp = (_rt_enc - _rt_raw + enc_resolution // 2) % enc_resolution - enc_resolution // 2
+                    _rt_enc_acc = _rt_raw_acc + _rt_comp
+                    if _rts < RETEST_N_TOTAL:
+                        _rt_exp = e_polarity * _rts_elec * cts_per_elec
+                        _rt_err = (_rt_enc_acc - _rt_exp) / cts_per_elec * 360.0
+                        _rt_results_fwd.append((_rts / RETEST_N_TOTAL * 360.0,
+                                                _rts_cyc / RETEST_N_PER_CYCLE * 360.0,
+                                                _rts // RETEST_N_PER_CYCLE + 1,
+                                                _rt_err))
+
+                # Reverse pass.
+                _rt_raw_prev_r = self.node.sdo['Encoder']['RawPosition'].raw
+                _rt_raw_acc_r  = 0
+                _rt_results_rev = []
+                print("  Retest reverse sweep ({} steps) ...".format(RETEST_N_TOTAL))
+                for _rts in range(RETEST_N_TOTAL + 1):
+                    _rts_cyc_r  = _rts % RETEST_N_PER_CYCLE
+                    _rts_elec_r = _rts / RETEST_N_PER_CYCLE
+                    _rts_frac_r = (RETEST_N_PER_CYCLE - _rts_cyc_r) % RETEST_N_PER_CYCLE / RETEST_N_PER_CYCLE
+                    _rts_teu_r  = round(_rts_frac_r * 65536) % 65536
+                    _rts_ter_r  = _rts_teu_r if _rts_teu_r < 32768 else _rts_teu_r - 65536
+                    self.node.sdo['Theta_e'].raw = _rts_ter_r
+                    time.sleep(RETEST_STEP_S)
+                    self.UpdateUI(83 + _rts * 13 // (RETEST_N_TOTAL + 1))
+                    wx.Yield()
+                    _rt_raw_r = self.node.sdo['Encoder']['RawPosition'].raw
+                    _rt_enc_r = self.node.sdo['Encoder']['EncPos'].raw
+                    _rt_d_r   = _rt_raw_r - _rt_raw_prev_r
+                    if _rt_d_r >  enc_resolution / 2: _rt_d_r -= enc_resolution
+                    if _rt_d_r < -enc_resolution / 2: _rt_d_r += enc_resolution
+                    _rt_raw_acc_r  += _rt_d_r
+                    _rt_raw_prev_r  = _rt_raw_r
+                    _rt_comp_r = (_rt_enc_r - _rt_raw_r + enc_resolution // 2) % enc_resolution - enc_resolution // 2
+                    _rt_enc_acc_r = _rt_raw_acc_r + _rt_comp_r
+                    if _rts < RETEST_N_TOTAL:
+                        _rt_exp_r = -e_polarity * _rts_elec_r * cts_per_elec
+                        _rt_err_r = (_rt_enc_acc_r - _rt_exp_r) / cts_per_elec * 360.0
+                        _rt_results_rev.append((_rts / RETEST_N_TOTAL * 360.0,
+                                                _rts_cyc_r / RETEST_N_PER_CYCLE * 360.0,
+                                                _rts // RETEST_N_PER_CYCLE + 1,
+                                                _rt_err_r))
+
+                # Average forward and reverse at matched positions to cancel friction.
+                _rt_n_sf = len(_rt_results_fwd)
+                _rt_results = [(_rt_results_fwd[i][0], _rt_results_fwd[i][1],
+                                _rt_results_fwd[i][2],
+                                (_rt_results_fwd[i][3]
+                                 + _rt_results_rev[(_rt_n_sf - i) % _rt_n_sf][3]) / 2.0)
+                               for i in range(_rt_n_sf)]
+                print("  Retest bidirectional average complete ({} points).".format(_rt_n_sf))
+
+                self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
+                self.UpdateUI(98)
+
+                # Stats comparison
+                _rt_errs   = [r[3] for r in _rt_results]
+                _rt_maxerr = max(_rt_errs, key=abs)
+                _rt_rms    = (sum(e*e for e in _rt_errs) / len(_rt_errs)) ** 0.5
+                print("\n  Linearity comparison:")
+                print("  {:30s}  {:>10s}  {:>10s}".format("", "Max err (°)", "RMS (°)"))
+                print("  {:30s}  {:>10.3f}  {:>10.3f}".format(
+                    "Before compensation:", _lin_max_err, _lin_rms_err))
+                print("  {:30s}  {:>10.3f}  {:>10.3f}".format(
+                    "With compensation active:", _rt_maxerr, _rt_rms))
+                _impr_rms = (1.0 - _rt_rms / _lin_rms_err) * 100.0 if _lin_rms_err else 0.0
+                print("  RMS improvement: {:.1f}%".format(_impr_rms))
+
+                # DC bias: mean of bidirectional-averaged retest errors. Friction is
+                # canceled by averaging so this is the true encoder geometric mean
+                # offset (reads consistently ahead/behind ideal over a full revolution).
+                # Not stored to the puck — subtracted from plots only so the AC
+                # residual is visible centred on zero.
+                _rt_dc_bias = sum(_rt_errs) / len(_rt_errs) if _rt_errs else 0.0
+                _rt_errs_ac = [e - _rt_dc_bias for e in _rt_errs]
+                _rt_rms_ac  = (sum(e*e for e in _rt_errs_ac) / len(_rt_errs_ac)) ** 0.5
+                _impr_ac    = (1.0 - _rt_rms_ac / _lin_rms_err) * 100.0 if _lin_rms_err else 0.0
+                print("  DC bias (not stored to puck): {:+.3f}°".format(_rt_dc_bias))
+                print("  AC-only RMS: {:.3f}°  ({:.1f}% improvement)".format(
+                    _rt_rms_ac, _impr_ac))
+
+                # Comparison plot
+                try:
+                    import matplotlib
+                    matplotlib.use('Agg')
+                    import matplotlib.pyplot as _cplt
+
+                    _rt_mech   = [r[0] for r in _rt_results]
+                    _rt_edeg   = [r[3] - _rt_dc_bias for r in _rt_results]
+                    _orig_mech = [r[0] for r in lin_results]
+                    _orig_edeg = [r[3] for r in lin_results]
+                    _yr2 = max(max(abs(e) for e in _orig_edeg),
+                               max(abs(e) for e in _rt_edeg)) * 1.15 or 1.0
+
+                    _cfig, (_cax1, _cax2) = _cplt.subplots(1, 2, figsize=(14, 5),
+                                                             sharey=True)
+                    _cfig.suptitle(
+                        'Encoder Linearity Comparison — Node {}  {}  ({})\n'
+                        'Before vs After Compensation  '
+                        '(RMS: {:.3f}° → {:.3f}° AC  {:.1f}% improvement'
+                        '  |  DC bias {:+.1f}° subtracted from plot)'.format(
+                            node_id, model_str, ts,
+                            _lin_rms_err, _rt_rms_ac, _impr_ac, _rt_dc_bias),
+                        fontsize=11)
+
+                    _cax1.plot(_orig_mech, _orig_edeg, 'b-', linewidth=0.8)
+                    _cax1.axhline(0, color='k', linewidth=0.8, linestyle='--')
+                    _cax1.axhline( PASS_THRESHOLD, color='r', linewidth=1.0,
+                                   linestyle='--', label='±{:.0f}° limit'.format(
+                                       PASS_THRESHOLD))
+                    _cax1.axhline(-PASS_THRESHOLD, color='r', linewidth=1.0,
+                                   linestyle='--')
+                    _cax1.set_ylim(-_yr2, _yr2)
+                    _cax1.set_xlabel('Mechanical angle (°)')
+                    _cax1.set_ylabel('Error (° electrical)')
+                    _cax1.set_title('Before compensation  (RMS={:.3f}°)'.format(
+                        _lin_rms_err))
+                    _cax1.legend(fontsize=8)
+                    _cax1.grid(True, alpha=0.3)
+
+                    _cax2.plot(_rt_mech, _rt_edeg, 'g-', linewidth=0.8)
+                    _cax2.axhline(0, color='k', linewidth=0.8, linestyle='--')
+                    _cax2.axhline( PASS_THRESHOLD, color='r', linewidth=1.0,
+                                   linestyle='--', label='±{:.0f}° limit'.format(
+                                       PASS_THRESHOLD))
+                    _cax2.axhline(-PASS_THRESHOLD, color='r', linewidth=1.0,
+                                   linestyle='--')
+                    _cax2.set_ylim(-_yr2, _yr2)
+                    _cax2.set_xlabel('Mechanical angle (°)')
+                    _cax2.set_title('[COMPENSATION ACTIVE]  (AC RMS={:.3f}°  DC bias {:+.1f}° removed)'.format(
+                        _rt_rms_ac, _rt_dc_bias))
+                    _cax2.legend(fontsize=8)
+                    _cax2.grid(True, alpha=0.3)
+
+                    _cplt.tight_layout()
+                    _cplot_path = session_path(
+                        'enc_linearity_compensation_active_{}.png'.format(ts))
+                    _cplt.savefig(_cplot_path, dpi=100)
+                    _cplt.close(_cfig)
+                    print("  Comparison plot → {}".format(_cplot_path))
+                except ImportError:
+                    print("  (Comparison plot skipped — matplotlib not installed)")
+                except Exception as _cpe:
+                    print("  WARNING: Comparison plot failed: {}".format(_cpe))
+
+                # Retest linearity plot (3-panel) — same format as calibration plot
+                try:
+                    import matplotlib
+                    matplotlib.use('Agg')
+                    import matplotlib.pyplot as _rtplt
+                    import matplotlib.gridspec as _rtgs
+
+                    _rt_mech_all2 = [r[0] for r in _rt_results]
+                    _rt_err_all2  = [r[3] - _rt_dc_bias for r in _rt_results]
+                    _rt_maxerr_ac = max(_rt_errs_ac, key=abs)
+                    _rt_passed    = abs(_rt_maxerr_ac) <= PASS_THRESHOLD
+
+                    _rtfig = _rtplt.figure(figsize=(15, 8))
+                    _rtfig.suptitle(
+                        'Encoder Linearity [COMPENSATION ACTIVE] — Node {}  {}  ({})\n'
+                        '{} pole pairs  {} steps/elec cycle  '
+                        'AC RMS {:.3f}° → {:.3f}°  ({:.1f}% improvement)'
+                        '  |  DC bias {:+.1f}° subtracted'.format(
+                            node_id, model_str, ts, pole_pairs, RETEST_N_PER_CYCLE,
+                            _lin_rms_err, _rt_rms_ac, _impr_ac, _rt_dc_bias),
+                        fontsize=13)
+                    _rtgs_obj = _rtgs.GridSpec(2, 2, figure=_rtfig,
+                                               width_ratios=[1.2, 1])
+                    _rtax1 = _rtfig.add_subplot(_rtgs_obj[0, 0])
+                    _rtax2 = _rtfig.add_subplot(_rtgs_obj[1, 0])
+                    _rtax3 = _rtfig.add_subplot(_rtgs_obj[:, 1])
+
+                    _rt_pf_lbl = 'Pass/Fail limit (±{:.0f}°)'.format(PASS_THRESHOLD)
+                    _rtax1.plot(_rt_mech_all2, _rt_err_all2, 'g-', linewidth=0.8,
+                                label='Measured error')
+                    _rtax1.axhline(0, color='k', linewidth=2.5, linestyle=':',
+                                   label='Expected (0° error)', zorder=5)
+                    _rtax1.axhline( PASS_THRESHOLD, color='r', linewidth=1.5,
+                                    linestyle='--', label=_rt_pf_lbl)
+                    _rtax1.axhline(-PASS_THRESHOLD, color='r', linewidth=1.5,
+                                    linestyle='--')
+                    _rtax1.set_xlabel('Mechanical angle (°)')
+                    _rtax1.set_ylabel('Error (° electrical)')
+                    _rtax1.set_title(
+                        'Compensated encoder linearity — error vs mechanical angle  [{}]'.format(
+                            'PASS' if _rt_passed else 'FAIL'))
+                    _rtax1.legend(fontsize=8)
+                    _rtax1.grid(True, alpha=0.3)
+
+                    _rt_colors = _rtplt.cm.tab10.colors
+                    for _rt_cyc in range(1, pole_pairs + 2):
+                        _rt_cyc_pts = [(r[1], r[3] - _rt_dc_bias) for r in _rt_results
+                                       if r[2] == _rt_cyc]
+                        if _rt_cyc_pts:
+                            _rt_xs, _rt_ys = zip(*_rt_cyc_pts)
+                            _rtax2.plot(_rt_xs, _rt_ys,
+                                        color=_rt_colors[(_rt_cyc - 1) % 10],
+                                        alpha=0.8, linewidth=0.9,
+                                        label='Cycle {}'.format(_rt_cyc))
+                    _rtax2.axhline(0, color='k', linewidth=2.5, linestyle=':', zorder=5)
+                    _rtax2.axhline( PASS_THRESHOLD, color='r', linewidth=1.5,
+                                    linestyle='--', label=_rt_pf_lbl)
+                    _rtax2.axhline(-PASS_THRESHOLD, color='r', linewidth=1.5,
+                                    linestyle='--')
+                    _rtax2.set_xlabel('Electrical angle (°)')
+                    _rtax2.set_ylabel('Error (° electrical)')
+                    _rtax2.set_title(
+                        'Compensated — overlaid by electrical cycle\n'
+                        'consistent = residual electrical err; shifting = mechanical err')
+                    _rtax2.legend(fontsize=7, ncol=4)
+                    _rtax2.grid(True, alpha=0.3)
+
+                    # Lissajous per electrical cycle
+                    _rt_cyc_base = {}
+                    for _rtr in _rt_results:
+                        if int(round(_rtr[1] / 360.0 * RETEST_N_PER_CYCLE)) % RETEST_N_PER_CYCLE == 0:
+                            _rt_cyc_base.setdefault(_rtr[2], _rtr[3])
+                    _rt_cyc_profs = {}
+                    for _rtr in _rt_results:
+                        _rt_s = int(round(_rtr[1] / 360.0 * RETEST_N_PER_CYCLE)) % RETEST_N_PER_CYCLE
+                        _rt_cyc_profs.setdefault(_rtr[2], {})[_rt_s] = (
+                            _rtr[3] - _rt_cyc_base.get(_rtr[2], 0.0))
+                    _rt_all_wc = [e for d in _rt_cyc_profs.values()
+                                  for e in d.values()]
+                    _rt_max_ae = max(abs(e) for e in _rt_all_wc) if _rt_all_wc else 1.0
+                    _rt_scale  = 0.4 / (_rt_max_ae or 1.0)
+                    _rt_circ_t = [i / 360 * 2 * math.pi for i in range(361)]
+                    _rtax3.plot([math.cos(t) for t in _rt_circ_t],
+                                [math.sin(t) for t in _rt_circ_t],
+                                'k', linewidth=2.5, linestyle=':', label='Ideal',
+                                zorder=5)
+                    for _rt_cn in sorted(_rt_cyc_profs.keys()):
+                        _rt_prof = _rt_cyc_profs[_rt_cn]
+                        if len(_rt_prof) < RETEST_N_PER_CYCLE:
+                            continue
+                        _rt_steps = sorted(_rt_prof.keys())
+                        _rt_ts2 = ([s / RETEST_N_PER_CYCLE * 2.0 * math.pi
+                                    for s in _rt_steps] + [0.0])
+                        _rt_es2 = [_rt_prof[s] for s in _rt_steps] + [0.0]
+                        _rt_xs3 = [(1.0 + _rt_scale * e) * math.cos(t)
+                                   for t, e in zip(_rt_ts2, _rt_es2)]
+                        _rt_ys3 = [(1.0 + _rt_scale * e) * math.sin(t)
+                                   for t, e in zip(_rt_ts2, _rt_es2)]
+                        _rtax3.plot(_rt_xs3, _rt_ys3,
+                                    color=_rt_colors[(_rt_cn - 1) % 10],
+                                    alpha=0.7, linewidth=0.9,
+                                    label='Cycle {}'.format(_rt_cn))
+                    _rtax3.set_aspect('equal')
+                    _rtax3.axhline(0, color='gray', linewidth=0.5, zorder=0)
+                    _rtax3.axvline(0, color='gray', linewidth=0.5, zorder=0)
+                    _rtax3.set_xlabel('cos(ε)')
+                    _rtax3.set_ylabel('sin(ε)')
+                    _rtax3.set_title(
+                        'Compensated Lissajous (per elec. cycle)  [{}]\n'
+                        '{:.0f}°/unit  —  residual electrical/mechanical error'.format(
+                            'PASS' if _rt_passed else 'FAIL',
+                            1.0 / _rt_scale))
+                    _rtax3.legend(fontsize=7, ncol=4)
+                    _rtax3.grid(True, alpha=0.3)
+
+                    _rtplt.tight_layout()
+                    _rt_lin_path = session_path(
+                        'enc_linearity_retest_{}.png'.format(ts))
+                    os.makedirs(os.path.dirname(_rt_lin_path), exist_ok=True)
+                    _rtplt.savefig(_rt_lin_path, dpi=100)
+                    _rtplt.close(_rtfig)
+                    print("  Retest linearity plot → {}".format(_rt_lin_path))
+                except ImportError:
+                    print("  (Retest linearity plot skipped — matplotlib not installed)")
+                except Exception as _rtpe:
+                    print("  WARNING: Retest linearity plot failed: {}".format(_rtpe))
+
+                # 2-panel FFT plot
+                try:
+                    import matplotlib
+                    matplotlib.use('Agg')
+                    import matplotlib.pyplot as _plt
+
+                    fig, (ax1, ax2) = _plt.subplots(1, 2, figsize=(12, 4))
+                    fig.suptitle('Encoder Error Spectrum — Node {}  {}  ({})'.format(
+                        node_id, model_str, ts), fontsize=11)
+
+                    k_show = min(64, len(amps) - 1)
+                    ax1.bar(range(1, k_show + 1), amps[1:k_show + 1],
+                            color='steelblue', width=0.8)
+                    ax1.axvline(best_n, color='red', linestyle='--',
+                                label='N={} (RMS<1ct)'.format(best_n))
+                    ax1.set_xlabel('Harmonic k')
+                    ax1.set_ylabel('Amplitude (cts)')
+                    ax1.set_title('Harmonic amplitudes  ({} sweep pts)'.format(N))
+                    ax1.legend(fontsize=8)
+                    ax1.grid(True, alpha=0.3)
+
+                    rms_curve = []
+                    X_r2 = _np.zeros(N // 2 + 1, dtype=_np.complex128)
+                    X_r2[0] = X[0]
+                    for _ni2 in range(1, min(50, len(sorted_ks)) + 1):
+                        X_r2[sorted_ks[_ni2 - 1]] = X[sorted_ks[_ni2 - 1]]
+                        recon2 = _np.fft.irfft(X_r2, n=N)
+                        rms_curve.append(float(_np.sqrt(_np.mean((tf - recon2) ** 2))))
+                    ax2.plot(range(1, len(rms_curve) + 1), rms_curve, 'b-o', markersize=3)
+                    ax2.axhline(1.0, color='red', linestyle='--', label='1 ct threshold')
+                    ax2.axvline(best_n, color='red', linestyle=':',
+                                label='N={}'.format(best_n))
+                    ax2.set_xlabel('Number of harmonics')
+                    ax2.set_ylabel('RMS error (cts)')
+                    ax2.set_title('Reconstruction RMS vs harmonic count')
+                    ax2.legend(fontsize=8)
+                    ax2.grid(True, alpha=0.3)
+
+                    _plt.tight_layout()
+                    fft_plot_path = session_path('enc_correction_fft_{}.png'.format(ts))
+                    _plt.savefig(fft_plot_path, dpi=100)
+                    _plt.close(fig)
+                    print("  FFT plot → {}".format(fft_plot_path))
+                except ImportError:
+                    print("  (FFT plot skipped — matplotlib not installed)")
+                except Exception as _fpe:
+                    print("  WARNING: FFT plot failed: {}".format(_fpe))
+
+            except ImportError:
+                print("  (FFT analysis skipped — numpy not installed)")
+            except Exception as _fft_exc:
+                print("  WARNING: FFT analysis failed: {}".format(_fft_exc))
+
+            # ── Harmonic reconstruction vs original linearity figure ───────────
+            try:
+                import numpy as _np2
+                import matplotlib
+                matplotlib.use('Agg')
+                import matplotlib.pyplot as _rplt
+
+                # FFT on raw sweep data (same source as the analysis block above)
+                _N_sw = N_S
+                _tf2  = _np2.array(corr_seq, dtype=_np2.float64)
+                _X2   = _np2.fft.rfft(_tf2)
+                _amps2   = 2.0 * _np2.abs(_X2) / _N_sw
+                _phases2 = _np2.angle(_X2)
+                _amps2[0]  /= 2.0
+                _amps2[-1] /= 2.0
+                _order2 = 1 + _np2.argsort(_amps2[1:])[::-1]
+
+                # Top-3 dominant harmonics (for individual component panel)
+                _n_harm_plot = min(3, len(_order2))
+                _top_ks   = [int(_order2[i]) for i in range(_n_harm_plot)]
+                _top_amps = [float(_amps2[k]) for k in _top_ks]
+                _top_phis = [float(_phases2[k]) for k in _top_ks]
+                _dc_off   = float(_amps2[0])
+
+                # Best-n harmonics: min count for <1 ct RMS vs raw sweep data
+                _sorted_ks2 = [int(_order2[i]) for i in range(len(_order2))]
+                _X2_recon = _np2.zeros(_N_sw // 2 + 1, dtype=_np2.complex128)
+                _X2_recon[0] = _X2[0]
+                _best_n_val = len(_sorted_ks2)
+                for _bni in range(1, len(_sorted_ks2) + 1):
+                    for _bki in range(_bni):
+                        _X2_recon[_sorted_ks2[_bki]] = _X2[_sorted_ks2[_bki]]
+                    _brecon = _np2.fft.irfft(_X2_recon, n=_N_sw)
+                    if float(_np2.sqrt(_np2.mean((_tf2 - _brecon) ** 2))) < 1.0:
+                        _best_n_val = _bni
+                        break
+
+                # Reconstruct at sweep points using irfft (exact, fast)
+                _mech_sw = _np2.arange(_N_sw) / _N_sw * 360.0
+
+                # Build irfft reconstructions for each bin count (+ DC always included)
+                def _irfft_topn(n_bins):
+                    _Xr = _np2.zeros(_N_sw // 2 + 1, dtype=_np2.complex128)
+                    _Xr[0] = _X2[0]
+                    for _ki in _sorted_ks2[:n_bins]:
+                        _Xr[_ki] = _X2[_ki]
+                    return _np2.fft.irfft(_Xr, n=_N_sw)
+
+                _bins_to_test = [3, 5, 10, _best_n_val]
+                # Deduplicate and clamp to available harmonics
+                _n_avail = len(_sorted_ks2)
+                _bins_to_test = sorted(set(min(b, _n_avail) for b in _bins_to_test))
+
+                _recon_degs = {}
+                _resid_degs = {}
+                _rms_vals   = {}
+                _err_orig_deg = -_tf2 / cts_per_elec * 360.0
+                for _nb in _bins_to_test:
+                    _rc = _irfft_topn(_nb)
+                    _rd = -_rc / cts_per_elec * 360.0
+                    _rs = _err_orig_deg - _rd
+                    _recon_degs[_nb] = _rd
+                    _resid_degs[_nb] = _rs
+                    _rms_vals[_nb]   = float(_np2.sqrt(_np2.mean(_rs ** 2)))
+
+                _yr = float(_np2.abs(_err_orig_deg).max()) * 1.15 or 1.0
+
+                # Individual top-3 harmonic waves at sweep points
+                _harm_waves_deg = []
+                for _k, _A, _phi in zip(_top_ks, _top_amps, _top_phis):
+                    _w = _A * _np2.cos(2.0 * _np2.pi * _k * _np2.arange(_N_sw) / _N_sw + _phi)
+                    _harm_waves_deg.append(-_w / cts_per_elec * 360.0)
+
+                # Colour palette: one colour per bin count
+                _bin_colors = {3: 'tab:red', 5: 'tab:orange', 10: 'tab:purple',
+                               _best_n_val: 'darkgreen'}
+                # Fill any extra deduplicated values
+                _extra_colors = ['tab:cyan', 'tab:brown', 'tab:pink']
+                _ec_idx = 0
+                for _nb in _bins_to_test:
+                    if _nb not in _bin_colors:
+                        _bin_colors[_nb] = _extra_colors[_ec_idx % len(_extra_colors)]
+                        _ec_idx += 1
+
+                _rfig, _raxes = _rplt.subplots(2, 2, figsize=(16, 10))
+                _rfig.suptitle(
+                    'Harmonic Reconstruction vs Raw Encoder Error — Node {}  {}  ({})\n'
+                    'Top-3 k={}  |  Best-{} harmonics (RMS<1ct vs raw sweep)'.format(
+                        node_id, model_str, ts,
+                        '/'.join(str(k) for k in _top_ks),
+                        _best_n_val),
+                    fontsize=11)
+
+                # [0,0]: Original raw sweep error
+                _ax = _raxes[0, 0]
+                _ax.plot(_mech_sw, _err_orig_deg, 'b-', linewidth=0.7,
+                         label='Raw sweep error')
+                _ax.axhline(0, color='k', linewidth=0.8, linestyle='--')
+                _ax.set_ylim(-_yr, _yr)
+                _ax.set_xlabel('Mechanical angle (°)')
+                _ax.set_ylabel('Error (° electrical)')
+                _ax.set_title('Original measured encoder error  ({} pts)'.format(_N_sw))
+                _ax.legend(fontsize=8)
+                _ax.grid(True, alpha=0.3)
+
+                # [0,1]: Reconstruction comparison — top-3 / top-5 / top-10 / best-n
+                _ax = _raxes[0, 1]
+                _ax.plot(_mech_sw, _err_orig_deg, 'b-', linewidth=0.6, alpha=0.4,
+                         label='Raw sweep (reference)')
+                for _nb in _bins_to_test:
+                    _lw = 1.6 if _nb == _best_n_val else 1.0
+                    _label = 'Top-{}{} (RMS={:.3f}°)'.format(
+                        _nb,
+                        ' ✓best' if _nb == _best_n_val else '',
+                        _rms_vals[_nb])
+                    _ax.plot(_mech_sw, _recon_degs[_nb],
+                             color=_bin_colors[_nb], linewidth=_lw, label=_label)
+                _ax.axhline(0, color='k', linewidth=0.8, linestyle='--')
+                _ax.set_ylim(-_yr, _yr)
+                _ax.set_xlabel('Mechanical angle (°)')
+                _ax.set_ylabel('Error (° electrical)')
+                _ax.set_title('Reconstruction: top-3 / 5 / 10 / best-{}'.format(_best_n_val))
+                _ax.legend(fontsize=8)
+                _ax.grid(True, alpha=0.3)
+
+                # [1,0]: Individual top-3 harmonic components
+                _ax = _raxes[1, 0]
+                _hcolors = ['tab:orange', 'tab:green', 'tab:purple']
+                for _hi, (_hwave, _hk, _hA) in enumerate(
+                        zip(_harm_waves_deg, _top_ks, _top_amps)):
+                    _ax.plot(_mech_sw, _hwave,
+                             color=_hcolors[_hi % len(_hcolors)], linewidth=1.2,
+                             label='k={} ({:.3f} cts / {:.2f}°)'.format(
+                                 _hk, _hA, _hA / cts_per_elec * 360.0))
+                _ax.axhline(0, color='k', linewidth=0.8, linestyle='--')
+                _ax.set_xlabel('Mechanical angle (°)')
+                _ax.set_ylabel('Error contribution (° electrical)')
+                _ax.set_title('Individual top-3 harmonic components')
+                _ax.legend(fontsize=8)
+                _ax.grid(True, alpha=0.3)
+
+                # [1,1]: Residual comparison — top-3 / top-5 / top-10 / best-n
+                _ax = _raxes[1, 1]
+                for _nb in _bins_to_test:
+                    _lw = 1.6 if _nb == _best_n_val else 0.9
+                    _label = 'Residual top-{}{} (RMS={:.3f}°)'.format(
+                        _nb,
+                        ' ✓best' if _nb == _best_n_val else '',
+                        _rms_vals[_nb])
+                    _ax.plot(_mech_sw, _resid_degs[_nb],
+                             color=_bin_colors[_nb], linewidth=_lw,
+                             alpha=0.85, label=_label)
+                _ax.axhline(0, color='k', linewidth=0.8, linestyle='--')
+                _ax.set_title('Residual after harmonic removal')
+                _ax.set_xlabel('Mechanical angle (°)')
+                _ax.set_ylabel('Residual (° electrical)')
+                _ax.legend(fontsize=8)
+                _ax.grid(True, alpha=0.3)
+
+                _rplt.tight_layout()
+                _recon_plot_path = session_path('enc_harmonic_recon_{}.png'.format(ts))
+                _rplt.savefig(_recon_plot_path, dpi=100)
+                _rplt.close(_rfig)
+                print("  Reconstruction plot → {}".format(_recon_plot_path))
+            except ImportError:
+                print("  (Reconstruction plot skipped — numpy/matplotlib not installed)")
+            except Exception as _rpe:
+                print("  WARNING: Reconstruction plot failed: {}".format(_rpe))
+
         except Exception as _exc:
             self._cal_fault(_exc)
         finally:
+            self.OnTaskComplete()
             if self.ADC_ON == False and self.adcWasON:
                 self.on_off_adc(self)
             self.Enable()
@@ -2206,7 +3322,8 @@ class calibrate():
         import os, glob
         from paths import resource_path
         log_dir = resource_path('logs')
-        hits = sorted(glob.glob(os.path.join(log_dir, 'enc_correction_full_*.csv')))
+        hits = sorted(glob.glob(os.path.join(log_dir, '**', 'enc_correction_full_*.csv'),
+                                recursive=True))
         if not hits:
             return None, None
         path  = hits[-1]
@@ -2267,9 +3384,20 @@ class calibrate():
                     len(table), enc_resolution),
                 "PVCA Control", wx.OK | wx.ICON_WARNING)
 
+        # Back-EMF constant: lambda_pm ≈ V_bus / omega_e_no_load
+        # Used to compensate for speed-dependent voltage drop in _on_tpdo1.
+        try:
+            no_load_rpm = self.node.sdo[0x3024][6].raw
+        except Exception:
+            no_load_rpm = 0
+        pole_pairs = motor_poles // 2
+        omega_e_nl = no_load_rpm * (math.pi / 30.0) * pole_pairs  # elec rad/s
+        lambda_pm  = V_bus / omega_e_nl if omega_e_nl > 0 else 0.0
+
         mp = dict(e_zero=e_zero, e_polarity=e_polarity,
                   enc_resolution=enc_resolution, cts_per_elec=cts_per_elec,
-                  Kt=Kt, Rt=Rt, V_bus=V_bus, i_peak=i_peak)
+                  Kt=Kt, Rt=Rt, V_bus=V_bus, i_peak=i_peak,
+                  lambda_pm=lambda_pm)
 
         print("PVCA Torque Control — table: {} ({} entries)".format(
             os.path.basename(path), len(table)))
@@ -2281,6 +3409,20 @@ class calibrate():
         dlg = _PVCATorqueDialog(self, self.node, table, path, mp)
         dlg.ShowModal()
         dlg.Destroy()
+
+    def error_compensation_state(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
+        if self.check_for_node() == False:
+            return
+        enable = event.GetId() == self.frame_menubar.ON.GetId()
+        try:
+            self.node.sdo[0x3027][1].raw = 1 if enable else 0
+            self.node.sdo['Save']['Single'].raw = ((0x3027 << 8) | 1)
+            state_str = "ON" if enable else "OFF"
+            print("Encoder error compensation set to {} and saved.".format(state_str))
+            self.frame_menubar.ON.Check(enable)
+            self.frame_menubar.OFF.Check(not enable)
+        except Exception as e:
+            print("Error setting encoder compensation state: {}".format(e))
 
     def set_user_dir(self, event):  # wxGlade: wxp3_frame.<event_handler>
         if self.check_for_node() == False: #len(self.network.scanner.nodes) == 0:
