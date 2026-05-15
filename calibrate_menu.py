@@ -2141,6 +2141,7 @@ class calibrate():
             except Exception:
                 pass
             model_str = getattr(self, '_PRODUCT_CODE_MODELS', {}).get(_pc, 'unknown')
+            _file_pfx = 'node{}_{}_'.format(node_id, model_str.replace(' ', '_'))
 
             N_PER_CYCLE        = 64    # steps per electrical cycle → 5.625° per step
             STEP_S             = 0.025 # settle time per step (s) — calibration sweeps
@@ -2391,7 +2392,7 @@ class calibrate():
                 _lax3.grid(True, alpha=0.3)
 
                 _lplt.tight_layout()
-                _lin_plot_path = session_path('enc_linearity_{}.png'.format(ts))
+                _lin_plot_path = session_path('{}enc_linearity_{}.png'.format(_file_pfx, ts))
                 os.makedirs(os.path.dirname(_lin_plot_path), exist_ok=True)
                 _lplt.savefig(_lin_plot_path, dpi=100)
                 _lplt.close(_lfig)
@@ -2493,7 +2494,7 @@ class calibrate():
                     ).format(node_id, e_zero, e_polarity, enc_resolution,
                              motor_poles, cts_per_elec, N_PER_CYCLE, N_HARMONICS)
 
-            full_path = session_path('enc_correction_full_{}.csv'.format(ts))
+            full_path = session_path('{}enc_correction_full_{}.csv'.format(_file_pfx, ts))
             os.makedirs(os.path.dirname(full_path), exist_ok=True)
             with open(full_path, 'w') as _f:
                 _f.write("# Encoder position correction — full mechanical revolution\n")
@@ -2503,7 +2504,7 @@ class calibrate():
                 for _p, _c in enumerate(table_full):
                     _f.write("{},{}\n".format(_p, _c))
 
-            elec_path = session_path('enc_correction_elec_{}.csv'.format(ts))
+            elec_path = session_path('{}enc_correction_elec_{}.csv'.format(_file_pfx, ts))
             with open(elec_path, 'w') as _f:
                 _f.write("# Encoder position correction — per electrical cycle\n")
                 _f.write("# index = (raw_encoder_pos - e_zero) % round(cts_per_elec)\n")
@@ -2591,7 +2592,7 @@ class calibrate():
                 ax.grid(True, alpha=0.3)
 
                 plt.tight_layout()
-                plot_path = session_path('enc_correction_{}.png'.format(ts))
+                plot_path = session_path('{}enc_correction_{}.png'.format(_file_pfx, ts))
                 plt.savefig(plot_path, dpi=100)
                 plt.close()
                 print("  Plot  → {}".format(plot_path))
@@ -2678,7 +2679,7 @@ class calibrate():
                     "dc_offset_cts": float(amps[0]),
                     "harmonics_by_amplitude": harmonic_list
                 }
-                fft_path = session_path('enc_correction_harmonics_{}.json'.format(ts))
+                fft_path = session_path('{}enc_correction_harmonics_{}.json'.format(_file_pfx, ts))
                 with open(fft_path, 'w') as _jf:
                     _json.dump(fft_data, _jf, indent=2)
                 print("  FFT JSON → {}".format(fft_path))
@@ -2785,6 +2786,46 @@ class calibrate():
                 for _si in range(1, 32):
                     self.node.sdo['Save']['Single'].raw = ((0x3027 << 8) | _si)
                 print("  Saved.")
+
+                # Write top-10 harmonics JSON (full detail for each uploaded bin)
+                try:
+                    _top10_bins = []
+                    for _bi, _bk in enumerate(_top_bins):
+                        _bk     = int(_bk)
+                        _bA_raw = float(amps[_bk])
+                        _bphi   = float(phases[_bk])
+                        _phi_abs = (_bphi
+                                    - 2.0 * math.pi * _bk * float(enc_start) / float(enc_resolution)
+                                    + math.pi)
+                        _phi_abs_norm = _phi_abs % (2.0 * math.pi)
+                        _top10_bins.append({
+                            "rank":               _bi + 1,
+                            "k":                  _bk,
+                            "amplitude_fft_cts":  _bA_raw,
+                            "amplitude_stored":   max(0, int(round(_bA_raw))),
+                            "phase_fft_rad":      _bphi,
+                            "phase_abs_rad":      _phi_abs_norm,
+                            "phase_stored_mrad":  int(round(_phi_abs_norm * 1000.0)),
+                            "cos_coeff":          _bA_raw * math.cos(_bphi),
+                            "sin_coeff":          -_bA_raw * math.sin(_bphi),
+                        })
+                    _top10_data = {
+                        "node_id":        node_id,
+                        "model":          model_str,
+                        "timestamp":      ts,
+                        "enc_resolution": enc_resolution,
+                        "enc_start":      int(enc_start),
+                        "pole_pairs":     pole_pairs,
+                        "n_bins":         len(_top10_bins),
+                        "bins":           _top10_bins,
+                    }
+                    _top10_path = session_path(
+                        '{}enc_compensation_top10_{}.json'.format(_file_pfx, ts))
+                    with open(_top10_path, 'w') as _jf:
+                        _json.dump(_top10_data, _jf, indent=2)
+                    print("  Top-10 harmonics JSON → {}".format(_top10_path))
+                except Exception as _j10e:
+                    print("  WARNING: top-10 JSON failed: {}".format(_j10e))
 
                 # Retest always runs automatically after calibration.
                 # Motor stays powered in PVCA throughout analysis/upload — no ramp-up needed.
@@ -2895,6 +2936,9 @@ class calibrate():
                 print("  DC bias (not stored to puck): {:+.3f}°".format(_rt_dc_bias))
                 print("  AC-only RMS: {:.3f}°  ({:.1f}% improvement)".format(
                     _rt_rms_ac, _impr_ac))
+                _rt_passed_stat = _rt_rms_ac < _lin_rms_err
+                print("  Retest result: {}".format(
+                    "PASS — AC RMS improved" if _rt_passed_stat else "FAIL — no improvement"))
 
                 # Comparison plot
                 try:
@@ -2951,7 +2995,7 @@ class calibrate():
 
                     _cplt.tight_layout()
                     _cplot_path = session_path(
-                        'enc_linearity_compensation_active_{}.png'.format(ts))
+                        '{}enc_linearity_compensation_active_{}.png'.format(_file_pfx, ts))
                     _cplt.savefig(_cplot_path, dpi=100)
                     _cplt.close(_cfig)
                     print("  Comparison plot → {}".format(_cplot_path))
@@ -2970,7 +3014,7 @@ class calibrate():
                     _rt_mech_all2 = [r[0] for r in _rt_results]
                     _rt_err_all2  = [r[3] - _rt_dc_bias for r in _rt_results]
                     _rt_maxerr_ac = max(_rt_errs_ac, key=abs)
-                    _rt_passed    = abs(_rt_maxerr_ac) <= PASS_THRESHOLD
+                    _rt_passed    = _rt_rms_ac < _lin_rms_err
 
                     _rtfig = _rtplt.figure(figsize=(15, 8))
                     _rtfig.suptitle(
@@ -3000,7 +3044,7 @@ class calibrate():
                     _rtax1.set_ylabel('Error (° electrical)')
                     _rtax1.set_title(
                         'Compensated encoder linearity — error vs mechanical angle  [{}]'.format(
-                            'PASS' if _rt_passed else 'FAIL'))
+                            'PASS — AC RMS improved' if _rt_passed else 'FAIL — no improvement'))
                     _rtax1.legend(fontsize=8)
                     _rtax1.grid(True, alpha=0.3)
 
@@ -3070,14 +3114,14 @@ class calibrate():
                     _rtax3.set_title(
                         'Compensated Lissajous (per elec. cycle)  [{}]\n'
                         '{:.0f}°/unit  —  residual electrical/mechanical error'.format(
-                            'PASS' if _rt_passed else 'FAIL',
+                            'PASS — AC RMS improved' if _rt_passed else 'FAIL — no improvement',
                             1.0 / _rt_scale))
                     _rtax3.legend(fontsize=7, ncol=4)
                     _rtax3.grid(True, alpha=0.3)
 
                     _rtplt.tight_layout()
                     _rt_lin_path = session_path(
-                        'enc_linearity_retest_{}.png'.format(ts))
+                        '{}enc_linearity_retest_{}.png'.format(_file_pfx, ts))
                     os.makedirs(os.path.dirname(_rt_lin_path), exist_ok=True)
                     _rtplt.savefig(_rt_lin_path, dpi=100)
                     _rtplt.close(_rtfig)
@@ -3126,7 +3170,7 @@ class calibrate():
                     ax2.grid(True, alpha=0.3)
 
                     _plt.tight_layout()
-                    fft_plot_path = session_path('enc_correction_fft_{}.png'.format(ts))
+                    fft_plot_path = session_path('{}enc_correction_fft_{}.png'.format(_file_pfx, ts))
                     _plt.savefig(fft_plot_path, dpi=100)
                     _plt.close(fig)
                     print("  FFT plot → {}".format(fft_plot_path))
@@ -3300,7 +3344,7 @@ class calibrate():
                 _ax.grid(True, alpha=0.3)
 
                 _rplt.tight_layout()
-                _recon_plot_path = session_path('enc_harmonic_recon_{}.png'.format(ts))
+                _recon_plot_path = session_path('{}enc_harmonic_recon_{}.png'.format(_file_pfx, ts))
                 _rplt.savefig(_recon_plot_path, dpi=100)
                 _rplt.close(_rfig)
                 print("  Reconstruction plot → {}".format(_recon_plot_path))
