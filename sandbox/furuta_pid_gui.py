@@ -297,9 +297,9 @@ class FurutaPIDFrame(wx.Frame):
         row2 = wx.BoxSizer(wx.HORIZONTAL)
         row2.Add(wx.StaticText(root, label="Swingup:"),
                  0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 6)
-        self._ks = gain(row2, "Ks:", 0.1,
+        self._ks = gain(row2, "Ks:", 0.3,
             "Swingup max arm travel [revolutions]. Negate if pendulum damps instead of grows.")
-        self._kb = gain(row2, "Kb:", 3.5,
+        self._kb = gain(row2, "Kb:", 0.0,
             "Braking max arm travel [revolutions]. Increase if pendulum overshoots upright.")
         self._kv = gain(row2, "Kv:", 1.0,
             "Max arm velocity [rev/s] for swingup and braking (slew-rate limit).")
