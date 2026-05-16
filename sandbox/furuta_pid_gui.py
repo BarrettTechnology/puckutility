@@ -799,11 +799,6 @@ class FurutaPIDFrame(wx.Frame):
             vel_fast = a_fast * raw_vel + (1.0 - a_fast) * vel_fast
             prev_pend = pend_rad
 
-        #     # # Debugging
-        #     # self._debug_val = raw_vel
-        #     # self._debug_val = vel_slow
-        #     # self._debug_val = vel_fast
-
             # Arm angular velocity (continuous — no wrapping needed)
             raw_arm_vel  = (arm_rad - prev_arm_rad) / dt
             arm_vel      = a_slow * raw_arm_vel + (1.0 - a_slow) * arm_vel
@@ -896,34 +891,31 @@ class FurutaPIDFrame(wx.Frame):
                 target = prev_target
                 self._in_braking = False
 
-        #     # Position-error clamp — software backstop regardless of mode.
-        #     # Keeps commanded position within max_err_cts of current position
-        #     # so the internal controller never demands more than the torque limit.
-        #     err = target - p1_abs
+            # Position-error clamp — software backstop regardless of mode.
+            # Keeps commanded position within max_err_cts of current position
+            # so the internal controller never demands more than the torque limit.
+            err = target - p1_abs
 
-        #     # # Debugging
-        #     # is_clamp = False
-        #     # if err > max_err_cts:
-        #     #   is_clamp = True
-        #     # elif err < -max_err_cts:
-        #     #   is_clamp = True
-        #     # if is_clamp:
-        #     #   self._debug_val = 1
-        #     # else:
-        #     #   self._debug_val = 0
+            # Debugging
+            is_clamp = False
+            if err > max_err_cts:
+              is_clamp = True
+            elif err < -max_err_cts:
+              is_clamp = True
+            if is_clamp:
+              self._debug_val = 1
+            else:
+              self._debug_val = 0
 
-        #     if err > max_err_cts:
-        #         target = p1_abs + max_err_cts
-        #     elif err < -max_err_cts:
-        #         target = p1_abs - max_err_cts
+            if err > max_err_cts:
+                target = p1_abs + max_err_cts
+            elif err < -max_err_cts:
+                target = p1_abs - max_err_cts
 
-            self._debug_val = balance_ramp
+            # Debugging: balance ramp
+            # self._debug_val = balance_ramp
 
             try:
-                # if in_balance:
-                #   self._node1.rpdo[2]["TargetTorque"].raw = 0
-                # else:
-                #   self._node1.rpdo[2]["TargetPosition"].raw = target
                 self._node1.rpdo[2]["TargetPosition"].raw = target
                 self._node1.rpdo[2].transmit()
             except Exception:
