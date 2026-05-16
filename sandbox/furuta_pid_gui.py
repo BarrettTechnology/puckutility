@@ -34,6 +34,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from canopen_runner import (
     CLEAR_FAULT, SHUTDOWN, OP_ENABLED,
     MODE_IDLE, MODE_CYCLIC_SYNC_POS,
+    MODE_CYCLIC_SYNC_TRQ
 )
 
 ENCODER_RES     = 4096
@@ -285,12 +286,14 @@ class FurutaPIDFrame(wx.Frame):
         row1 = wx.BoxSizer(wx.HORIZONTAL)
         row1.Add(wx.StaticText(root, label="Balance:"),
                  0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 6)
-        self._kp = gain(row1, "Kp:", 350,
+        self._kp = gain(row1, "Kp:", 3500, #350,
             "Proportional angle correction [counts/rad]. Too high → oscillation.")
-        self._ki = gain(row1, "Ki:", 5,
+        self._ki = gain(row1, "Ki:", 0, #5,
             "Integral: eliminates steady-state drift [counts/(rad·s)]. Too high → windup.")
-        self._kd = gain(row1, "Kd:", 15,
+        self._kd = gain(row1, "Kd:", 0, #15,
             "Derivative velocity damping [counts/(rad/s)]. Too high → sluggish.")
+        self._dz = gain(row1, "Dz:", 3,
+            "Deadzone [deg] for pendulum angle error feedback (only PI, not D).")
         outer.Add(row1, 0, wx.EXPAND | wx.TOP | wx.BOTTOM, 3)
 
         # Row 2 — swingup energy gains + torque limit + button
@@ -299,13 +302,13 @@ class FurutaPIDFrame(wx.Frame):
                  0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 6)
         self._ks = gain(row2, "Ks:", 0.3,
             "Swingup max arm travel [revolutions]. Negate if pendulum damps instead of grows.")
-        self._kb = gain(row2, "Kb:", 0.0,
+        self._kb = gain(row2, "Kb:", 0.05,
             "Braking max arm travel [revolutions]. Increase if pendulum overshoots upright.")
-        self._kv = gain(row2, "Kv:", 1.0,
+        self._kv = gain(row2, "Kv:", 100.0,
             "Max arm velocity [rev/s] for swingup and braking (slew-rate limit).")
         row2.Add(wx.StaticText(root, label="Torque limit:"),
                  0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 12)
-        self._torque_limit = wx.TextCtrl(root, value="50", size=(46, -1))
+        self._torque_limit = wx.TextCtrl(root, value="10000", size=(46, -1))
         self._torque_limit.SetToolTip(
             "Max output as % of rated torque (written to firmware via DS402 0x6073).\n"
             "50% = continuous-safe for most motors.  Lower to protect against overheating.")
@@ -622,6 +625,7 @@ class FurutaPIDFrame(wx.Frame):
             self._torque_limit_pct = lim_pct
 
             n.rpdo[1]["SetModeOfOperation"].raw = MODE_CYCLIC_SYNC_POS
+            # n.rpdo[1]["SetModeOfOperation"].raw = MODE_CYCLIC_SYNC_TRQ
             n.rpdo[1]["ControlWord"].raw = OP_ENABLED
             n.rpdo[1].transmit()
 
@@ -678,6 +682,7 @@ class FurutaPIDFrame(wx.Frame):
             kp = float(self._kp.GetValue())
             ki = float(self._ki.GetValue())
             kd = float(self._kd.GetValue())
+            dz = float(self._dz.GetValue())
             ks = float(self._ks.GetValue())
             kb = float(self._kb.GetValue())
             kv = float(self._kv.GetValue())
@@ -689,12 +694,12 @@ class FurutaPIDFrame(wx.Frame):
         self._in_braking  = False
         self._controlling = True
         self._btn_ctrl.SetLabel("Stop")
-        for tc in (self._kp, self._ki, self._kd, self._ks, self._kb, self._kv):
+        for tc in (self._kp, self._ki, self._kd, self._dz, self._ks, self._kb, self._kv):
             tc.Disable()
         self._set_status("Swingup…", 200, 130, 0)
 
         self._ctrl_thread = threading.Thread(
-            target=self._control_loop, args=(kp, ki, kd, ks, kb, kv), daemon=True)
+            target=self._control_loop, args=(kp, ki, kd, dz, ks, kb, kv), daemon=True)
         self._ctrl_thread.start()
 
     def _stop_control(self):
@@ -708,7 +713,7 @@ class FurutaPIDFrame(wx.Frame):
         self._in_balance = False
         self._in_braking = False
         self._btn_ctrl.SetLabel("Start")
-        for tc in (self._kp, self._ki, self._kd, self._ks, self._kb, self._kv):
+        for tc in (self._kp, self._ki, self._kd, self._dz, self._ks, self._kb, self._kv):
             tc.Enable()
         if self._enabled:
             try:
@@ -720,7 +725,7 @@ class FurutaPIDFrame(wx.Frame):
                 pass
             self._set_status("Motor enabled  |  controller off")
 
-    def _control_loop(self, kp, ki, kd, ks, kb, kv):
+    def _control_loop(self, kp, ki, kd, dz, ks, kb, kv):
         # ── Parameter reference ────────────────────────────────────────────
         #
         # BALANCE  (|θ| < 15°, |ω| < BALANCE_VEL_MAX)
@@ -743,6 +748,7 @@ class FurutaPIDFrame(wx.Frame):
         swing_cts  = int(ks * ENCODER_RES)
         brake_cts  = int(kb * ENCODER_RES)
         slew_cts   = max(1, int(kv * ENCODER_RES / SYNC_HZ))
+        dz_rad = math.radians(dz)
 
         # Position-error clamp derived from torque limit.
         # Limiting how far the commanded position can deviate from the measured
@@ -781,6 +787,7 @@ class FurutaPIDFrame(wx.Frame):
             arm_rad  = p1_abs * 2.0 * math.pi / ENCODER_RES
 
             # Pendulum velocity (wrap delta to avoid ±π spike)
+            # TODO fix velocity transient on start up
             delta = pend_rad - prev_pend
             if delta > math.pi:    delta -= 2 * math.pi
             elif delta < -math.pi: delta += 2 * math.pi
@@ -789,74 +796,165 @@ class FurutaPIDFrame(wx.Frame):
             vel_fast = a_fast * raw_vel + (1.0 - a_fast) * vel_fast
             prev_pend = pend_rad
 
-            # # Debugging
-            # self._debug_val = raw_vel
-            # self._debug_val = vel_slow
-            # self._debug_val = vel_fast
+        #     # # Debugging
+        #     # self._debug_val = raw_vel
+        #     # self._debug_val = vel_slow
+        #     # self._debug_val = vel_fast
 
             # Arm angular velocity (continuous — no wrapping needed)
             raw_arm_vel  = (arm_rad - prev_arm_rad) / dt
             arm_vel      = a_slow * raw_arm_vel + (1.0 - a_slow) * arm_vel
             prev_arm_rad = arm_rad
 
-            # ── mode transitions ─────────────────────────────────────────
-            if in_balance:
-                if abs(pend_rad) > BALANCE_EXIT or abs(vel_fast) > BALANCE_VEL_MAX:
-                    in_balance = False
-                    integral   = 0.0
-                    wx.CallAfter(self._set_status, "Swingup…", 200, 130, 0)
+        #     # ── mode transitions ─────────────────────────────────────────
+        #     if in_balance:
+        #         if abs(pend_rad) > BALANCE_EXIT or abs(vel_fast) > BALANCE_VEL_MAX:
+        #             in_balance = False
+
+        #             n.rpdo[1]["SetModeOfOperation"].raw = MODE_CYCLIC_SYNC_POS
+        #             n.rpdo[1]["ControlWord"].raw = OP_ENABLED
+        #             n.rpdo[1].transmit()
+
+        #             integral   = 0.0
+        #             wx.CallAfter(self._set_status, "Swingup…", 200, 130, 0)
+        #     else:
+        #         if abs(pend_rad) < BALANCE_ENTRY and abs(vel_fast) < BALANCE_VEL_MAX:
+        #             in_balance = True
+
+        #             n.rpdo[1]["SetModeOfOperation"].raw = MODE_CYCLIC_SYNC_TRQ
+        #             n.rpdo[1]["ControlWord"].raw = OP_ENABLED
+        #             n.rpdo[1].transmit()
+
+        #             wx.CallAfter(self._set_status, "Balancing…", 0, 110, 185)
+        #     self._in_balance = in_balance
+
+            # PID Inverted Inverted Balance
+            # x = pend_rad
+            # if x >= 0.0:
+            #   x = x - math.pi
+            # elif x < 0.0:
+            #   x = x + math.pi
+            # integral    = max(-INTEGRAL_CLAMP, min(INTEGRAL_CLAMP,
+            #               integral + x * dt))
+            # u           = -(kp * x + ki * integral + kd * vel_fast)
+            # target      = int(p1_abs + u)
+
+            # PID Balance
+            # Add deadzone for proportional and integral
+            pend_rad_dz = pend_rad
+            if pend_rad_dz > dz_rad:
+              pend_rad_dz = pend_rad_dz - dz_rad
+            elif pend_rad_dz < -dz_rad:
+              pend_rad_dz = pend_rad_dz + dz_rad
             else:
-                if abs(pend_rad) < BALANCE_ENTRY and abs(vel_fast) < BALANCE_VEL_MAX:
-                    in_balance = True
-                    wx.CallAfter(self._set_status, "Balancing…", 0, 110, 185)
-            self._in_balance = in_balance
+              pend_rad_dz = 0.0
+            integral    = max(-INTEGRAL_CLAMP, min(INTEGRAL_CLAMP,
+                          integral + pend_rad_dz * dt))
+            u           = kp * pend_rad_dz + ki * integral + kd * vel_fast
+            target      = int(p1_abs + u)
+            if abs(pend_rad) > BALANCE_EXIT:
+              target = int(p1_abs)
 
-            if in_balance:
-                # PID balance
-                integral    = max(-INTEGRAL_CLAMP, min(INTEGRAL_CLAMP,
-                                                       integral + pend_rad * dt))
-                u           = -(kp * pend_rad + ki * integral + kd * vel_fast)
-                target      = int(p1_abs + u)
-                target      = max(p1_zero - MAX_ARM_CTS,
-                                  min(p1_zero + MAX_ARM_CTS, target))
-                prev_target = target
-                self._in_braking = False
+            self._debug_val = u
 
-            elif abs(vel_slow) > 0.1:
-                # Proportional energy controller with Furuta centripetal correction
-                de     = (0.5 * vel_slow**2
-                          + 0.5 * COUPLING**2 * arm_vel**2 * math.sin(pend_rad)**2
-                          - OMEGA_N_SQ * (1.0 - math.cos(pend_rad)))
-                pump   = math.copysign(1.0, de * vel_slow * math.cos(pend_rad))
-                braking = de > 0
-                cap    = brake_cts if braking else swing_cts
-                amp    = min(cap, int(abs(de) / OMEGA_N_SQ * cap))
-                target = int(p1_zero + pump * amp)
-                target = max(p1_zero - MAX_ARM_CTS,
-                             min(p1_zero + MAX_ARM_CTS, target))
-                # Slew-rate limit
-                step   = max(-slew_cts, min(slew_cts, target - prev_target))
-                target = prev_target + step
-                prev_target = target
-                self._in_braking = braking
 
-                # Debugging
-                self._debug_val = de
+        #     if in_balance:
+        #         # PID balance
+        #         integral    = max(-INTEGRAL_CLAMP, min(INTEGRAL_CLAMP,
+        #                       integral + pend_rad * dt))
+        #         u           = -(kp * pend_rad + ki * integral + kd * vel_fast)
+        #         target      = int(p1_abs + u)
+                
+        #         # Debugging
+        #         # is_positive = u > 0
+        #         # if is_positive:
+        #         #   self._debug_val = 1
+        #         # else:
+        #         #   self._debug_val = 0
+        #         self._debug_val = u
 
-            else:
-                target = prev_target
-                self._in_braking = False
+        #         # Debugging
+        #         # is_max = False
+        #         # if target > p1_zero + MAX_ARM_CTS:
+        #         #   is_max = True
+        #         # elif target < p1_zero - MAX_ARM_CTS:
+        #         #   is_max = True
+        #         # if is_max:
+        #         #   self._debug_val = 1
+        #         # else:
+        #         #   self._debug_val = 0
+                
+        #         # target      = max(p1_zero - MAX_ARM_CTS,
+        #         #               min(p1_zero + MAX_ARM_CTS, target))
 
-            # Position-error clamp — software backstop regardless of mode.
-            # Keeps commanded position within max_err_cts of current position
-            # so the internal controller never demands more than the torque limit.
-            err = target - p1_abs
-            if err > max_err_cts:
-                target = p1_abs + max_err_cts
-            elif err < -max_err_cts:
-                target = p1_abs - max_err_cts
+        #         prev_target = target
+        #         self._in_braking = False
+
+        #     elif abs(vel_slow) > 0.1:
+        #         # Proportional energy controller with Furuta centripetal correction
+        #         de     = (0.5 * vel_slow**2
+        #                   + 0.5 * COUPLING**2 * arm_vel**2 * math.sin(pend_rad)**2
+        #                   - OMEGA_N_SQ * (1.0 - math.cos(pend_rad)))
+        #         pump   = math.copysign(1.0, de * vel_slow * math.cos(pend_rad))
+        #         braking = de > 0
+        #         cap    = brake_cts if braking else swing_cts
+        #         amp    = min(cap, int(abs(de) / OMEGA_N_SQ * cap))
+        #         target = int(p1_zero + pump * amp)
+        #         target = max(p1_zero - MAX_ARM_CTS,
+        #                  min(p1_zero + MAX_ARM_CTS, target))
+                
+                
+        #         # Debugging
+        #         # is_slew = False
+        #         # if target - prev_target > slew_cts:
+        #         #   is_slew = True
+        #         # elif target - prev_target < -slew_cts:
+        #         #   is_slew = True
+        #         # if is_slew:
+        #         #   self._debug_val = 1
+        #         # else:
+        #         #   self._debug_val = 0
+                
+        #         # Slew-rate limit
+        #         step   = max(-slew_cts, min(slew_cts, target - prev_target))
+        #         target = prev_target + step
+        #         prev_target = target
+        #         self._in_braking = braking
+
+        #         # Debugging
+        #         # self._debug_val = de
+
+        #     else:
+        #         target = prev_target
+        #         self._in_braking = False
+
+        #     # Position-error clamp — software backstop regardless of mode.
+        #     # Keeps commanded position within max_err_cts of current position
+        #     # so the internal controller never demands more than the torque limit.
+        #     err = target - p1_abs
+
+        #     # # Debugging
+        #     # is_clamp = False
+        #     # if err > max_err_cts:
+        #     #   is_clamp = True
+        #     # elif err < -max_err_cts:
+        #     #   is_clamp = True
+        #     # if is_clamp:
+        #     #   self._debug_val = 1
+        #     # else:
+        #     #   self._debug_val = 0
+
+        #     if err > max_err_cts:
+        #         target = p1_abs + max_err_cts
+        #     elif err < -max_err_cts:
+        #         target = p1_abs - max_err_cts
+
 
             try:
+                # if in_balance:
+                #   self._node1.rpdo[2]["TargetTorque"].raw = 0
+                # else:
+                #   self._node1.rpdo[2]["TargetPosition"].raw = target
                 self._node1.rpdo[2]["TargetPosition"].raw = target
                 self._node1.rpdo[2].transmit()
             except Exception:
