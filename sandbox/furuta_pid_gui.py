@@ -41,9 +41,9 @@ EDS_FILE        = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'puck4.eds')
 SYNC_HZ         = 500
 BALANCE_ENTRY   = math.radians(15)   # engage PID inside ±15°
-BALANCE_EXIT    = math.radians(25)   # disengage outside ±25°
+BALANCE_EXIT    = math.radians(20)   # disengage outside ±25°
 BALANCE_VEL_MAX = 10#3.0                # rad/s — max velocity to engage
-INTEGRAL_CLAMP  = 2048               # counts — anti-windup clamp on integral
+INTEGRAL_CLAMP  = 100#2048               # counts — anti-windup clamp on integral
 PEND_LENGTH_M   = 0.3048             # pendulum rod length (m) — 12 inches
 ARM_LENGTH_M    = 0.127              # rotating arm length (m) — 5 inches
 COUPLING        = ARM_LENGTH_M / PEND_LENGTH_M   # κ = L₁/L₂
@@ -53,6 +53,7 @@ MAX_ARM_CTS     = int(MAX_ARM_REV * ENCODER_RES)
 DISPLAY_HZ      = 25
 BALANCE_RAMP_ON_RATE = 1.0
 BALANCE_RAMP_OFF_RATE = 1.0
+RAMP_OFF_RATE = 1.0
 
 # ──────────────────────────────────────────────────────────── canvas ──────
 
@@ -291,10 +292,12 @@ class FurutaPIDFrame(wx.Frame):
             "Proportional angle correction [counts/rad]. Too high → oscillation.")
         self._ki = gain(row1, "Ki:", 0, #5,
             "Integral: eliminates steady-state drift [counts/(rad·s)]. Too high → windup.")
-        self._kd = gain(row1, "Kd:", 30, #15,
+        self._kd = gain(row1, "Kd:", 35, #15,
             "Derivative velocity damping [counts/(rad/s)]. Too high → sluggish.")
-        self._dz = gain(row1, "Dz:", 2,
+        self._dz = gain(row1, "Dz:", 1,
             "Deadzone [deg] for pendulum angle error feedback (only PI, not D).")
+        self._bi = gain(row1, "Bias:", 0,
+            "Bias [deg] for pendulum angle error feedback (only PI, not D).")
         outer.Add(row1, 0, wx.EXPAND | wx.TOP | wx.BOTTOM, 3)
 
         # Row 2 — swingup energy gains + torque limit + button
@@ -683,6 +686,7 @@ class FurutaPIDFrame(wx.Frame):
             ki = float(self._ki.GetValue())
             kd = float(self._kd.GetValue())
             dz = float(self._dz.GetValue())
+            bi = float(self._bi.GetValue())
             ks = float(self._ks.GetValue())
             kb = float(self._kb.GetValue())
             kv = float(self._kv.GetValue())
@@ -695,12 +699,12 @@ class FurutaPIDFrame(wx.Frame):
         self._in_braking      = False
         self._controlling     = True
         self._btn_ctrl.SetLabel("Stop")
-        for tc in (self._kp, self._ki, self._kd, self._dz, self._ks, self._kb, self._kv):
+        for tc in (self._kp, self._ki, self._kd, self._dz, self._bi, self._ks, self._kb, self._kv):
             tc.Disable()
         self._set_status("Swingup…", 200, 130, 0)
 
         self._ctrl_thread = threading.Thread(
-            target=self._control_loop, args=(kp, ki, kd, dz, ks, kb, kv), daemon=True)
+            target=self._control_loop, args=(kp, ki, kd, dz, bi, ks, kb, kv), daemon=True)
         self._ctrl_thread.start()
 
     def _stop_control(self):
@@ -715,7 +719,7 @@ class FurutaPIDFrame(wx.Frame):
         self._ramping_balnace = False
         self._in_braking =      False
         self._btn_ctrl.SetLabel("Start")
-        for tc in (self._kp, self._ki, self._kd, self._dz, self._ks, self._kb, self._kv):
+        for tc in (self._kp, self._ki, self._kd, self._dz, self._bi, self._ks, self._kb, self._kv):
             tc.Enable()
         if self._enabled:
             try:
@@ -727,7 +731,7 @@ class FurutaPIDFrame(wx.Frame):
                 pass
             self._set_status("Motor enabled  |  controller off")
 
-    def _control_loop(self, kp, ki, kd, dz, ks, kb, kv):
+    def _control_loop(self, kp, ki, kd, dz, bi, ks, kb, kv):
         # ── Parameter reference ────────────────────────────────────────────
         #
         # BALANCE  (|θ| < 15°, |ω| < BALANCE_VEL_MAX)
@@ -751,6 +755,7 @@ class FurutaPIDFrame(wx.Frame):
         brake_cts  = int(kb * ENCODER_RES)
         slew_cts   = max(1, int(kv * ENCODER_RES / SYNC_HZ))
         dz_rad = math.radians(dz)
+        bi_rad = math.radians(bi)
 
         # Position-error clamp derived from torque limit.
         # Limiting how far the commanded position can deviate from the measured
@@ -765,6 +770,7 @@ class FurutaPIDFrame(wx.Frame):
 
         in_balance   = False
         balance_ramp = 0.0
+        off_ramp     = 1.0
         prev_pend    = 0.0
         vel_slow     = 0.0
         vel_fast     = 0.0
@@ -773,6 +779,7 @@ class FurutaPIDFrame(wx.Frame):
         integral     = 0.0
         with self._lock:
             prev_target = self._puck1_pos
+        steady_target = prev_target
         prev_t = time.monotonic()
 
         while self._controlling and self._enabled:
@@ -790,7 +797,6 @@ class FurutaPIDFrame(wx.Frame):
             arm_rad  = p1_abs * 2.0 * math.pi / ENCODER_RES
 
             # Pendulum velocity (wrap delta to avoid ±π spike)
-            # TODO fix velocity transient on start up
             delta = pend_rad - prev_pend
             if delta > math.pi:    delta -= 2 * math.pi
             elif delta < -math.pi: delta += 2 * math.pi
@@ -808,12 +814,14 @@ class FurutaPIDFrame(wx.Frame):
             if in_balance:
                 if abs(pend_rad) > BALANCE_EXIT or abs(vel_fast) > BALANCE_VEL_MAX:
                     in_balance = False
+                    off_ramp   = 1.0
                     integral   = 0.0
+                    steady_target = target
                     wx.CallAfter(self._set_status, "Swingup…", 200, 130, 0)
             else:
                 if abs(pend_rad) < BALANCE_ENTRY and abs(vel_fast) < BALANCE_VEL_MAX:
                     in_balance = True
-
+                    steady_target = target
                     wx.CallAfter(self._set_status, "Balancing…", 0, 110, 185)
             self._in_balance = in_balance
 
@@ -827,32 +835,26 @@ class FurutaPIDFrame(wx.Frame):
                   balance_ramp = 1.0
 
                 # PID balance
-                # Add deadzone for proportional and integral
-                pend_rad_dz = pend_rad
+                # Add bias and deadzone for proportional and integral
+                pend_rad_dz = pend_rad - bi_rad
                 if pend_rad_dz > dz_rad:
                   pend_rad_dz = pend_rad_dz - dz_rad
                 elif pend_rad_dz < -dz_rad:
                   pend_rad_dz = pend_rad_dz + dz_rad
                 else:
                   pend_rad_dz = 0.0
+                # integral    = max(-INTEGRAL_CLAMP, min(INTEGRAL_CLAMP,
+                #               integral + pend_rad_dz * dt))
+                # u           = balance_ramp * (kp * pend_rad_dz + ki * integral + kd * vel_fast)
                 integral    = max(-INTEGRAL_CLAMP, min(INTEGRAL_CLAMP,
-                              integral + pend_rad_dz * dt))
-                u           = balance_ramp * (kp * pend_rad_dz + ki * integral + kd * vel_fast)
+                              integral + (p1_abs - steady_target) * dt))
+                self._debug_val = integral
+                u           = balance_ramp * (kp * pend_rad_dz + ki * integral +  kd * vel_fast)
                 target      = int(p1_abs + u)
 
-                # Debugging
-                # is_max = False
-                # if target > p1_zero + MAX_ARM_CTS:
-                #   is_max = True
-                # elif target < p1_zero - MAX_ARM_CTS:
-                #   is_max = True
-                # if is_max:
-                #   self._debug_val = 1
-                # else:
-                #   self._debug_val = 0
-                
-                # target      = max(p1_zero - MAX_ARM_CTS,
-                #               min(p1_zero + MAX_ARM_CTS, target))
+                # Limit total arm travel
+                target      = max(p1_zero - MAX_ARM_CTS,
+                              min(p1_zero + MAX_ARM_CTS, target))
 
                 prev_target = target
                 self._in_braking = False
@@ -887,8 +889,16 @@ class FurutaPIDFrame(wx.Frame):
                   balance_ramp = balance_ramp - dt * BALANCE_RAMP_OFF_RATE
                 if balance_ramp < 0.0:
                   balance_ramp = 0.0
-
-                target = prev_target
+                
+                if off_ramp > 0.0:
+                  off_ramp = off_ramp - dt * RAMP_OFF_RATE
+                  err = steady_target - p1_abs
+                  target = int(p1_abs + off_ramp * err)
+                  if off_ramp <= 0.0:
+                    off_ramp = 0.0
+                else:
+                  target = steady_target
+                
                 self._in_braking = False
 
             # Position-error clamp — software backstop regardless of mode.
@@ -896,16 +906,16 @@ class FurutaPIDFrame(wx.Frame):
             # so the internal controller never demands more than the torque limit.
             err = target - p1_abs
 
-            # Debugging
-            is_clamp = False
-            if err > max_err_cts:
-              is_clamp = True
-            elif err < -max_err_cts:
-              is_clamp = True
-            if is_clamp:
-              self._debug_val = 1
-            else:
-              self._debug_val = 0
+            # # Debugging
+            # is_clamp = False
+            # if err > max_err_cts:
+            #   is_clamp = True
+            # elif err < -max_err_cts:
+            #   is_clamp = True
+            # if is_clamp:
+            #   self._debug_val = 1
+            # else:
+            #   self._debug_val = 0
 
             if err > max_err_cts:
                 target = p1_abs + max_err_cts
