@@ -41,7 +41,7 @@ EDS_FILE        = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'puck4.eds')
 SYNC_HZ         = 500
 BALANCE_ENTRY   = math.radians(15)   # engage PID inside ±15°
-BALANCE_EXIT    = math.radians(20)   # disengage outside ±25°
+BALANCE_EXIT    = math.radians(20)   # disengage outside ±20°
 BALANCE_VEL_MAX = 10#3.0                # rad/s — max velocity to engage
 INTEGRAL_CLAMP  = 100#2048               # counts — anti-windup clamp on integral
 PEND_LENGTH_M   = 0.3048             # pendulum rod length (m) — 12 inches
@@ -54,6 +54,11 @@ DISPLAY_HZ      = 25
 BALANCE_RAMP_ON_RATE = 1.0
 BALANCE_RAMP_OFF_RATE = 1.0
 RAMP_OFF_RATE = 1.0
+TILT_PULSE_HZ = 0.8
+TILT_PULSE_AMP  = 500
+TILT_RAMP_RATE  = 3.0
+TILT_DZ_CTS     = 150
+TILT_MAX_RAD    = math.radians(3)
 
 # ──────────────────────────────────────────────────────────── canvas ──────
 
@@ -298,6 +303,8 @@ class FurutaPIDFrame(wx.Frame):
             "Deadzone [deg] for pendulum angle error feedback (only PI, not D).")
         self._bi = gain(row1, "Bias:", 0,
             "Bias [deg] for pendulum angle error feedback (only PI, not D).")
+        self._kt = gain(row1, "Kt:", 0,
+            "Tilt correction [rad/counts]")
         outer.Add(row1, 0, wx.EXPAND | wx.TOP | wx.BOTTOM, 3)
 
         # Row 2 — swingup energy gains + torque limit + button
@@ -687,6 +694,7 @@ class FurutaPIDFrame(wx.Frame):
             kd = float(self._kd.GetValue())
             dz = float(self._dz.GetValue())
             bi = float(self._bi.GetValue())
+            kt = float(self._kt.GetValue())
             ks = float(self._ks.GetValue())
             kb = float(self._kb.GetValue())
             kv = float(self._kv.GetValue())
@@ -699,12 +707,12 @@ class FurutaPIDFrame(wx.Frame):
         self._in_braking      = False
         self._controlling     = True
         self._btn_ctrl.SetLabel("Stop")
-        for tc in (self._kp, self._ki, self._kd, self._dz, self._bi, self._ks, self._kb, self._kv):
+        for tc in (self._kp, self._ki, self._kd, self._dz, self._bi, self._kt, self._ks, self._kb, self._kv):
             tc.Disable()
         self._set_status("Swingup…", 200, 130, 0)
 
         self._ctrl_thread = threading.Thread(
-            target=self._control_loop, args=(kp, ki, kd, dz, bi, ks, kb, kv), daemon=True)
+            target=self._control_loop, args=(kp, ki, kd, dz, bi, kt, ks, kb, kv), daemon=True)
         self._ctrl_thread.start()
 
     def _stop_control(self):
@@ -719,7 +727,7 @@ class FurutaPIDFrame(wx.Frame):
         self._ramping_balnace = False
         self._in_braking =      False
         self._btn_ctrl.SetLabel("Start")
-        for tc in (self._kp, self._ki, self._kd, self._dz, self._bi, self._ks, self._kb, self._kv):
+        for tc in (self._kp, self._ki, self._kd, self._dz, self._bi, self._kt, self._ks, self._kb, self._kv):
             tc.Enable()
         if self._enabled:
             try:
@@ -731,7 +739,7 @@ class FurutaPIDFrame(wx.Frame):
                 pass
             self._set_status("Motor enabled  |  controller off")
 
-    def _control_loop(self, kp, ki, kd, dz, bi, ks, kb, kv):
+    def _control_loop(self, kp, ki, kd, dz, bi, kt, ks, kb, kv):
         # ── Parameter reference ────────────────────────────────────────────
         #
         # BALANCE  (|θ| < 15°, |ω| < BALANCE_VEL_MAX)
@@ -777,6 +785,11 @@ class FurutaPIDFrame(wx.Frame):
         prev_arm_rad = 0.0
         arm_vel      = 0.0
         integral     = 0.0
+        tilt_dir     = 0.0
+        tilt_pulse_timer = 0.0
+        tilt_pulse_trigger = False
+        tilt_pulse_count = 0
+        tilt_pulse_shape = [0.008, 0.071, 0.286, 0.667, 1.0, 1.0, 0.667, 0.286, 0.071, 0.008]
         with self._lock:
             prev_target = self._puck1_pos
         steady_target = prev_target
@@ -793,7 +806,7 @@ class FurutaPIDFrame(wx.Frame):
                 p1_zero = self._puck1_zero
                 p2      = self._puck2_pos - self._puck2_zero
 
-            pend_rad = _wrap(p2 * 2.0 * math.pi / ENCODER_RES + math.pi)
+            pend_rad = _wrap(p2 * 2.0 * math.pi / ENCODER_RES + math.pi) - bi_rad
             arm_rad  = p1_abs * 2.0 * math.pi / ENCODER_RES
 
             # Pendulum velocity (wrap delta to avoid ±π spike)
@@ -828,28 +841,78 @@ class FurutaPIDFrame(wx.Frame):
 
             if in_balance:
 
+                # 
+                # if (p1_abs - p1_zero) > TILT_DZ_CTS:
+                #   tilt_dir_target = 1.0
+                # elif (p1_abs - p1_zero) < -TILT_DZ_CTS:
+                #   tilt_dir_target = -1.0
+                # else:
+                #   tilt_dir_target = 0.0
+                # if tilt_dir_target > tilt_dir:
+                #   tilt_dir = tilt_dir + dt * TILT_RAMP_RATE
+                # elif tilt_dir_target < tilt_dir:
+                #   tilt_dir = tilt_dir - dt * TILT_RAMP_RATE
+                # tilt_dir = max(min(tilt_dir, 1.0), -1.0)
+                # self._debug_val = tilt_dir
+
+                tilt_angle_rad = kt * (p1_abs - p1_zero)
+                tilt_angle_rad = max(min(tilt_angle_rad, TILT_MAX_RAD), -TILT_MAX_RAD)
+
                 # Ramping up
                 if balance_ramp < 1.0:
                   balance_ramp = balance_ramp + dt * BALANCE_RAMP_ON_RATE
                 if balance_ramp > 1.0:
                   balance_ramp = 1.0
 
-                # PID balance
-                # Add bias and deadzone for proportional and integral
-                pend_rad_dz = pend_rad - bi_rad
+                # Add deadzone for proportional and integral feedback
+                pend_rad_dz = pend_rad + tilt_angle_rad
                 if pend_rad_dz > dz_rad:
                   pend_rad_dz = pend_rad_dz - dz_rad
                 elif pend_rad_dz < -dz_rad:
                   pend_rad_dz = pend_rad_dz + dz_rad
                 else:
                   pend_rad_dz = 0.0
+
+                # Update tilt
+                # if tilt_pulse_count == 0:
+                #   if vel_slow < 0.5:
+                #     if pend_rad > 0.5 * dz_rad:
+                #       tilt = 1.0
+                #     elif pend_rad < -0.5 * dz_rad:
+                #       tilt = -1.0
+                #     else:
+                #       tilt = 0.0
+                #   else:
+                #     tilt = 0.0
+                  
+                  # # Update tilt pulse
+                  # if abs(tilt) > 0.5:
+                  #   tilt_pulse_timer = tilt_pulse_timer + dt
+                  #   if tilt_pulse_timer * TILT_PULSE_HZ >= 1:
+                  #     tilt_pulse_trigger = True
+                  #     tilt_pulse_timer = 0.0
+                  # else:
+                  #   tilt_pulse_timer = 0.0
+
+                # PID balance
                 # integral    = max(-INTEGRAL_CLAMP, min(INTEGRAL_CLAMP,
                 #               integral + pend_rad_dz * dt))
                 # u           = balance_ramp * (kp * pend_rad_dz + ki * integral + kd * vel_fast)
-                integral    = max(-INTEGRAL_CLAMP, min(INTEGRAL_CLAMP,
-                              integral + (p1_abs - steady_target) * dt))
-                self._debug_val = integral
+                # integral    = max(-INTEGRAL_CLAMP, min(INTEGRAL_CLAMP,
+                #               integral + (p1_abs - steady_target) * dt))
+                # self._debug_val = integral
                 u           = balance_ramp * (kp * pend_rad_dz + ki * integral +  kd * vel_fast)
+                
+                # if tilt_pulse_trigger:
+                #   tilt_pulse_trigger = False
+                #   tilt_pulse_count = 10
+                # if tilt_pulse_count > 0:
+                #   self._debug_val = 1
+                #   tilt_pulse_count = tilt_pulse_count - 1
+                #   u = u + tilt * tilt_pulse_shape[tilt_pulse_count] * TILT_PULSE_AMP
+                # else:
+                #   self._debug_val = 0
+
                 target      = int(p1_abs + u)
 
                 # Limit total arm travel
@@ -859,30 +922,30 @@ class FurutaPIDFrame(wx.Frame):
                 prev_target = target
                 self._in_braking = False
 
-            elif abs(vel_slow) > 0.1:
+            # elif abs(vel_slow) > 0.1:
 
-                if balance_ramp > 0.0:
-                  balance_ramp = balance_ramp - dt * BALANCE_RAMP_OFF_RATE
-                if balance_ramp < 0.0:
-                  balance_ramp = 0.0
+            #     if balance_ramp > 0.0:
+            #       balance_ramp = balance_ramp - dt * BALANCE_RAMP_OFF_RATE
+            #     if balance_ramp < 0.0:
+            #       balance_ramp = 0.0
 
-                # Proportional energy controller with Furuta centripetal correction
-                de     = (0.5 * vel_slow**2
-                          + 0.5 * COUPLING**2 * arm_vel**2 * math.sin(pend_rad)**2
-                          - OMEGA_N_SQ * (1.0 - math.cos(pend_rad)))
-                pump   = math.copysign(1.0, de * vel_slow * math.cos(pend_rad))
-                braking = de > 0
-                cap    = brake_cts if braking else swing_cts
-                amp    = min(cap, int(abs(de) / OMEGA_N_SQ * cap))
-                target = int(p1_zero + pump * amp)
-                target = max(p1_zero - MAX_ARM_CTS,
-                         min(p1_zero + MAX_ARM_CTS, target))
+            #     # Proportional energy controller with Furuta centripetal correction
+            #     de     = (0.5 * vel_slow**2
+            #               + 0.5 * COUPLING**2 * arm_vel**2 * math.sin(pend_rad)**2
+            #               - OMEGA_N_SQ * (1.0 - math.cos(pend_rad)))
+            #     pump   = math.copysign(1.0, de * vel_slow * math.cos(pend_rad))
+            #     braking = de > 0
+            #     cap    = brake_cts if braking else swing_cts
+            #     amp    = min(cap, int(abs(de) / OMEGA_N_SQ * cap))
+            #     target = int(p1_zero + pump * amp)
+            #     target = max(p1_zero - MAX_ARM_CTS,
+            #              min(p1_zero + MAX_ARM_CTS, target))
                 
-                # Slew-rate limit
-                step   = max(-slew_cts, min(slew_cts, target - prev_target))
-                target = prev_target + step
-                prev_target = target
-                self._in_braking = braking
+            #     # Slew-rate limit
+            #     step   = max(-slew_cts, min(slew_cts, target - prev_target))
+            #     target = prev_target + step
+            #     prev_target = target
+            #     self._in_braking = braking
 
             else:
                 if balance_ramp > 0.0:
@@ -921,9 +984,6 @@ class FurutaPIDFrame(wx.Frame):
                 target = p1_abs + max_err_cts
             elif err < -max_err_cts:
                 target = p1_abs - max_err_cts
-
-            # Debugging: balance ramp
-            # self._debug_val = balance_ramp
 
             try:
                 self._node1.rpdo[2]["TargetPosition"].raw = target
