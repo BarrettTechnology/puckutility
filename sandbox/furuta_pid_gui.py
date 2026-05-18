@@ -750,11 +750,18 @@ class FurutaPIDFrame(wx.Frame):
         # ── Parameter reference ────────────────────────────────────────────
         #
         # BALANCE  (|θ| < BALANCE_ENTRY, |ω| < BALANCE_VEL_MAX)
-        #   u = −(Kp·θ + Ki·∫θ dt + Kd·ω)
+        #   θr = -(Kt·p + Kf·v)
+        #   Kt  [rad/rad]            position correction — too high → oscillation
+        #   Kf  [rad/(rad/s)]        velocity damping — too high → sluggish
+        #   position deadzone [deg]  applies to position correction
+        #   tilt max          [deg]  maximum tilt (θr) for position correction
+        #
+        #   u  = Kp·(θ - θr) + Ki·∫(θ - θr) dt + Kd·ω
         #   Kp  [counts/rad]      angle correction — too high → oscillation
         #   Ki  [counts/(rad·s)]  integral drift correction — too high → windup
         #   Kd  [counts/(rad/s)]  velocity damping — too high → sluggish
         #   Integral resets to zero on every balance exit (no windup carry-over).
+        #   angle deadzone [deg]  applies to angle correction
         #
         # SWINGUP / BRAKING  (energy controller, all other angles)
         #   Furuta energy:  de = ½ω² + ½κ²·ω₁²·sin²θ − (g/L)(1−cosθ)
@@ -780,8 +787,9 @@ class FurutaPIDFrame(wx.Frame):
         el = max(0.0, el)
         err_limit_cts = int(el * ENCODER_RES)
 
-        a_slow = min(1.0, 2 * math.pi * 3.0 / SYNC_HZ)  # ~3 Hz — energy direction
-        a_fast = min(1.0, 2 * math.pi * 8.0 / SYNC_HZ)  # ~8 Hz — PD velocity
+        a_very_slow = min(1,0, 2 * math.pi * 0.08 / SYNC_HZ)  # balance position zeroing
+        a_slow      = min(1.0, 2 * math.pi * 3.0 / SYNC_HZ)  # ~3 Hz — energy direction
+        a_fast      = min(1.0, 2 * math.pi * 8.0 / SYNC_HZ)  # ~8 Hz — PD velocity
 
         in_balance   = False
         balance_ramp = 0.0
@@ -838,6 +846,7 @@ class FurutaPIDFrame(wx.Frame):
                 if abs(pend_rad) < BALANCE_ENTRY and abs(vel_fast) < BALANCE_VEL_MAX:
                     in_balance = True
                     steady_target = target
+                    arm_rad_target = (steady_target - p1_zero) * 2.0 * math.pi / ENCODER_RES
                     wx.CallAfter(self._set_status, "Balancing…", 0, 110, 185)
             self._in_balance = in_balance
 
@@ -850,8 +859,11 @@ class FurutaPIDFrame(wx.Frame):
                 if balance_ramp > 1.0:
                   balance_ramp = 1.0
 
+                # Slow return to zero for balance position reference
+                arm_rad_target = (1 - a_very_slow) * arm_rad_target
+
                 # Add deadzone for balance position feedback
-                arm_rad_dz = arm_rad
+                arm_rad_dz = arm_rad - arm_rad_target
                 if arm_rad_dz > pdz_rad:
                   arm_rad_dz -= pdz_rad
                 elif arm_rad_dz < -pdz_rad:
@@ -860,8 +872,6 @@ class FurutaPIDFrame(wx.Frame):
                   arm_rad_dz = 0.0
                 
                 # PD balance position
-                # TODO the reference position should come from the steady_target
-                # instead of zero, and then maybe drift to zero?
                 tilt_angle_rad = kt * arm_rad_dz + kf * arm_vel
                 tilt_angle_rad = max(-tmax_rad, min(tmax_rad, tilt_angle_rad))
 
