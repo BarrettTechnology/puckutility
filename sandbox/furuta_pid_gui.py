@@ -68,6 +68,7 @@ TMAX_DEFAULT = 4
 KS_DEFAULT   = 0.3
 KB_DEFAULT   = 0.3
 KV_DEFAULT   = 5.0
+ERROR_LIMIT_DEFAULT = 0.5
 
 
 # ──────────────────────────────────────────────────────────── canvas ──────
@@ -204,7 +205,6 @@ class FurutaPIDFrame(wx.Frame):
         self._ramping_balnace  = False
         self._in_braking       = False
         self._ctrl_thread      = None
-        self._torque_limit_pct = 50.0
         self._debug_val = 0.0
 
         self._build_ui()
@@ -287,7 +287,7 @@ class FurutaPIDFrame(wx.Frame):
         self._canvas = FurutaCanvas(root)
         vsz.Add(self._canvas, 1, wx.EXPAND | wx.LEFT | wx.RIGHT, 6)
 
-        # Gains — two rows inside one static box
+        # Gains — three rows inside one static box
         gbx = wx.StaticBox(root, label="Controller Gains  (CSP mode)")
         outer = wx.StaticBoxSizer(gbx, wx.VERTICAL)
 
@@ -339,18 +339,8 @@ class FurutaPIDFrame(wx.Frame):
             "Braking max arm travel [revolutions]. Increase if pendulum overshoots upright.")
         self._kv = gain(row3, "Kv:", KV_DEFAULT,
             "Max arm velocity [rev/s] for swingup and braking (slew-rate limit).")
-        row3.Add(wx.StaticText(root, label="Torque limit:"),
-                 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 12)
-        self._torque_limit = wx.TextCtrl(root, value="10000", size=(46, -1))
-        self._torque_limit.SetToolTip(
-            "Max output as % of rated torque (written to firmware via DS402 0x6073).\n"
-            "50% = continuous-safe for most motors.  Lower to protect against overheating.")
-        row3.Add(self._torque_limit, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 3)
-        row3.Add(wx.StaticText(root, label="%"),
-                 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 2)
-        self._torque_label = wx.StaticText(root, label="")
-        self._torque_label.SetForegroundColour(wx.Colour(100, 170, 100))
-        row3.Add(self._torque_label, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 6)
+        self._el = gain(row3, "Error limit:", ERROR_LIMIT_DEFAULT,
+            "Limit on position error (revolutions). Lower to protect against overheating.")
         row3.AddStretchSpacer()
         self._btn_ctrl = wx.Button(root, label="Start", size=(90, -1))
         self._btn_ctrl.Bind(wx.EVT_BUTTON, self._on_ctrl_toggle)
@@ -642,21 +632,6 @@ class FurutaPIDFrame(wx.Frame):
             n.sdo["ControlWord"].raw = SHUTDOWN;      time.sleep(0.05)
             n.sdo["ControlWord"].raw = OP_ENABLED
 
-            # Apply torque limit via DS402 0x6073 (max torque, in permil of rated).
-            # The puck enforces this in firmware; the position loop cannot exceed it.
-            try:
-                lim_pct = max(1.0, min(100.0, float(self._torque_limit.GetValue())))
-            except ValueError:
-                lim_pct = 50.0
-            # try:
-            #     n.sdo[0x6073].raw = int(lim_pct * 10)   # permil
-            #     wx.CallAfter(self._torque_label.SetLabel, f"({lim_pct:.0f}% applied)")
-            #     print(f"[enable] torque limit set to {lim_pct:.0f}% ({int(lim_pct*10)} permil)")
-            # except Exception as tex:
-            #     wx.CallAfter(self._torque_label.SetLabel, "(SDO limit unsupported)")
-            #     print(f"[enable] torque limit SDO failed: {tex}")
-            self._torque_limit_pct = lim_pct
-
             n.rpdo[1]["SetModeOfOperation"].raw = MODE_CYCLIC_SYNC_POS
             n.rpdo[1]["ControlWord"].raw = OP_ENABLED
             n.rpdo[1].transmit()
@@ -723,6 +698,7 @@ class FurutaPIDFrame(wx.Frame):
             ks = float(self._ks.GetValue())
             kb = float(self._kb.GetValue())
             kv = float(self._kv.GetValue())
+            el = float(self._el.GetValue())
         except ValueError:
             self._set_status("Invalid gain — use numeric values", 180, 0, 0)
             return
@@ -734,13 +710,13 @@ class FurutaPIDFrame(wx.Frame):
         self._btn_ctrl.SetLabel("Stop")
         for tc in (self._kp, self._ki, self._kd, self._adz, self._bi,
             self._kt, self._kf, self._pdz, self._tmax,
-            self._ks, self._kb, self._kv):
+            self._ks, self._kb, self._kv, self._el):
             tc.Disable()
         self._set_status("Swingup…", 200, 130, 0)
 
         self._ctrl_thread = threading.Thread(
             target=self._control_loop, args=(kp, ki, kd, adz, bi, kt, kf,
-                pdz, tmax, ks, kb, kv), daemon=True)
+                pdz, tmax, ks, kb, kv, el), daemon=True)
         self._ctrl_thread.start()
 
     def _stop_control(self):
@@ -757,10 +733,11 @@ class FurutaPIDFrame(wx.Frame):
         self._btn_ctrl.SetLabel("Start")
         for tc in (self._kp, self._ki, self._kd, self._adz, self._bi,
             self._kt, self._kf, self._pdz, self._tmax,
-            self._ks, self._kb, self._kv):
+            self._ks, self._kb, self._kv, self._el):
             tc.Enable()
         if self._enabled:
             try:
+                # TODO idle instead of lock position
                 with self._lock:
                     cur = self._puck1_pos
                 self._node1.rpdo[2]["TargetPosition"].raw = cur
@@ -769,7 +746,7 @@ class FurutaPIDFrame(wx.Frame):
                 pass
             self._set_status("Motor enabled  |  controller off")
 
-    def _control_loop(self, kp, ki, kd, adz, bi, kt, kf, pdz, tmax, ks, kb, kv):
+    def _control_loop(self, kp, ki, kd, adz, bi, kt, kf, pdz, tmax, ks, kb, kv, el):
         # ── Parameter reference ────────────────────────────────────────────
         #
         # BALANCE  (|θ| < BALANCE_ENTRY, |ω| < BALANCE_VEL_MAX)
@@ -797,13 +774,11 @@ class FurutaPIDFrame(wx.Frame):
         pdz_rad = math.radians(pdz)
         tmax_rad = math.radians(tmax)
 
-        # Position-error clamp derived from torque limit.
+        # Position-error clamp.
         # Limiting how far the commanded position can deviate from the measured
-        # position caps the error the internal position controller must fight,
-        # which in turn caps the demanded current.  Scaled so that at 100% the
-        # arm can be commanded up to ¼ revolution ahead of its current position.
-        torque_limit_pct = self._torque_limit_pct
-        max_err_cts = max(1, int(torque_limit_pct / 100.0 * ENCODER_RES // 4))
+        # position caps the error the internal position controller must fight.
+        el = max(0.0, el)
+        err_limit_cts = int(el * ENCODER_RES)
 
         a_slow = min(1.0, 2 * math.pi * 3.0 / SYNC_HZ)  # ~3 Hz — energy direction
         a_fast = min(1.0, 2 * math.pi * 8.0 / SYNC_HZ)  # ~8 Hz — PD velocity
@@ -955,25 +930,22 @@ class FurutaPIDFrame(wx.Frame):
                 self._in_braking = False
 
             # Position-error clamp — software backstop regardless of mode.
-            # Keeps commanded position within max_err_cts of current position
-            # so the internal controller never demands more than the torque limit.
+            # Keeps commanded position within max_err_cts of current position.
             err = target - p1_abs
-
             # # Debugging
             # is_clamp = False
-            # if err > max_err_cts:
+            # if err > err_limit_cts:
             #   is_clamp = True
-            # elif err < -max_err_cts:
+            # elif err < -err_limit_cts:
             #   is_clamp = True
             # if is_clamp:
             #   self._debug_val = 1
             # else:
             #   self._debug_val = 0
-
-            if err > max_err_cts:
-                target = p1_abs + max_err_cts
-            elif err < -max_err_cts:
-                target = p1_abs - max_err_cts
+            if err > err_limit_cts:
+                target = p1_abs + err_limit_cts
+            elif err < -err_limit_cts:
+                target = p1_abs - err_limit_cts
 
             try:
                 self._node1.rpdo[2]["TargetPosition"].raw = target
