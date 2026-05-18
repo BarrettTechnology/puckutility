@@ -43,7 +43,7 @@ SYNC_HZ         = 500
 BALANCE_ENTRY   = math.radians(15)   # engage PID inside ±15°
 BALANCE_EXIT    = math.radians(20)   # disengage outside ±20°
 BALANCE_VEL_MAX = 10#3.0                # rad/s — max velocity to engage
-INTEGRAL_CLAMP  = 100#2048               # counts — anti-windup clamp on integral
+INTEGRAL_CLAMP  = 2048               # counts — anti-windup clamp on integral
 PEND_LENGTH_M   = 0.3048             # pendulum rod length (m) — 12 inches
 ARM_LENGTH_M    = 0.127              # rotating arm length (m) — 5 inches
 COUPLING        = ARM_LENGTH_M / PEND_LENGTH_M   # κ = L₁/L₂
@@ -54,11 +54,21 @@ DISPLAY_HZ      = 25
 BALANCE_RAMP_ON_RATE = 1.0
 BALANCE_RAMP_OFF_RATE = 1.0
 RAMP_OFF_RATE = 1.0
-TILT_PULSE_HZ = 0.8
-TILT_PULSE_AMP  = 500
-TILT_RAMP_RATE  = 3.0
-TILT_DZ_CTS     = 150
-TILT_MAX_RAD    = math.radians(3)
+
+# Tunable parameter defaults
+KP_DEFAULT   = 8000
+KI_DEFAULT   = 0
+KD_DEFAULT   = 35
+ADZ_DEFAULT  = 1
+BI_DEFAULT   = 0
+KT_DEFAULT   = 0.142
+KF_DEFAULT   = 0
+PDZ_DEFAULT  = 0
+TMAX_DEFAULT = 4
+KS_DEFAULT   = 0.3
+KB_DEFAULT   = 0.3
+KV_DEFAULT   = 5.0
+
 
 # ──────────────────────────────────────────────────────────── canvas ──────
 
@@ -289,52 +299,64 @@ class FurutaPIDFrame(wx.Frame):
             sizer.Add(tc, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT | wx.RIGHT, 3)
             return tc
 
-        # Row 1 — balance PID
+        # Row 1 — balance angle PID
         row1 = wx.BoxSizer(wx.HORIZONTAL)
-        row1.Add(wx.StaticText(root, label="Balance:"),
+        row1.Add(wx.StaticText(root, label="Balance (angle):"),
                  0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 6)
-        self._kp = gain(row1, "Kp:", 8000, #350,
+        self._kp = gain(row1, "Kp:", KP_DEFAULT,
             "Proportional angle correction [counts/rad]. Too high → oscillation.")
-        self._ki = gain(row1, "Ki:", 0, #5,
+        self._ki = gain(row1, "Ki:", KI_DEFAULT,
             "Integral: eliminates steady-state drift [counts/(rad·s)]. Too high → windup.")
-        self._kd = gain(row1, "Kd:", 35, #15,
+        self._kd = gain(row1, "Kd:", KD_DEFAULT,
             "Derivative velocity damping [counts/(rad/s)]. Too high → sluggish.")
-        self._dz = gain(row1, "Dz:", 1,
-            "Deadzone [deg] for pendulum angle error feedback (only PI, not D).")
-        self._bi = gain(row1, "Bias:", 0,
-            "Bias [deg] for pendulum angle error feedback (only PI, not D).")
-        self._kt = gain(row1, "Kt:", 0,
-            "Tilt correction [rad/counts]")
+        self._adz = gain(row1, "Adz:", ADZ_DEFAULT,
+            "Deadzone [deg] for pendulum angle error feedback.")
+        self._bi = gain(row1, "Bias:", BI_DEFAULT,
+            "Bias [deg] for pendulum angle error feedback.")
         outer.Add(row1, 0, wx.EXPAND | wx.TOP | wx.BOTTOM, 3)
 
-        # Row 2 — swingup energy gains + torque limit + button
+        # Row 2 - balance position PD
         row2 = wx.BoxSizer(wx.HORIZONTAL)
-        row2.Add(wx.StaticText(root, label="Swingup:"),
+        row2.Add(wx.StaticText(root, label="Balance (position):"),
                  0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 6)
-        self._ks = gain(row2, "Ks:", 0.3,
+        self._kt = gain(row2, "Kt:", KT_DEFAULT,
+            "Proportional arm position correction [rad/rad].")
+        self._kf = gain(row2, "Kf:", KF_DEFAULT,
+            "Derivative arm position correction [rad/(rad/s)].")
+        self._pdz = gain(row2, "Pdz:", PDZ_DEFAULT,
+            "Deadzone [deg] for arm position error feedback.")
+        self._tmax = gain(row2, "Tmax:", TMAX_DEFAULT,
+            "Maximum tilt angle command [deg] for arm position correction.")
+        outer.Add(row2, 0, wx.EXPAND | wx.TOP | wx.BOTTOM, 3)
+
+        # Row 3 — swingup energy gains + torque limit + button
+        row3 = wx.BoxSizer(wx.HORIZONTAL)
+        row3.Add(wx.StaticText(root, label="Swingup:"),
+                 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 6)
+        self._ks = gain(row3, "Ks:", KS_DEFAULT,
             "Swingup max arm travel [revolutions]. Negate if pendulum damps instead of grows.")
-        self._kb = gain(row2, "Kb:", 0.3,
+        self._kb = gain(row3, "Kb:", KB_DEFAULT,
             "Braking max arm travel [revolutions]. Increase if pendulum overshoots upright.")
-        self._kv = gain(row2, "Kv:", 5.0,
+        self._kv = gain(row3, "Kv:", KV_DEFAULT,
             "Max arm velocity [rev/s] for swingup and braking (slew-rate limit).")
-        row2.Add(wx.StaticText(root, label="Torque limit:"),
+        row3.Add(wx.StaticText(root, label="Torque limit:"),
                  0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 12)
         self._torque_limit = wx.TextCtrl(root, value="10000", size=(46, -1))
         self._torque_limit.SetToolTip(
             "Max output as % of rated torque (written to firmware via DS402 0x6073).\n"
             "50% = continuous-safe for most motors.  Lower to protect against overheating.")
-        row2.Add(self._torque_limit, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 3)
-        row2.Add(wx.StaticText(root, label="%"),
+        row3.Add(self._torque_limit, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 3)
+        row3.Add(wx.StaticText(root, label="%"),
                  0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 2)
         self._torque_label = wx.StaticText(root, label="")
         self._torque_label.SetForegroundColour(wx.Colour(100, 170, 100))
-        row2.Add(self._torque_label, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 6)
-        row2.AddStretchSpacer()
+        row3.Add(self._torque_label, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 6)
+        row3.AddStretchSpacer()
         self._btn_ctrl = wx.Button(root, label="Start", size=(90, -1))
         self._btn_ctrl.Bind(wx.EVT_BUTTON, self._on_ctrl_toggle)
         self._btn_ctrl.Disable()
-        row2.Add(self._btn_ctrl, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
-        outer.Add(row2, 0, wx.EXPAND | wx.TOP | wx.BOTTOM, 3)
+        row3.Add(self._btn_ctrl, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
+        outer.Add(row3, 0, wx.EXPAND | wx.TOP | wx.BOTTOM, 3)
 
         vsz.Add(outer, 0, wx.EXPAND | wx.ALL, 6)
         root.SetSizer(vsz)
@@ -692,9 +714,12 @@ class FurutaPIDFrame(wx.Frame):
             kp = float(self._kp.GetValue())
             ki = float(self._ki.GetValue())
             kd = float(self._kd.GetValue())
-            dz = float(self._dz.GetValue())
+            adz = float(self._adz.GetValue())
             bi = float(self._bi.GetValue())
             kt = float(self._kt.GetValue())
+            kf = float(self._kf.GetValue())
+            pdz = float(self._pdz.GetValue())
+            tmax = float(self._tmax.GetValue())
             ks = float(self._ks.GetValue())
             kb = float(self._kb.GetValue())
             kv = float(self._kv.GetValue())
@@ -707,12 +732,15 @@ class FurutaPIDFrame(wx.Frame):
         self._in_braking      = False
         self._controlling     = True
         self._btn_ctrl.SetLabel("Stop")
-        for tc in (self._kp, self._ki, self._kd, self._dz, self._bi, self._kt, self._ks, self._kb, self._kv):
+        for tc in (self._kp, self._ki, self._kd, self._adz, self._bi,
+            self._kt, self._kf, self._pdz, self._tmax,
+            self._ks, self._kb, self._kv):
             tc.Disable()
         self._set_status("Swingup…", 200, 130, 0)
 
         self._ctrl_thread = threading.Thread(
-            target=self._control_loop, args=(kp, ki, kd, dz, bi, kt, ks, kb, kv), daemon=True)
+            target=self._control_loop, args=(kp, ki, kd, adz, bi, kt, kf,
+                pdz, tmax, ks, kb, kv), daemon=True)
         self._ctrl_thread.start()
 
     def _stop_control(self):
@@ -727,7 +755,9 @@ class FurutaPIDFrame(wx.Frame):
         self._ramping_balnace = False
         self._in_braking =      False
         self._btn_ctrl.SetLabel("Start")
-        for tc in (self._kp, self._ki, self._kd, self._dz, self._bi, self._kt, self._ks, self._kb, self._kv):
+        for tc in (self._kp, self._ki, self._kd, self._adz, self._bi,
+            self._kt, self._kf, self._pdz, self._tmax,
+            self._ks, self._kb, self._kv):
             tc.Enable()
         if self._enabled:
             try:
@@ -739,10 +769,10 @@ class FurutaPIDFrame(wx.Frame):
                 pass
             self._set_status("Motor enabled  |  controller off")
 
-    def _control_loop(self, kp, ki, kd, dz, bi, kt, ks, kb, kv):
+    def _control_loop(self, kp, ki, kd, adz, bi, kt, kf, pdz, tmax, ks, kb, kv):
         # ── Parameter reference ────────────────────────────────────────────
         #
-        # BALANCE  (|θ| < 15°, |ω| < BALANCE_VEL_MAX)
+        # BALANCE  (|θ| < BALANCE_ENTRY, |ω| < BALANCE_VEL_MAX)
         #   u = −(Kp·θ + Ki·∫θ dt + Kd·ω)
         #   Kp  [counts/rad]      angle correction — too high → oscillation
         #   Ki  [counts/(rad·s)]  integral drift correction — too high → windup
@@ -762,8 +792,10 @@ class FurutaPIDFrame(wx.Frame):
         swing_cts  = int(ks * ENCODER_RES)
         brake_cts  = int(kb * ENCODER_RES)
         slew_cts   = max(1, int(kv * ENCODER_RES / SYNC_HZ))
-        dz_rad = math.radians(dz)
+        adz_rad = math.radians(adz)
         bi_rad = math.radians(bi)
+        pdz_rad = math.radians(pdz)
+        tmax_rad = math.radians(tmax)
 
         # Position-error clamp derived from torque limit.
         # Limiting how far the commanded position can deviate from the measured
@@ -785,11 +817,6 @@ class FurutaPIDFrame(wx.Frame):
         prev_arm_rad = 0.0
         arm_vel      = 0.0
         integral     = 0.0
-        tilt_dir     = 0.0
-        tilt_pulse_timer = 0.0
-        tilt_pulse_trigger = False
-        tilt_pulse_count = 0
-        tilt_pulse_shape = [0.008, 0.071, 0.286, 0.667, 1.0, 1.0, 0.667, 0.286, 0.071, 0.008]
         with self._lock:
             prev_target = self._puck1_pos
         steady_target = prev_target
@@ -804,10 +831,11 @@ class FurutaPIDFrame(wx.Frame):
             with self._lock:
                 p1_abs  = self._puck1_pos
                 p1_zero = self._puck1_zero
+                p1      = p1_abs - p1_zero
                 p2      = self._puck2_pos - self._puck2_zero
 
             pend_rad = _wrap(p2 * 2.0 * math.pi / ENCODER_RES + math.pi) - bi_rad
-            arm_rad  = p1_abs * 2.0 * math.pi / ENCODER_RES
+            arm_rad  = p1 * 2.0 * math.pi / ENCODER_RES
 
             # Pendulum velocity (wrap delta to avoid ±π spike)
             delta = pend_rad - prev_pend
@@ -841,78 +869,40 @@ class FurutaPIDFrame(wx.Frame):
 
             if in_balance:
 
-                # 
-                # if (p1_abs - p1_zero) > TILT_DZ_CTS:
-                #   tilt_dir_target = 1.0
-                # elif (p1_abs - p1_zero) < -TILT_DZ_CTS:
-                #   tilt_dir_target = -1.0
-                # else:
-                #   tilt_dir_target = 0.0
-                # if tilt_dir_target > tilt_dir:
-                #   tilt_dir = tilt_dir + dt * TILT_RAMP_RATE
-                # elif tilt_dir_target < tilt_dir:
-                #   tilt_dir = tilt_dir - dt * TILT_RAMP_RATE
-                # tilt_dir = max(min(tilt_dir, 1.0), -1.0)
-                # self._debug_val = tilt_dir
-
-                tilt_angle_rad = kt * (p1_abs - p1_zero)
-                tilt_angle_rad = max(min(tilt_angle_rad, TILT_MAX_RAD), -TILT_MAX_RAD)
-
-                # Ramping up
+                # Ramping up balance feedback
                 if balance_ramp < 1.0:
                   balance_ramp = balance_ramp + dt * BALANCE_RAMP_ON_RATE
                 if balance_ramp > 1.0:
                   balance_ramp = 1.0
 
-                # Add deadzone for proportional and integral feedback
+                # Add deadzone for balance position feedback
+                arm_rad_dz = arm_rad
+                if arm_rad_dz > pdz_rad:
+                  arm_rad_dz -= pdz_rad
+                elif arm_rad_dz < -pdz_rad:
+                  arm_rad_dz += pdz_rad
+                else:
+                  arm_rad_dz = 0.0
+                
+                # PD balance position
+                # TODO the reference position should come from the steady_target
+                # instead of zero, and then maybe drift to zero?
+                tilt_angle_rad = kt * arm_rad_dz + kf * arm_vel
+                tilt_angle_rad = max(-tmax_rad, min(tmax_rad, tilt_angle_rad))
+
+                # Add deadzone for balance angle feedback
                 pend_rad_dz = pend_rad + tilt_angle_rad
-                if pend_rad_dz > dz_rad:
-                  pend_rad_dz = pend_rad_dz - dz_rad
-                elif pend_rad_dz < -dz_rad:
-                  pend_rad_dz = pend_rad_dz + dz_rad
+                if pend_rad_dz > adz_rad:
+                  pend_rad_dz -= adz_rad
+                elif pend_rad_dz < -adz_rad:
+                  pend_rad_dz += adz_rad
                 else:
                   pend_rad_dz = 0.0
 
-                # Update tilt
-                # if tilt_pulse_count == 0:
-                #   if vel_slow < 0.5:
-                #     if pend_rad > 0.5 * dz_rad:
-                #       tilt = 1.0
-                #     elif pend_rad < -0.5 * dz_rad:
-                #       tilt = -1.0
-                #     else:
-                #       tilt = 0.0
-                #   else:
-                #     tilt = 0.0
-                  
-                  # # Update tilt pulse
-                  # if abs(tilt) > 0.5:
-                  #   tilt_pulse_timer = tilt_pulse_timer + dt
-                  #   if tilt_pulse_timer * TILT_PULSE_HZ >= 1:
-                  #     tilt_pulse_trigger = True
-                  #     tilt_pulse_timer = 0.0
-                  # else:
-                  #   tilt_pulse_timer = 0.0
-
-                # PID balance
-                # integral    = max(-INTEGRAL_CLAMP, min(INTEGRAL_CLAMP,
-                #               integral + pend_rad_dz * dt))
-                # u           = balance_ramp * (kp * pend_rad_dz + ki * integral + kd * vel_fast)
-                # integral    = max(-INTEGRAL_CLAMP, min(INTEGRAL_CLAMP,
-                #               integral + (p1_abs - steady_target) * dt))
-                # self._debug_val = integral
+                # PID balance angle
+                integral    = max(-INTEGRAL_CLAMP, min(INTEGRAL_CLAMP,
+                              integral + pend_rad_dz * dt))
                 u           = balance_ramp * (kp * pend_rad_dz + ki * integral +  kd * vel_fast)
-                
-                # if tilt_pulse_trigger:
-                #   tilt_pulse_trigger = False
-                #   tilt_pulse_count = 10
-                # if tilt_pulse_count > 0:
-                #   self._debug_val = 1
-                #   tilt_pulse_count = tilt_pulse_count - 1
-                #   u = u + tilt * tilt_pulse_shape[tilt_pulse_count] * TILT_PULSE_AMP
-                # else:
-                #   self._debug_val = 0
-
                 target      = int(p1_abs + u)
 
                 # Limit total arm travel
