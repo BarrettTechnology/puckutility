@@ -41,7 +41,7 @@ EDS_FILE        = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'puck4.eds')
 SYNC_HZ         = 500
 BALANCE_ENTRY   = math.radians(15)   # engage PID inside ±15°
-BALANCE_EXIT    = math.radians(20)   # disengage outside ±20°
+BALANCE_EXIT    = math.radians(25)   # disengage outside ±25°
 BALANCE_VEL_MAX = 10#3.0                # rad/s — max velocity to engage
 INTEGRAL_CLAMP  = 2048               # counts — anti-windup clamp on integral
 PEND_LENGTH_M   = 0.3048             # pendulum rod length (m) — 12 inches
@@ -58,12 +58,12 @@ RAMP_OFF_RATE = 1.0
 # Tunable parameter defaults
 KP_DEFAULT   = 8000
 KI_DEFAULT   = 0
-KD_DEFAULT   = 35
+KD_DEFAULT   = 55 # 30–55
 ADZ_DEFAULT  = 1
 BI_DEFAULT   = 0
-KT_DEFAULT   = 0.007#0.01#0.142
-KF_DEFAULT   = 0.009#0.004#0.001
-PDZ_DEFAULT  = 0
+KT_DEFAULT   = 0.005 # 0.005–0.01 
+KF_DEFAULT   = 0.009
+PDZ_DEFAULT  = 150 # 0–150
 TMAX_DEFAULT = 4
 KS_DEFAULT   = 0.3
 KB_DEFAULT   = 0.3
@@ -836,6 +836,8 @@ class FurutaPIDFrame(wx.Frame):
 
             # ── mode transitions ─────────────────────────────────────────
             if in_balance:
+                if abs(vel_fast) > BALANCE_VEL_MAX:
+                    self._debug_val = 1.0
                 if abs(pend_rad) > BALANCE_EXIT or abs(vel_fast) > BALANCE_VEL_MAX:
                     in_balance = False
                     off_ramp   = 1.0
@@ -864,8 +866,6 @@ class FurutaPIDFrame(wx.Frame):
                 # Slow return to zero for balance position reference
                 arm_rad_target_z = (1.0 - a_very_slow) * arm_rad_target_z
                 arm_rad_target = a_very_slow * arm_rad_target_z + (1.0 - a_very_slow) * arm_rad_target
-                self._debug_val = arm_rad_target * 180.0 / math.pi
-
 
                 # Add deadzone for balance position feedback
                 arm_rad_dz = arm_rad - arm_rad_target
