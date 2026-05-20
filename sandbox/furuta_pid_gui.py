@@ -44,8 +44,8 @@ BALANCE_ENTRY   = math.radians(15)   # engage PID inside ±15°
 BALANCE_EXIT    = math.radians(25)   # disengage outside ±25°
 BALANCE_VEL_MAX = 10#3.0                # rad/s — max velocity to engage
 INTEGRAL_CLAMP  = 2048               # counts — anti-windup clamp on integral
-PEND_LENGTH_M   = 0.3048             # pendulum rod length (m) — 12 inches
-ARM_LENGTH_M    = 0.127              # rotating arm length (m) — 5 inches
+PEND_LENGTH_M   = 0.2413             # pendulum rod length (m) — 9.5 inches
+ARM_LENGTH_M    = 0.1238             # rotating arm length (m) — 4.875 inches
 COUPLING        = ARM_LENGTH_M / PEND_LENGTH_M   # κ = L₁/L₂
 OMEGA_N_SQ      = 9.8 / PEND_LENGTH_M            # g/L₂ (rad/s)²
 MAX_ARM_REV     = 5.0                # soft travel guard (revolutions)
