@@ -20,6 +20,7 @@ import widgets
 
 import os
 import canopen
+from canopen.sdo import SdoAbortedError
 import platform
 import time
 import subprocess
@@ -987,6 +988,18 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                     self.frame_statusbar.SetStatusText('Scan Error', 1)
                     self.frame_statusbar.Refresh()
                     self.frame_statusbar.Update()
+                    msg = ('Scan Error!\n\n'
+                           'Debug:\n'
+                           '  • Power Connection\n'
+                           '  • CAN Connection\n'
+                           '  • Duplicate node IDs on the bus\n'
+                           '    (two pucks with the same ID will collide\n'
+                           '     and cause SDO timeouts/aborts)\n\n'
+                           'Error: {}\n\n'
+                           'Verify and Retry').format(repr(e))
+                    dlg = wx.MessageDialog(None, msg, 'Scan Error', wx.OK | wx.ICON_ERROR)
+                    dlg.ShowModal()
+                    dlg.Destroy()
                     return
                 try:
                     result = self.can_port(None)
@@ -1056,18 +1069,25 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
           # Add our canopen node along with its object dictionary (for parsing)
           print("Adding new node: {0}".format(node_id))
           self.node = self.network.add_node(node_id, 'puck4.eds')
-        else:  
+        else:
           self.node = self.network[node_id]
 
         self.text_id.ChangeValue(str(node_id))
 
         version = get_version(self.node.sdo['MfgSoftwareVersion'].raw)
-        # IF version is 0.0.0 and node_id is 127 update to say flashloader / bootloader (imply not ready) then skip the below part to avoid issues
         self.text_version.ChangeValue(version)
 
-        # if get mode != 0 (idle) then set the mode box to current mode
-        # then get target for whatever mode and populate input field
-        current_mode = self.node.sdo["SetModeOfOperation"].raw
+        # Detect flashloader by attempting to read SetModeOfOperation, which only
+        # exists in application firmware. The flashloader aborts this SDO — use
+        # that as the discriminator rather than node ID or version number.
+        try:
+            current_mode = self.node.sdo["SetModeOfOperation"].raw
+        except SdoAbortedError:
+            print("Node {} is in flashloader mode (v{}) — skipping puck configuration.".format(
+                node_id, version))
+            self.frame_statusbar.SetStatusText(
+                "Flashloader v{} on node {}".format(version, node_id), 1)
+            return
         if(current_mode == 0):     
             # update select test to idle and input to 0
             self.choice_test.SetSelection(0)
@@ -1270,13 +1290,20 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         self.requireCal = True
         self.requireConfig = True
 
-        # Re-scan
-        self.can_port(None,True)
-        self.scan_pucks(None,False,True)
-        # timeFinish = round(time.time() - timeStart,2)
-        # print('Time elapsed: {}'.format(timeFinish))
+        # Reconnect, then send NMT Reset Node to the flashed puck so it exits
+        # the flashloader and boots application firmware. flashp4 only sends
+        # LAUNCH and disconnects — without this reset the puck stays in the
+        # flashloader.
+        self.can_port(None, True)
+        try:
+            print("Sending NMT reset to node {} ...".format(node_id))
+            self.network.send_message(0x0, [0x81, int(node_id)])
+        except Exception as _nmt_e:
+            print("WARNING: NMT reset failed: {}".format(_nmt_e))
+        time.sleep(0.5)
 
-        time.sleep(0.5) # wait for puck to reboot (avoids loss of communication)
+        # Re-scan
+        self.scan_pucks(None, False, True)
         self.frame_statusbar.SetStatusText("Ready", 1)
 
         if self.adcWasON == True:
