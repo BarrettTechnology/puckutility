@@ -53,7 +53,6 @@ MAX_ARM_CTS     = int(MAX_ARM_REV * ENCODER_RES)
 DISPLAY_HZ      = 25
 BALANCE_RAMP_ON_RATE = 1.0
 BALANCE_RAMP_OFF_RATE = 1.0
-RAMP_OFF_RATE = 1.0
 
 # Tunable parameter defaults
 KP_DEFAULT   = 8000
@@ -793,7 +792,6 @@ class FurutaPIDFrame(wx.Frame):
 
         in_balance   = False
         balance_ramp = 0.0
-        off_ramp     = 1.0
         prev_pend    = 0.0
         vel_slow     = 0.0
         vel_fast     = 0.0
@@ -802,7 +800,8 @@ class FurutaPIDFrame(wx.Frame):
         integral     = 0.0
         with self._lock:
             prev_target = self._puck1_pos
-        steady_target = prev_target
+            steady_target = self._puck1_pos - self._puck1_zero
+        steady_target_z = steady_target
         prev_t = time.monotonic()
 
         while self._controlling and self._enabled:
@@ -840,16 +839,14 @@ class FurutaPIDFrame(wx.Frame):
                     self._debug_val = 1.0
                 if abs(pend_rad) > BALANCE_EXIT or abs(vel_fast) > BALANCE_VEL_MAX:
                     in_balance = False
-                    off_ramp   = 1.0
                     integral   = 0.0
-                    steady_target = target
+                    steady_target = p1
+                    steady_target_z = steady_target
                     wx.CallAfter(self._set_status, "Swingup…", 200, 130, 0)
             else:
                 if abs(pend_rad) < BALANCE_ENTRY and abs(vel_fast) < BALANCE_VEL_MAX:
                     in_balance = True
-                    # steady_target = target
-                    steady_target = p1_abs
-                    arm_rad_target = (steady_target - p1_zero) * 2.0 * math.pi / ENCODER_RES
+                    arm_rad_target = p1 * 2.0 * math.pi / ENCODER_RES
                     arm_rad_target_z = arm_rad_target
                     wx.CallAfter(self._set_status, "Balancing…", 0, 110, 185)
             self._in_balance = in_balance
@@ -866,6 +863,7 @@ class FurutaPIDFrame(wx.Frame):
                 # Slow return to zero for balance position reference
                 arm_rad_target_z = (1.0 - a_very_slow) * arm_rad_target_z
                 arm_rad_target = a_very_slow * arm_rad_target_z + (1.0 - a_very_slow) * arm_rad_target
+                self._debug_val = arm_rad_target * 180.0 / (2 * math.pi)
 
                 # Add deadzone for balance position feedback
                 arm_rad_dz = arm_rad - arm_rad_target
@@ -879,8 +877,6 @@ class FurutaPIDFrame(wx.Frame):
                 # PD balance position
                 tilt_angle_rad = kt * arm_rad_dz + kf * arm_vel
                 tilt_angle_rad = max(-tmax_rad, min(tmax_rad, tilt_angle_rad))
-                # self._debug_val = tilt_angle_rad
-                # self._debug_val = arm_vel
 
                 # Add deadzone for balance angle feedback
                 pend_rad_dz = pend_rad + tilt_angle_rad
@@ -904,61 +900,56 @@ class FurutaPIDFrame(wx.Frame):
                 prev_target = target
                 self._in_braking = False
 
-            # elif abs(vel_slow) > 0.1:
+            elif abs(vel_slow) > 0.1: # Swinging
 
-            #     if balance_ramp > 0.0:
-            #       balance_ramp = balance_ramp - dt * BALANCE_RAMP_OFF_RATE
-            #     if balance_ramp < 0.0:
-            #       balance_ramp = 0.0
+                # Ramp down this parameter when not in balance state. This
+                # does not mean we continue to apply balance feedback.
+                if balance_ramp > 0.0:
+                  balance_ramp = balance_ramp - dt * BALANCE_RAMP_OFF_RATE
+                if balance_ramp < 0.0:
+                  balance_ramp = 0.0
 
-            #     # Proportional energy controller with Furuta centripetal correction
-            #     de     = (0.5 * vel_slow**2
-            #               + 0.5 * COUPLING**2 * arm_vel**2 * math.sin(pend_rad)**2
-            #               - OMEGA_N_SQ * (1.0 - math.cos(pend_rad)))
-            #     pump   = math.copysign(1.0, de * vel_slow * math.cos(pend_rad))
-            #     braking = de > 0
-            #     cap    = brake_cts if braking else swing_cts
-            #     amp    = min(cap, int(abs(de) / OMEGA_N_SQ * cap))
-            #     target = int(p1_zero + pump * amp)
-            #     target = max(p1_zero - MAX_ARM_CTS,
-            #              min(p1_zero + MAX_ARM_CTS, target))
+                # Slow return to zero for swing-up position reference
+                steady_target_z = (1.0 - a_very_slow) * steady_target_z
+                steady_target = a_very_slow * steady_target_z + (1.0 - a_very_slow) * steady_target
+
+                # Proportional energy controller with Furuta centripetal correction
+                de     = (0.5 * vel_slow**2
+                          + 0.5 * COUPLING**2 * arm_vel**2 * math.sin(pend_rad)**2
+                          - OMEGA_N_SQ * (1.0 - math.cos(pend_rad)))
+                pump   = math.copysign(1.0, de * vel_slow * math.cos(pend_rad))
+                braking = de > 0
+                cap    = brake_cts if braking else swing_cts
+                amp    = min(cap, int(abs(de) / OMEGA_N_SQ * cap))
+                target = int(p1_zero + steady_target + pump * amp)
+                target = max(p1_zero + steady_target - MAX_ARM_CTS,
+                         min(p1_zero + steady_target + MAX_ARM_CTS, target))
                 
-            #     # Slew-rate limit
-            #     step   = max(-slew_cts, min(slew_cts, target - prev_target))
-            #     target = prev_target + step
-            #     prev_target = target
-            #     self._in_braking = braking
+                # Slew-rate limit
+                step   = max(-slew_cts, min(slew_cts, target - prev_target))
+                target = prev_target + step
+                prev_target = target
+                self._in_braking = braking
 
-            else:
+            else: # Resting
+
+                # Ramp down this parameter when not in balance state. This
+                # does not mean we continue to apply balance feedback.
                 if balance_ramp > 0.0:
                   balance_ramp = balance_ramp - dt * BALANCE_RAMP_OFF_RATE
                 if balance_ramp < 0.0:
                   balance_ramp = 0.0
                 
-                if off_ramp > 0.0:
-                  off_ramp = off_ramp - dt * RAMP_OFF_RATE
-                  err = steady_target - p1_abs
-                  target = int(p1_abs + off_ramp * err)
-                  if off_ramp <= 0.0:
-                    off_ramp = 0.0
-                else:
-                  target = steady_target
+                # Slow return to zero for swing-up position reference
+                steady_target_z = (1.0 - a_very_slow) * steady_target_z
+                steady_target = a_very_slow * steady_target_z + (1.0 - a_very_slow) * steady_target
                 
+                target = p1_zero + steady_target
                 self._in_braking = False
 
             # Position-error clamp — software backstop regardless of mode.
             # Keeps commanded position within max_err_cts of current position.
             err = target - p1_abs
-            # # Debugging
-            # is_clamp = False
-            # if err > err_limit_cts:
-            #   is_clamp = True
-            # elif err < -err_limit_cts:
-            #   is_clamp = True
-            # if is_clamp:
-            #   self._debug_val = 1
-            # else:
-            #   self._debug_val = 0
             if err > err_limit_cts:
                 target = p1_abs + err_limit_cts
             elif err < -err_limit_cts:
