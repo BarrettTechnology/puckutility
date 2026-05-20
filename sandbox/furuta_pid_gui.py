@@ -736,7 +736,6 @@ class FurutaPIDFrame(wx.Frame):
             tc.Enable()
         if self._enabled:
             try:
-                # TODO idle instead of lock position
                 with self._lock:
                     cur = self._puck1_pos
                 self._node1.rpdo[2]["TargetPosition"].raw = cur
