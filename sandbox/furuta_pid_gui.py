@@ -807,7 +807,7 @@ class FurutaPIDFrame(wx.Frame):
         el = max(0.0, el)
         err_limit_cts = int(el * ENCODER_RES)
 
-        a_very_slow = 0.001#min(1,0, 2 * math.pi * 0.08 / SYNC_HZ)  # balance position zeroing
+        a_very_slow = min(1,0, 2 * math.pi * 0.16 / SYNC_HZ)  # balance position zeroing
         a_slow      = min(1.0, 2 * math.pi * 3.0 / SYNC_HZ)  # ~3 Hz — energy direction
         a_fast      = min(1.0, 2 * math.pi * 8.0 / SYNC_HZ)  # ~8 Hz — PD velocity
 
