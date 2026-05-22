@@ -204,7 +204,8 @@ class FurutaPIDFrame(wx.Frame):
         self._ramping_balnace  = False
         self._in_braking       = False
         self._ctrl_thread      = None
-        # self._debug_val = 0.0
+        self._bi = 0.0
+        self._debug_val = 0.0
 
         self._build_ui()
         self.Bind(wx.EVT_CLOSE, self._on_close)
@@ -274,9 +275,9 @@ class FurutaPIDFrame(wx.Frame):
         self._status.SetForegroundColour(wx.Colour(160, 60, 60))
         f = self._status.GetFont(); f.MakeBold(); self._status.SetFont(f)
         ssz.Add(self._status, 1, wx.EXPAND | wx.ALL, 8)
-        # self._debug_label = wx.StaticText(root, label="Debug: --", style=wx.ALIGN_CENTER_HORIZONTAL)
-        # self._debug_label.SetForegroundColour(wx.Colour(120, 130, 160))
-        # ssz.Add(self._debug_label, 1, wx.EXPAND | wx.ALL, 10)
+        self._debug_label = wx.StaticText(root, label="Debug: --", style=wx.ALIGN_CENTER_HORIZONTAL)
+        self._debug_label.SetForegroundColour(wx.Colour(120, 130, 160))
+        ssz.Add(self._debug_label, 1, wx.EXPAND | wx.ALL, 10)
         self._temp_label = wx.StaticText(root, label="Temp: --°C", style=wx.ALIGN_CENTER_HORIZONTAL)
         self._temp_label.SetForegroundColour(wx.Colour(120, 130, 160))
         ssz.Add(self._temp_label, 1, wx.EXPAND | wx.ALL, 10)
@@ -310,8 +311,13 @@ class FurutaPIDFrame(wx.Frame):
             "Derivative velocity damping [counts/(rad/s)]. Too high → sluggish.")
         self._adz = gain(row1, "Adz:", ADZ_DEFAULT,
             "Deadzone [deg] for pendulum angle error feedback.")
-        self._bi = gain(row1, "Bias:", BI_DEFAULT,
-            "Bias [deg] for pendulum angle error feedback.")
+        # self._bi = gain(row1, "Bias:", BI_DEFAULT,
+        #     "Bias [deg] for pendulum angle error feedback.")
+        row1.AddStretchSpacer()
+        self._btn_bias = wx.Button(root, label="Bias", size=(90, -1))
+        self._btn_bias.Bind(wx.EVT_BUTTON, self._on_bias)
+        self._btn_bias.Disable()
+        row1.Add(self._btn_bias, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
         outer.Add(row1, 0, wx.EXPAND | wx.TOP | wx.BOTTOM, 3)
 
         # Row 2 - balance position PD
@@ -458,13 +464,14 @@ class FurutaPIDFrame(wx.Frame):
             self._btn_conn.SetLabel("Disconnect")
             self._btn_en.Enable()
             self._btn_zero.Enable()
+            self._btn_bias.Enable()
             self._set_status(
                 f"Connected  (Motor={motor_id}, Encoder={enc_id})  —  waiting for pendulum to settle…",
                 180, 120, 0)
 
             threading.Thread(target=self._auto_zero_thread, daemon=True).start()
             threading.Thread(target=self._temp_monitor_thread, daemon=True).start()
-            # threading.Thread(target=self._debug_thread, daemon=True).start()
+            threading.Thread(target=self._debug_thread, daemon=True).start()
 
         except Exception as ex:
             self._set_status(f"Connect failed: {ex}", 180, 0, 0)
@@ -486,9 +493,10 @@ class FurutaPIDFrame(wx.Frame):
         self._btn_en.SetLabel("Enable Motor")
         self._btn_en.Disable()
         self._btn_zero.Disable()
+        self._btn_bias.Disable()
         self._btn_ctrl.Disable()
-        # self._debug_label.SetLabel("Debug: --")
-        # self._debug_label.SetForegroundColour(wx.Colour(120, 130, 160))
+        self._debug_label.SetLabel("Debug: --")
+        self._debug_label.SetForegroundColour(wx.Colour(120, 130, 160))
         self._temp_label.SetLabel("Temp: --°C")
         self._temp_label.SetForegroundColour(wx.Colour(120, 130, 160))
         self._set_status("Disconnected", 160, 60, 60)
@@ -556,18 +564,18 @@ class FurutaPIDFrame(wx.Frame):
 
     # ───────────────────────────────────────────────── debug ─────────────
 
-    # def _debug_thread(self):
-    #     while self._connected:
-    #         try:
-    #             colour = (120, 130, 160)
-    #             wx.CallAfter(self._update_debug_label, self._debug_val, colour)
-    #         except Exception:
-    #             pass
-    #         time.sleep(0.1)
+    def _debug_thread(self):
+        while self._connected:
+            try:
+                colour = (120, 130, 160)
+                wx.CallAfter(self._update_debug_label, self._debug_val, colour)
+            except Exception:
+                pass
+            time.sleep(0.1)
 
-    # def _update_debug_label(self, val, colour):
-    #     self._debug_label.SetLabel(f"Debug: {val}")
-    #     self._debug_label.SetForegroundColour(wx.Colour(*colour))
+    def _update_debug_label(self, val, colour):
+        self._debug_label.SetLabel(f"Debug: {val}")
+        self._debug_label.SetForegroundColour(wx.Colour(*colour))
 
     # ───────────────────────────────────────────────── temperature ───────
 
@@ -675,6 +683,16 @@ class FurutaPIDFrame(wx.Frame):
             self._btn_ctrl.Disable()
             self._set_status("Motor disabled", 150, 110, 0)
 
+    # ───────────────────────────────────────────────── bias ─────────────
+
+    def _on_bias(self, _):
+        if not self._connected:
+            return
+        with self._lock:
+            self._bi = _wrap(2 * math.pi * self._puck2_pos / ENCODER_RES + math.pi) * 180.0 / math.pi
+            self._debug_val = self._bi
+        self._set_status("Biased — upward rest position captured")
+
     # ───────────────────────────────────────────────── control loop ─────
 
     def _on_ctrl_toggle(self, _):
@@ -689,7 +707,7 @@ class FurutaPIDFrame(wx.Frame):
             ki = float(self._ki.GetValue())
             kd = float(self._kd.GetValue())
             adz = float(self._adz.GetValue())
-            bi = float(self._bi.GetValue())
+            bi = float(self._bi)
             kt = float(self._kt.GetValue())
             kf = float(self._kf.GetValue())
             pdz = float(self._pdz.GetValue())
@@ -706,8 +724,9 @@ class FurutaPIDFrame(wx.Frame):
         self._ramping_balnace = False
         self._in_braking      = False
         self._controlling     = True
+        self._btn_bias.Disable()
         self._btn_ctrl.SetLabel("Stop")
-        for tc in (self._kp, self._ki, self._kd, self._adz, self._bi,
+        for tc in (self._kp, self._ki, self._kd, self._adz,
             self._kt, self._kf, self._pdz, self._tmax,
             self._ks, self._kb, self._kv, self._el):
             tc.Disable()
@@ -729,8 +748,9 @@ class FurutaPIDFrame(wx.Frame):
         self._in_balance =      False
         self._ramping_balnace = False
         self._in_braking =      False
+        self._btn_bias.Enable()
         self._btn_ctrl.SetLabel("Start")
-        for tc in (self._kp, self._ki, self._kd, self._adz, self._bi,
+        for tc in (self._kp, self._ki, self._kd, self._adz,
             self._kt, self._kf, self._pdz, self._tmax,
             self._ks, self._kb, self._kv, self._el):
             tc.Enable()
@@ -778,6 +798,8 @@ class FurutaPIDFrame(wx.Frame):
         bi_rad = math.radians(bi)
         pdz_rad = math.radians(pdz)
         tmax_rad = math.radians(tmax)
+
+        self._debug_val = bi
 
         # Position-error clamp.
         # Limiting how far the commanded position can deviate from the measured
@@ -834,8 +856,6 @@ class FurutaPIDFrame(wx.Frame):
 
             # ── mode transitions ─────────────────────────────────────────
             if in_balance:
-                if abs(vel_fast) > BALANCE_VEL_MAX:
-                    self._debug_val = 1.0
                 if abs(pend_rad) > BALANCE_EXIT or abs(vel_fast) > BALANCE_VEL_MAX:
                     in_balance = False
                     integral   = 0.0
@@ -862,7 +882,6 @@ class FurutaPIDFrame(wx.Frame):
                 # Slow return to zero for balance position reference
                 arm_rad_target_z = (1.0 - a_very_slow) * arm_rad_target_z
                 arm_rad_target = a_very_slow * arm_rad_target_z + (1.0 - a_very_slow) * arm_rad_target
-                self._debug_val = arm_rad_target * 180.0 / (2 * math.pi)
 
                 # Add deadzone for balance position feedback
                 arm_rad_dz = arm_rad - arm_rad_target
