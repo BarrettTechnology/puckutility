@@ -205,7 +205,7 @@ class FurutaPIDFrame(wx.Frame):
         self._in_braking       = False
         self._ctrl_thread      = None
         self._bi = 0.0
-        self._debug_val = 0.0
+        # self._debug_val = 0.0
 
         self._build_ui()
         self.Bind(wx.EVT_CLOSE, self._on_close)
@@ -275,9 +275,9 @@ class FurutaPIDFrame(wx.Frame):
         self._status.SetForegroundColour(wx.Colour(160, 60, 60))
         f = self._status.GetFont(); f.MakeBold(); self._status.SetFont(f)
         ssz.Add(self._status, 1, wx.EXPAND | wx.ALL, 8)
-        self._debug_label = wx.StaticText(root, label="Debug: --", style=wx.ALIGN_CENTER_HORIZONTAL)
-        self._debug_label.SetForegroundColour(wx.Colour(120, 130, 160))
-        ssz.Add(self._debug_label, 1, wx.EXPAND | wx.ALL, 10)
+        # self._debug_label = wx.StaticText(root, label="Debug: --", style=wx.ALIGN_CENTER_HORIZONTAL)
+        # self._debug_label.SetForegroundColour(wx.Colour(120, 130, 160))
+        # ssz.Add(self._debug_label, 1, wx.EXPAND | wx.ALL, 10)
         self._temp_label = wx.StaticText(root, label="Temp: --°C", style=wx.ALIGN_CENTER_HORIZONTAL)
         self._temp_label.SetForegroundColour(wx.Colour(120, 130, 160))
         ssz.Add(self._temp_label, 1, wx.EXPAND | wx.ALL, 10)
@@ -471,7 +471,7 @@ class FurutaPIDFrame(wx.Frame):
 
             threading.Thread(target=self._auto_zero_thread, daemon=True).start()
             threading.Thread(target=self._temp_monitor_thread, daemon=True).start()
-            threading.Thread(target=self._debug_thread, daemon=True).start()
+            # threading.Thread(target=self._debug_thread, daemon=True).start()
 
         except Exception as ex:
             self._set_status(f"Connect failed: {ex}", 180, 0, 0)
@@ -495,8 +495,8 @@ class FurutaPIDFrame(wx.Frame):
         self._btn_zero.Disable()
         self._btn_bias.Disable()
         self._btn_ctrl.Disable()
-        self._debug_label.SetLabel("Debug: --")
-        self._debug_label.SetForegroundColour(wx.Colour(120, 130, 160))
+        # self._debug_label.SetLabel("Debug: --")
+        # self._debug_label.SetForegroundColour(wx.Colour(120, 130, 160))
         self._temp_label.SetLabel("Temp: --°C")
         self._temp_label.SetForegroundColour(wx.Colour(120, 130, 160))
         self._set_status("Disconnected", 160, 60, 60)
@@ -564,18 +564,18 @@ class FurutaPIDFrame(wx.Frame):
 
     # ───────────────────────────────────────────────── debug ─────────────
 
-    def _debug_thread(self):
-        while self._connected:
-            try:
-                colour = (120, 130, 160)
-                wx.CallAfter(self._update_debug_label, self._debug_val, colour)
-            except Exception:
-                pass
-            time.sleep(0.1)
+    # def _debug_thread(self):
+    #     while self._connected:
+    #         try:
+    #             colour = (120, 130, 160)
+    #             wx.CallAfter(self._update_debug_label, self._debug_val, colour)
+    #         except Exception:
+    #             pass
+    #         time.sleep(0.1)
 
-    def _update_debug_label(self, val, colour):
-        self._debug_label.SetLabel(f"Debug: {val}")
-        self._debug_label.SetForegroundColour(wx.Colour(*colour))
+    # def _update_debug_label(self, val, colour):
+    #     self._debug_label.SetLabel(f"Debug: {val}")
+    #     self._debug_label.SetForegroundColour(wx.Colour(*colour))
 
     # ───────────────────────────────────────────────── temperature ───────
 
@@ -690,7 +690,6 @@ class FurutaPIDFrame(wx.Frame):
             return
         with self._lock:
             self._bi = _wrap(2 * math.pi * self._puck2_pos / ENCODER_RES + math.pi) * 180.0 / math.pi
-            self._debug_val = self._bi
         self._set_status("Biased — upward rest position captured")
 
     # ───────────────────────────────────────────────── control loop ─────
@@ -798,8 +797,6 @@ class FurutaPIDFrame(wx.Frame):
         bi_rad = math.radians(bi)
         pdz_rad = math.radians(pdz)
         tmax_rad = math.radians(tmax)
-
-        self._debug_val = bi
 
         # Position-error clamp.
         # Limiting how far the commanded position can deviate from the measured
