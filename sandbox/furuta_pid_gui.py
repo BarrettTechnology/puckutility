@@ -55,9 +55,9 @@ BALANCE_RAMP_ON_RATE = 1.0
 BALANCE_RAMP_OFF_RATE = 1.0
 
 # Tunable parameter defaults
-KP_DEFAULT   = 8000
+KP_DEFAULT   = 4000 # assuming Puck position control Kp = 200
 KI_DEFAULT   = 0
-KD_DEFAULT   = 55 # 30–55
+KD_DEFAULT   = 60 # 30–55 # assuming Puck position control Kp = 200
 ADZ_DEFAULT  = 1
 BI_DEFAULT   = 0
 KT_DEFAULT   = 0.005 # 0.005–0.01 
@@ -68,7 +68,9 @@ KS_DEFAULT   = 0.3
 KB_DEFAULT   = 0.3
 KV_DEFAULT   = 5.0
 ERROR_LIMIT_DEFAULT = 0.5
+DISABLE_TEMP = 85
 
+#TODO: Make shutdown temperature settable
 
 # ──────────────────────────────────────────────────────────── canvas ──────
 
@@ -168,6 +170,7 @@ class FurutaCanvas(wx.Panel):
             "balance": (wx.Colour(60,  210, 100), "[ BALANCING ]"),
             "brake":   (wx.Colour(220,  90,  40), "[ BRAKING   ]"),
             "swing":   (wx.Colour(210, 150,  40), "[ SWINGUP   ]"),
+            "rest":    (wx.Colour(210, 150,  40), "[ RESTING   ]"),
             "idle":    (wx.Colour(140, 140, 160), "[ IDLE      ]"),
         }
         col, mode_str = mode_colours.get(self._mode, mode_colours["idle"])
@@ -200,6 +203,7 @@ class FurutaPIDFrame(wx.Frame):
         self._connected        = False
         self._enabled          = False
         self._controlling      = False
+        self._no_swing         = False
         self._in_balance       = False
         self._ramping_balnace  = False
         self._in_braking       = False
@@ -218,6 +222,14 @@ class FurutaPIDFrame(wx.Frame):
         root = wx.Panel(self)
         root.SetBackgroundColour(wx.Colour(235, 238, 248))
         vsz = wx.BoxSizer(wx.VERTICAL)
+
+        def gain(sizer, label, default, tip):
+            sizer.Add(wx.StaticText(root, label=label),
+                      0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 8)
+            tc = wx.TextCtrl(root, value=str(default), size=(62, -1))
+            tc.SetToolTip(tip)
+            sizer.Add(tc, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT | wx.RIGHT, 3)
+            return tc
 
         # Row 1 — CAN port + scan
         csz1 = wx.BoxSizer(wx.HORIZONTAL)
@@ -267,6 +279,11 @@ class FurutaPIDFrame(wx.Frame):
         self._btn_zero.Bind(wx.EVT_BUTTON, self._on_zero)
         self._btn_zero.Disable()
         csz2.Add(self._btn_zero, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+        
+        # self._disable_temp = gain(csz2, "Disable Temp:", DISABLE_TEMP,
+        #     "Temperature (deg C) at which Puck is disabled.")
+        # csz2.Add(self._disable_temp, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+        
         vsz.Add(csz2, 0, wx.EXPAND | wx.BOTTOM, 4)
 
         # Status + debug + temperature row
@@ -291,14 +308,6 @@ class FurutaPIDFrame(wx.Frame):
         gbx = wx.StaticBox(root, label="Controller Gains  (CSP mode)")
         outer = wx.StaticBoxSizer(gbx, wx.VERTICAL)
 
-        def gain(sizer, label, default, tip):
-            sizer.Add(wx.StaticText(root, label=label),
-                      0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 8)
-            tc = wx.TextCtrl(root, value=str(default), size=(62, -1))
-            tc.SetToolTip(tip)
-            sizer.Add(tc, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT | wx.RIGHT, 3)
-            return tc
-
         # Row 1 — balance angle PID
         row1 = wx.BoxSizer(wx.HORIZONTAL)
         row1.Add(wx.StaticText(root, label="Balance (angle):"),
@@ -311,8 +320,6 @@ class FurutaPIDFrame(wx.Frame):
             "Derivative velocity damping [counts/(rad/s)]. Too high → sluggish.")
         self._adz = gain(row1, "Adz:", ADZ_DEFAULT,
             "Deadzone [deg] for pendulum angle error feedback.")
-        # self._bi = gain(row1, "Bias:", BI_DEFAULT,
-        #     "Bias [deg] for pendulum angle error feedback.")
         row1.AddStretchSpacer()
         self._btn_bias = wx.Button(root, label="Bias", size=(90, -1))
         self._btn_bias.Bind(wx.EVT_BUTTON, self._on_bias)
@@ -332,6 +339,11 @@ class FurutaPIDFrame(wx.Frame):
             "Deadzone [deg] for arm position error feedback.")
         self._tmax = gain(row2, "Tmax:", TMAX_DEFAULT,
             "Maximum tilt angle command [deg] for arm position correction.")
+        row2.AddStretchSpacer()
+        self._btn_swing = wx.Button(root, label="No Swing", size=(90, -1))
+        self._btn_swing.Bind(wx.EVT_BUTTON, self._on_swing_toggle)
+        self._btn_swing.Disable()
+        row2.Add(self._btn_swing, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
         outer.Add(row2, 0, wx.EXPAND | wx.TOP | wx.BOTTOM, 3)
 
         # Row 3 — swingup energy gains + torque limit + button
@@ -465,6 +477,7 @@ class FurutaPIDFrame(wx.Frame):
             self._btn_en.Enable()
             self._btn_zero.Enable()
             self._btn_bias.Enable()
+            self._btn_swing.Enable()
             self._set_status(
                 f"Connected  (Motor={motor_id}, Encoder={enc_id})  —  waiting for pendulum to settle…",
                 180, 120, 0)
@@ -494,6 +507,7 @@ class FurutaPIDFrame(wx.Frame):
         self._btn_en.Disable()
         self._btn_zero.Disable()
         self._btn_bias.Disable()
+        self._btn_swing.Disable()
         self._btn_ctrl.Disable()
         # self._debug_label.SetLabel("Debug: --")
         # self._debug_label.SetForegroundColour(wx.Colour(120, 130, 160))
@@ -533,7 +547,10 @@ class FurutaPIDFrame(wx.Frame):
         elif self._in_braking:
             mode = "brake"
         else:
-            mode = "swing"
+            if self._no_swing:
+                mode = "rest"
+            else:
+                mode = "swing"
         self._canvas.update(pend_rad, p1, mode)
 
     # ───────────────────────────────────────────────── auto-zero ────────
@@ -692,6 +709,17 @@ class FurutaPIDFrame(wx.Frame):
             self._bi = _wrap(2 * math.pi * self._puck2_pos / ENCODER_RES + math.pi) * 180.0 / math.pi
         self._set_status("Biased — upward rest position captured")
 
+
+    # ───────────────────────────────────────────────── toggle swing ─────
+
+    def _on_swing_toggle(self, _):
+        if self._no_swing:
+            self._no_swing = False
+            self._btn_swing.SetLabel("No Swing")
+        else:
+            self._no_swing = True
+            self._btn_swing.SetLabel("Swing")
+
     # ───────────────────────────────────────────────── control loop ─────
 
     def _on_ctrl_toggle(self, _):
@@ -724,12 +752,16 @@ class FurutaPIDFrame(wx.Frame):
         self._in_braking      = False
         self._controlling     = True
         self._btn_bias.Disable()
+        self._btn_swing.Disable()
         self._btn_ctrl.SetLabel("Stop")
         for tc in (self._kp, self._ki, self._kd, self._adz,
             self._kt, self._kf, self._pdz, self._tmax,
             self._ks, self._kb, self._kv, self._el):
             tc.Disable()
-        self._set_status("Swingup…", 200, 130, 0)
+        if self._no_swing:
+            self._set_status("Resting…", 200, 130, 0)
+        else:
+            self._set_status("Swingup…", 200, 130, 0)
 
         self._ctrl_thread = threading.Thread(
             target=self._control_loop, args=(kp, ki, kd, adz, bi, kt, kf,
@@ -748,6 +780,7 @@ class FurutaPIDFrame(wx.Frame):
         self._ramping_balnace = False
         self._in_braking =      False
         self._btn_bias.Enable()
+        self._btn_swing.Enable()
         self._btn_ctrl.SetLabel("Start")
         for tc in (self._kp, self._ki, self._kd, self._adz,
             self._kt, self._kf, self._pdz, self._tmax,
@@ -858,7 +891,10 @@ class FurutaPIDFrame(wx.Frame):
                     integral   = 0.0
                     steady_target = p1
                     steady_target_z = steady_target
-                    wx.CallAfter(self._set_status, "Swingup…", 200, 130, 0)
+                    if self._no_swing:
+                        wx.CallAfter(self._set_status, "Resting…", 200, 130, 0)
+                    else:
+                        wx.CallAfter(self._set_status, "Swingup…", 200, 130, 0)
             else:
                 if abs(pend_rad) < BALANCE_ENTRY and abs(vel_fast) < BALANCE_VEL_MAX:
                     in_balance = True
@@ -915,7 +951,7 @@ class FurutaPIDFrame(wx.Frame):
                 prev_target = target
                 self._in_braking = False
 
-            elif abs(vel_slow) > 0.1: # Swinging
+            elif not self._no_swing and abs(vel_slow) > 0.1: # Swinging
 
                 # Ramp down this parameter when not in balance state. This
                 # does not mean we continue to apply balance feedback.
