@@ -51,8 +51,10 @@ OMEGA_N_SQ      = 9.8 / PEND_LENGTH_M            # g/L₂ (rad/s)²
 MAX_ARM_REV     = 5.0                # soft travel guard (revolutions)
 MAX_ARM_CTS     = int(MAX_ARM_REV * ENCODER_RES)
 DISPLAY_HZ      = 25
-BALANCE_RAMP_ON_RATE = 1.0
-BALANCE_RAMP_OFF_RATE = 1.0
+BALANCE_RAMP_ON_RATE   = 1.0
+BALANCE_RAMP_OFF_RATE  = 1.0
+SLOW_RECENTER_RATE     = 200.0
+SLOW_RECENTER_RATE_RAD = SLOW_RECENTER_RATE / math.pi
 
 # Tunable parameter defaults
 KP_DEFAULT   = 4000 # assuming Puck position control Kp = 200
@@ -68,7 +70,8 @@ KS_DEFAULT   = 0.3
 KB_DEFAULT   = 0.3
 KV_DEFAULT   = 5.0
 ERROR_LIMIT_DEFAULT = 0.5
-DISABLE_TEMP = 85
+DISABLE_TEMP_C = 85
+DEBUG_DISPLAY = True
 
 #TODO: Make shutdown temperature settable
 
@@ -184,10 +187,8 @@ class FurutaCanvas(wx.Panel):
 
 class FurutaPIDFrame(wx.Frame):
 
-    TEMP_SHUTDOWN_C = 85
-
     def __init__(self):
-        super().__init__(None, title="Furuta Pendulum Controller", size=(720, 520))
+        super().__init__(None, title="Furuta Pendulum Controller", size=(820, 520))
 
         self._network = None
         self._node1   = None
@@ -209,7 +210,8 @@ class FurutaPIDFrame(wx.Frame):
         self._in_braking       = False
         self._ctrl_thread      = None
         self._bi = 0.0
-        # self._debug_val = 0.0
+        if DEBUG_DISPLAY:
+            self._debug_val = 0.0
 
         self._build_ui()
         self.Bind(wx.EVT_CLOSE, self._on_close)
@@ -222,14 +224,6 @@ class FurutaPIDFrame(wx.Frame):
         root = wx.Panel(self)
         root.SetBackgroundColour(wx.Colour(235, 238, 248))
         vsz = wx.BoxSizer(wx.VERTICAL)
-
-        def gain(sizer, label, default, tip):
-            sizer.Add(wx.StaticText(root, label=label),
-                      0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 8)
-            tc = wx.TextCtrl(root, value=str(default), size=(62, -1))
-            tc.SetToolTip(tip)
-            sizer.Add(tc, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT | wx.RIGHT, 3)
-            return tc
 
         # Row 1 — CAN port + scan
         csz1 = wx.BoxSizer(wx.HORIZONTAL)
@@ -279,11 +273,6 @@ class FurutaPIDFrame(wx.Frame):
         self._btn_zero.Bind(wx.EVT_BUTTON, self._on_zero)
         self._btn_zero.Disable()
         csz2.Add(self._btn_zero, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
-        
-        # self._disable_temp = gain(csz2, "Disable Temp:", DISABLE_TEMP,
-        #     "Temperature (deg C) at which Puck is disabled.")
-        # csz2.Add(self._disable_temp, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
-        
         vsz.Add(csz2, 0, wx.EXPAND | wx.BOTTOM, 4)
 
         # Status + debug + temperature row
@@ -292,9 +281,10 @@ class FurutaPIDFrame(wx.Frame):
         self._status.SetForegroundColour(wx.Colour(160, 60, 60))
         f = self._status.GetFont(); f.MakeBold(); self._status.SetFont(f)
         ssz.Add(self._status, 1, wx.EXPAND | wx.ALL, 8)
-        # self._debug_label = wx.StaticText(root, label="Debug: --", style=wx.ALIGN_CENTER_HORIZONTAL)
-        # self._debug_label.SetForegroundColour(wx.Colour(120, 130, 160))
-        # ssz.Add(self._debug_label, 1, wx.EXPAND | wx.ALL, 10)
+        if DEBUG_DISPLAY:
+            self._debug_label = wx.StaticText(root, label="Debug: --", style=wx.ALIGN_CENTER_HORIZONTAL)
+            self._debug_label.SetForegroundColour(wx.Colour(120, 130, 160))
+            ssz.Add(self._debug_label, 1, wx.EXPAND | wx.ALL, 10)
         self._temp_label = wx.StaticText(root, label="Temp: --°C", style=wx.ALIGN_CENTER_HORIZONTAL)
         self._temp_label.SetForegroundColour(wx.Colour(120, 130, 160))
         ssz.Add(self._temp_label, 1, wx.EXPAND | wx.ALL, 10)
@@ -307,6 +297,14 @@ class FurutaPIDFrame(wx.Frame):
         # Gains — three rows inside one static box
         gbx = wx.StaticBox(root, label="Controller Gains  (CSP mode)")
         outer = wx.StaticBoxSizer(gbx, wx.VERTICAL)
+
+        def gain(sizer, label, default, tip):
+            sizer.Add(wx.StaticText(root, label=label),
+                      0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 8)
+            tc = wx.TextCtrl(root, value=str(default), size=(62, -1))
+            tc.SetToolTip(tip)
+            sizer.Add(tc, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT | wx.RIGHT, 3)
+            return tc
 
         # Row 1 — balance angle PID
         row1 = wx.BoxSizer(wx.HORIZONTAL)
@@ -358,6 +356,8 @@ class FurutaPIDFrame(wx.Frame):
             "Max arm velocity [rev/s] for swingup and braking (slew-rate limit).")
         self._el = gain(row3, "Error limit:", ERROR_LIMIT_DEFAULT,
             "Limit on position error (revolutions). Lower to protect against overheating.")
+        self._dis_temp = gain(row3, "Disable Temp:", DISABLE_TEMP_C,
+            "Temperature (deg C) at which Puck is disabled.")
         row3.AddStretchSpacer()
         self._btn_ctrl = wx.Button(root, label="Start", size=(90, -1))
         self._btn_ctrl.Bind(wx.EVT_BUTTON, self._on_ctrl_toggle)
@@ -484,7 +484,8 @@ class FurutaPIDFrame(wx.Frame):
 
             threading.Thread(target=self._auto_zero_thread, daemon=True).start()
             threading.Thread(target=self._temp_monitor_thread, daemon=True).start()
-            # threading.Thread(target=self._debug_thread, daemon=True).start()
+            if DEBUG_DISPLAY:
+                threading.Thread(target=self._debug_thread, daemon=True).start()
 
         except Exception as ex:
             self._set_status(f"Connect failed: {ex}", 180, 0, 0)
@@ -509,8 +510,9 @@ class FurutaPIDFrame(wx.Frame):
         self._btn_bias.Disable()
         self._btn_swing.Disable()
         self._btn_ctrl.Disable()
-        # self._debug_label.SetLabel("Debug: --")
-        # self._debug_label.SetForegroundColour(wx.Colour(120, 130, 160))
+        if DEBUG_DISPLAY:
+            self._debug_label.SetLabel("Debug: --")
+            self._debug_label.SetForegroundColour(wx.Colour(120, 130, 160))
         self._temp_label.SetLabel("Temp: --°C")
         self._temp_label.SetForegroundColour(wx.Colour(120, 130, 160))
         self._set_status("Disconnected", 160, 60, 60)
@@ -581,18 +583,18 @@ class FurutaPIDFrame(wx.Frame):
 
     # ───────────────────────────────────────────────── debug ─────────────
 
-    # def _debug_thread(self):
-    #     while self._connected:
-    #         try:
-    #             colour = (120, 130, 160)
-    #             wx.CallAfter(self._update_debug_label, self._debug_val, colour)
-    #         except Exception:
-    #             pass
-    #         time.sleep(0.1)
+    def _debug_thread(self):
+        while self._connected:
+            try:
+                colour = (120, 130, 160)
+                wx.CallAfter(self._update_debug_label, self._debug_val, colour)
+            except Exception:
+                pass
+            time.sleep(0.1)
 
-    # def _update_debug_label(self, val, colour):
-    #     self._debug_label.SetLabel(f"Debug: {val}")
-    #     self._debug_label.SetForegroundColour(wx.Colour(*colour))
+    def _update_debug_label(self, val, colour):
+        self._debug_label.SetLabel(f"Debug: {val}")
+        self._debug_label.SetForegroundColour(wx.Colour(*colour))
 
     # ───────────────────────────────────────────────── temperature ───────
 
@@ -600,7 +602,7 @@ class FurutaPIDFrame(wx.Frame):
         while self._connected:
             try:
                 temp_c = self._node1.sdo['Amplifier']['Temperature'].raw
-                if temp_c >= self.TEMP_SHUTDOWN_C:
+                if temp_c >= self.DISABLE_TEMP_C:
                     wx.CallAfter(self._on_overtemp, temp_c)
                     return
                 if temp_c >= 70:
@@ -621,7 +623,7 @@ class FurutaPIDFrame(wx.Frame):
     def _on_overtemp(self, temp_c):
         self._update_temp_label(temp_c, (220, 40, 40))
         self._set_status(
-            f"OVER-TEMPERATURE ({temp_c}°C ≥ {self.TEMP_SHUTDOWN_C}°C) — motor disabled",
+            f"OVER-TEMPERATURE ({temp_c}°C ≥ {self.DISABLE_TEMP_C}°C) — motor disabled",
             220, 40, 40)
         self._stop_control()
         self._disable_motor()
@@ -837,9 +839,11 @@ class FurutaPIDFrame(wx.Frame):
         el = max(0.0, el)
         err_limit_cts = int(el * ENCODER_RES)
 
-        a_very_slow = min(1,0, 2 * math.pi * 0.16 / SYNC_HZ)  # balance position zeroing
+        # a_very_slow = min(1.0, 2 * math.pi * 0.16 / SYNC_HZ)  # balance position zeroing
         a_slow      = min(1.0, 2 * math.pi * 3.0 / SYNC_HZ)  # ~3 Hz — energy direction
         a_fast      = min(1.0, 2 * math.pi * 8.0 / SYNC_HZ)  # ~8 Hz — PD velocity
+
+        # self._debug_val = 2 * math.pi * 0.16 / 500
 
         in_balance   = False
         balance_ramp = 0.0
@@ -899,7 +903,7 @@ class FurutaPIDFrame(wx.Frame):
                 if abs(pend_rad) < BALANCE_ENTRY and abs(vel_fast) < BALANCE_VEL_MAX:
                     in_balance = True
                     arm_rad_target = p1 * 2.0 * math.pi / ENCODER_RES
-                    arm_rad_target_z = arm_rad_target
+                    # arm_rad_target_z = arm_rad_target
                     wx.CallAfter(self._set_status, "Balancing…", 0, 110, 185)
             self._in_balance = in_balance
 
@@ -913,8 +917,10 @@ class FurutaPIDFrame(wx.Frame):
                   balance_ramp = 1.0
 
                 # Slow return to zero for balance position reference
-                arm_rad_target_z = (1.0 - a_very_slow) * arm_rad_target_z
-                arm_rad_target = a_very_slow * arm_rad_target_z + (1.0 - a_very_slow) * arm_rad_target
+                # TODO just make this linear with time and slow.
+                # arm_rad_target_z = (1.0 - a_very_slow) * arm_rad_target_z
+                # arm_rad_target = a_very_slow * arm_rad_target_z + (1.0 - a_very_slow) * arm_rad_target
+                arm_rad_target += min(dt * SLOW_RECENTER_RATE_RAD, -arm_rad_target)
 
                 # Add deadzone for balance position feedback
                 arm_rad_dz = arm_rad - arm_rad_target
@@ -951,52 +957,59 @@ class FurutaPIDFrame(wx.Frame):
                 prev_target = target
                 self._in_braking = False
 
-            elif not self._no_swing and abs(vel_slow) > 0.1: # Swinging
+            else: # Not balancing
 
                 # Ramp down this parameter when not in balance state. This
                 # does not mean we continue to apply balance feedback.
                 if balance_ramp > 0.0:
-                  balance_ramp = balance_ramp - dt * BALANCE_RAMP_OFF_RATE
+                    balance_ramp = balance_ramp - dt * BALANCE_RAMP_OFF_RATE
                 if balance_ramp < 0.0:
-                  balance_ramp = 0.0
+                    balance_ramp = 0.0
 
-                # Slow return to zero for swing-up position reference
-                steady_target_z = (1.0 - a_very_slow) * steady_target_z
-                steady_target = a_very_slow * steady_target_z + (1.0 - a_very_slow) * steady_target
+                # Slow return to zero for non-balance position reference
+                # TODO just make this linear with time and slow.
+                # steady_target_z = (1.0 - a_very_slow) * steady_target_z
+                # steady_target = a_very_slow * steady_target_z + (1.0 - a_very_slow) * steady_target
+                steady_target += min(dt * SLOW_RECENTER_RATE, -steady_target)
 
-                # Proportional energy controller with Furuta centripetal correction
-                de     = (0.5 * vel_slow**2
-                          + 0.5 * COUPLING**2 * arm_vel**2 * math.sin(pend_rad)**2
-                          - OMEGA_N_SQ * (1.0 - math.cos(pend_rad)))
-                pump   = math.copysign(1.0, de * vel_slow * math.cos(pend_rad))
-                braking = de > 0
-                cap    = brake_cts if braking else swing_cts
-                amp    = min(cap, int(abs(de) / OMEGA_N_SQ * cap))
-                target = int(p1_zero + steady_target + pump * amp)
-                target = max(p1_zero + steady_target - MAX_ARM_CTS,
-                         min(p1_zero + steady_target + MAX_ARM_CTS, target))
-                
-                # Slew-rate limit
-                step   = max(-slew_cts, min(slew_cts, target - prev_target))
-                target = prev_target + step
-                prev_target = target
-                self._in_braking = braking
+                self._debug_val = steady_target
 
-            else: # Resting
+                if not self._no_swing and abs(vel_slow) > 0.1: # Swinging
 
-                # Ramp down this parameter when not in balance state. This
-                # does not mean we continue to apply balance feedback.
-                if balance_ramp > 0.0:
-                  balance_ramp = balance_ramp - dt * BALANCE_RAMP_OFF_RATE
-                if balance_ramp < 0.0:
-                  balance_ramp = 0.0
-                
-                # Slow return to zero for swing-up position reference
-                steady_target_z = (1.0 - a_very_slow) * steady_target_z
-                steady_target = a_very_slow * steady_target_z + (1.0 - a_very_slow) * steady_target
-                
-                target = p1_zero + steady_target
-                self._in_braking = False
+                    # Proportional energy controller with Furuta centripetal correction
+                    # de     = (0.5 * vel_slow**2
+                    #           + 0.5 * COUPLING**2 * arm_vel**2 * math.sin(pend_rad)**2
+                    #           - OMEGA_N_SQ * (1.0 - math.cos(pend_rad)))
+                    de = - OMEGA_N_SQ * (1.0 - math.cos(pend_rad))
+                    # pump   = math.copysign(1.0, de * vel_slow * math.cos(pend_rad))
+                    pump   = math.copysign(1.0, de * math.cos(pend_rad))
+                    # braking = de > 0
+                    braking = False
+                    cap    = brake_cts if braking else swing_cts
+                    amp    = min(cap, int(abs(de) / OMEGA_N_SQ * cap))
+                    target = int(p1_zero + steady_target)# + pump * amp)
+                    target = max(p1_zero + steady_target - MAX_ARM_CTS,
+                            min(p1_zero + steady_target + MAX_ARM_CTS, target))
+                    
+                    # self._debug_val = vel_slow
+                    # self._debug_val = pump
+                    # self._debug_val = amp
+                    # self._debug_val = pump * amp
+                    # self._debug_val = abs(de) / OMEGA_N_SQ
+                    # self._debug_val = (1.0 - math.cos(pend_rad))
+                    # self._debug_val = pend_rad
+                    
+                    # Slew-rate limit
+                    step   = max(-slew_cts, min(slew_cts, target - prev_target))
+                    target = prev_target + step
+                    prev_target = target
+                    self._in_braking = braking
+
+                else: # Resting
+                    
+                    # self._debug_val = steady_target
+                    target = p1_zero + steady_target
+                    self._in_braking = False
 
             # Position-error clamp — software backstop regardless of mode.
             # Keeps commanded position within max_err_cts of current position.
