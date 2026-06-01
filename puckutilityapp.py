@@ -75,6 +75,16 @@ def resource_path(relative_path):
         base = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base, relative_path)
 
+
+def _find_dfu_device():
+    """Return True if an STM32 DFU bootloader (0483:df11) is connected."""
+    try:
+        import usb.core
+        return usb.core.find(idVendor=0x0483, idProduct=0xdf11) is not None
+    except Exception:
+        return False
+
+
 # TODO
 
 # KNOWN BUGS
@@ -298,6 +308,50 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
         # NOW need to work on pass the update thread into other programs??
         self.update_queue = multiprocessing.Queue()
+
+        self._install_can_error_hook()
+
+    def _install_can_error_hook(self):
+        """Intercept unhandled thread exceptions from python-can's notifier.
+
+        When the USB CAN adapter is disconnected mid-session, the can.Notifier
+        receive thread raises CanOperationError (ENODEV=19) or hits ENOBUFS=105
+        on a full tx buffer.  Without this hook Python prints a noisy
+        'Exception in thread' traceback for every affected background thread.
+        The hook catches those specific errors, suppresses the traceback, and
+        schedules a clean reconnect attempt on the wx main thread.
+        """
+        import can as _can
+        _frame        = self
+        _original     = threading.excepthook
+
+        def _hook(args):
+            exc         = args.exc_value
+            thread_name = getattr(args.thread, 'name', '') or ''
+            # Any CanOperationError or OSError from the can.notifier receive
+            # thread is a device-loss event (unplug, bus-off, buffer full).
+            # Check thread name rather than specific errno values — Linux
+            # produces different codes depending on how the adapter disappears
+            # (ENODEV=19, ENETDOWN=100, ENXIO=6, ENOBUFS=105, etc.).
+            if 'can.notifier' in thread_name and isinstance(exc, (_can.CanOperationError, OSError)):
+                if not _frame.Rescanning:
+                    wx.CallAfter(_frame._on_can_device_lost)
+            else:
+                _original(args)
+
+        threading.excepthook = _hook
+
+    def _on_can_device_lost(self):
+        """Runs on the wx main thread when the CAN adapter is unexpectedly lost."""
+        if self.Rescanning:
+            return
+        print('CAN device lost — attempting reconnect…')
+        self.frame_statusbar.SetStatusText('CAN device lost — reconnecting…', 1)
+        self.frame_statusbar.Refresh()
+        self.frame_statusbar.Update()
+        # Wait 2 s to allow USB re-enumeration if the cable was replugged,
+        # then attempt a full can_port cycle (which already includes the USB reset retry).
+        wx.CallLater(2000, self.can_port, None)
 
     def _paint_onoffpanel(self, event):
         panel = self.onoffpanel
@@ -772,6 +826,34 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             wx.CallAfter(_set_idle)
 
 
+    @staticmethod
+    def _reset_can_usb(can_device):
+        """Reset the USB CAN adapter backing a SocketCAN interface via pyusb.
+
+        Walks sysfs to find the USB device for the given interface, then issues
+        a USB-level reset.  Requires the user to be in the plugdev group (standard
+        on Ubuntu/Debian) — no sudo needed.  Returns True if a reset was issued.
+        """
+        if platform.system() != 'Linux':
+            return False
+        try:
+            import usb.core
+            sysfs = os.path.realpath(f'/sys/class/net/{can_device}')
+            path  = sysfs
+            for _ in range(12):
+                path = os.path.dirname(path)
+                if os.path.exists(os.path.join(path, 'idVendor')):
+                    vid = int(open(os.path.join(path, 'idVendor')).read().strip(), 16)
+                    pid = int(open(os.path.join(path, 'idProduct')).read().strip(), 16)
+                    dev = usb.core.find(idVendor=vid, idProduct=pid)
+                    if dev:
+                        dev.reset()
+                        return True
+                    break
+        except Exception:
+            pass
+        return False
+
     def can_port(self,event,skipADC=False,silent=False):
         #print("Event handler 'can_port'")
         if skipADC == True:
@@ -781,7 +863,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.adcWasON = True
         else:
             self.adcWasON = False
- 
+
         try:
             self.network.disconnect() # Close any open networks
         except:
@@ -804,39 +886,72 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.network.scanner.search()
         #   return True
         except Exception as e:
-            # print(e)
-            if "buffer" in str(e) or "heavy" in str(e):
-                print('No Pucks Found') # Establish error for no pucks
-                status_msg = 'No Pucks Found'
-                msg = 'No Pucks Found! \nDebug:\nPower Connection\nCAN Connection\n\nVerify Connection and Retry'
-            else:
-                print('No CAN device found!')
-                status_msg = 'Scan Error: No CAN device found'
-                msg = 'No CAN device found! \nCheck connection and try again'
-            # Hide the gauge so it doesn't keep painting over the error text;
-            # Refresh the status bar so its previous gauge area is repainted
-            # cleanly.
-            self.progress.Hide()
-            self.frame_statusbar.SetStatusText(status_msg, 1)
+            print(f'CAN connect failed ({e}) — attempting USB reset…')
+            self.frame_statusbar.SetStatusText('CAN error — resetting adapter…', 1)
             self.frame_statusbar.Refresh()
             self.frame_statusbar.Update()
-            # silent=True (used at startup) skips the modal dialog so the
-            # app can finish coming up without an interaction wall when no
-            # CAN device is plugged in. The status text still surfaces the
-            # error.
-            if not silent:
-                dlg = wx.MessageDialog(None,msg)
-                dlg.ShowModal()
-                dlg.Destroy()
-            # No active puck — clear ID, firmware-version readout, and
-            # the Select ID dropdown so stale data isn't shown. On Windows
-            # the dropdown is an OwnerDrawnComboBox whose displayed text
-            # persists past SetItems([]), so explicitly drop the selection.
-            self.choice_id.SetItems([])
-            self.choice_id.SetSelection(wx.NOT_FOUND)
-            self.text_id.ChangeValue('')
-            self.text_version.ChangeValue('')
-            return False
+            # Disconnect before resetting USB so the notifier thread stops
+            # cleanly — without this the thread hits ENODEV when the device
+            # disappears and can trigger error callbacks that close the frame.
+            try:
+                self.network.disconnect()
+            except Exception:
+                pass
+            self._reset_can_usb(can_device)
+            time.sleep(1.5)
+            # Retry once after reset
+            try:
+                self.network = canopen.Network()
+                if platform.system() == "Linux":
+                    self.network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)
+                elif platform.system() == "Windows":
+                    self.network.connect(bustype='pcan', channel='PCAN_USBBUS'+str(int(can_device[-1:])+1), bitrate=1000000)
+                elif platform.system() == "Darwin":
+                    self.network.connect(bustype='pcan', channel='PCAN_USBBUS1', bitrate=1000000)
+                self.network.scanner.reset()
+                self.network.scanner.search()
+                print('CAN reset succeeded — continuing scan')
+            except Exception as e2:
+                # print(e)
+                if "buffer" in str(e2) or "heavy" in str(e2):
+                    print('No Pucks Found') # Establish error for no pucks
+                    status_msg = 'No Pucks Found'
+                    msg = 'No Pucks Found! \nDebug:\nPower Connection\nCAN Connection\n\nVerify Connection and Retry'
+                else:
+                    print('No CAN device found!')
+                    status_msg = 'Scan Error: No CAN device found'
+                    if _find_dfu_device():
+                        status_msg = 'CAN adapter in DFU bootloader mode'
+                        msg = ('No CAN device found!\n\n'
+                               'A CandleLight adapter was detected in DFU bootloader mode.\n'
+                               'Flash CandleLight firmware with:\n\n'
+                               '  puckutilityapp.py --flash-canable')
+                    else:
+                        msg = 'No CAN device found! \nCheck connection and try again'
+                # Hide the gauge so it doesn't keep painting over the error text;
+                # Refresh the status bar so its previous gauge area is repainted
+                # cleanly.
+                self.progress.Hide()
+                self.frame_statusbar.SetStatusText(status_msg, 1)
+                self.frame_statusbar.Refresh()
+                self.frame_statusbar.Update()
+                # silent=True (used at startup) skips the modal dialog so the
+                # app can finish coming up without an interaction wall when no
+                # CAN device is plugged in. The status text still surfaces the
+                # error.
+                if not silent:
+                    dlg = wx.MessageDialog(None,msg)
+                    dlg.ShowModal()
+                    dlg.Destroy()
+                # No active puck — clear ID, firmware-version readout, and
+                # the Select ID dropdown so stale data isn't shown. On Windows
+                # the dropdown is an OwnerDrawnComboBox whose displayed text
+                # persists past SetItems([]), so explicitly drop the selection.
+                self.choice_id.SetItems([])
+                self.choice_id.SetSelection(wx.NOT_FOUND)
+                self.text_id.ChangeValue('')
+                self.text_version.ChangeValue('')
+                return False
         # We may need to wait a short while here to allow all nodes to respond
         time.sleep(0.05)
         if skipADC == True:
@@ -972,7 +1087,10 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 # Without the selfCALL guard, a persistent SDO failure (e.g. a
                 # node whose 0x100A read keeps faulting) traps startup in an
                 # infinite scan -> can_port -> scan loop.
-                print(f'Scan exception: {e!r}')
+                import can as _can
+                _is_device_loss = isinstance(e, (_can.CanOperationError, OSError))
+                if not _is_device_loss:
+                    print(f'Scan exception: {e!r}')
                 if selfCALL:
                     self._scan_error = True
                     self.progress.Hide()
@@ -2204,6 +2322,12 @@ Examples:
 
   # Apply system config INI (handles firmware check, config upload, optional calibration)
   python3 puckutilityapp.py --can can0 --system-config system.ini
+
+  # Flash bundled CandleLight Multiboard firmware to an STM32G431 canable via USB DFU
+  python3 puckutilityapp.py --flash-canable
+
+  # Flash a specific firmware file instead
+  python3 puckutilityapp.py --flash-canable path/to/custom.bin
 """
     )
     parser.add_argument('--can', metavar='DEVICE',
@@ -2226,19 +2350,29 @@ Examples:
                      help='Run full calibration (test_encoder, ibias, igainfactor, enczero)')
     ops.add_argument('--system-config', metavar='INI', dest='system_config',
                      help='Path to system configuration INI file')
+    ops.add_argument('--flash-canable', metavar='FIRMWARE', nargs='?', const='',
+                     dest='flash_canable',
+                     help='Flash CandleLight Multiboard firmware via USB DFU '
+                          '(uses bundled firmware when no path is given)')
 
     args = parser.parse_args()
 
     # No operation flag → launch GUI. --touchscreen is a GUI-mode flag, so
     # passing it alone (or with nothing else) still falls into this branch.
     if not (args.scan or args.flash or args.config
-            or args.calibrate or args.system_config):
+            or args.calibrate or args.system_config or args.flash_canable is not None):
         MyApp.touchscreen = args.touchscreen
         app = MyApp(0)
         app.MainLoop()
         sys.exit(0)
 
-    # All operations require --can
+    # --flash-canable uses pyusb directly; --can is not required
+    if args.flash_canable is not None:
+        from cli_ops import flash_canable
+        ok = flash_canable(args.flash_canable or None)
+        sys.exit(0 if ok else 1)
+
+    # All other operations require --can
     if not args.can:
         parser.error('--can is required')
 

@@ -363,28 +363,88 @@ class FurutaPIDFrame(wx.Frame):
         self._status.SetLabel(msg)
         self._status.SetForegroundColour(wx.Colour(r, g, b))
 
+    @staticmethod
+    def _reset_can_usb(port):
+        """Reset the USB CAN adapter backing a SocketCAN interface.
+
+        Walks sysfs to find the USB device for the given interface (e.g. can0),
+        then issues a USB-level reset via pyusb — equivalent to unplugging and
+        replugging the adapter.  No sudo or special permissions required as long
+        as the user is in the plugdev group (standard on Ubuntu/Debian).
+
+        Returns True if a reset was issued, False if pyusb is unavailable or the
+        device could not be found.
+        """
+        if platform.system() != 'Linux':
+            return False
+        try:
+            import usb.core
+            # Resolve the sysfs path for the network interface and walk up
+            # the device tree until we find a directory that contains idVendor
+            # (i.e. the USB device node).
+            sysfs = os.path.realpath(f'/sys/class/net/{port}')
+            path  = sysfs
+            for _ in range(12):
+                path = os.path.dirname(path)
+                if os.path.exists(os.path.join(path, 'idVendor')):
+                    vid = int(open(os.path.join(path, 'idVendor')).read().strip(), 16)
+                    pid = int(open(os.path.join(path, 'idProduct')).read().strip(), 16)
+                    dev = usb.core.find(idVendor=vid, idProduct=pid)
+                    if dev:
+                        dev.reset()
+                        return True
+                    break
+        except Exception:
+            pass
+        return False
+
+    def _do_scan(self, port):
+        """Open a temporary network, scan for nodes, disconnect, return node list."""
+        net = canopen.Network()
+        if platform.system() == "Windows":
+            net.connect(bustype='pcan', channel=port, bitrate=1_000_000)
+        else:
+            net.connect(bustype='socketcan', channel=port, bitrate=1_000_000)
+        try:
+            net.scanner.reset()
+            net.scanner.search()
+            time.sleep(0.5)
+            return list(net.scanner.nodes)
+        finally:
+            try:
+                net.disconnect()
+            except Exception:
+                pass
+
     # ───────────────────────────────────────────────── connection ───────
 
     def _on_scan(self, _):
         port = self._port.GetStringSelection()
+        # Save previous selections before clearing — restore them if still present
+        prev_motor = self._motor_choice.GetStringSelection()
+        prev_enc   = self._enc_choice.GetStringSelection()
+        # Clear stale nodes immediately so disconnected pucks disappear right away
+        self._motor_choice.SetItems([])
+        self._enc_choice.SetItems([])
+        self._motor_choice.Disable()
+        self._enc_choice.Disable()
+        self._btn_conn.Disable()
         self._set_status("Scanning…", 180, 120, 0)
         self._btn_scan.Disable()
         wx.Yield()
         try:
-            net = canopen.Network()
-            if platform.system() == "Windows":
-                net.connect(bustype='pcan', channel=port, bitrate=1_000_000)
-            else:
-                net.connect(bustype='socketcan', channel=port, bitrate=1_000_000)
-            net.scanner.reset()
-            net.scanner.search()
-            time.sleep(0.5)
-            nodes = list(net.scanner.nodes)
-            net.disconnect()
+            nodes = self._do_scan(port)
         except Exception as ex:
-            self._set_status(f"Scan failed: {ex}", 180, 0, 0)
-            self._btn_scan.Enable()
-            return
+            self._set_status("Scan failed — resetting CAN adapter…", 180, 120, 0)
+            wx.Yield()
+            self._reset_can_usb(port)
+            time.sleep(1.5)
+            try:
+                nodes = self._do_scan(port)
+            except Exception as ex2:
+                self._set_status(f"Scan failed: {ex2}", 180, 0, 0)
+                self._btn_scan.Enable()
+                return
 
         if not nodes:
             self._set_status("No nodes found on bus", 180, 0, 0)
@@ -394,8 +454,10 @@ class FurutaPIDFrame(wx.Frame):
         choices = [str(n) for n in nodes]
         self._motor_choice.SetItems(choices)
         self._enc_choice.SetItems(choices)
-        self._motor_choice.SetSelection(0)
-        self._enc_choice.SetSelection(min(1, len(choices) - 1))
+        motor_idx = choices.index(prev_motor) if prev_motor in choices else 0
+        enc_idx   = choices.index(prev_enc)   if prev_enc   in choices else min(1, len(choices) - 1)
+        self._motor_choice.SetSelection(motor_idx)
+        self._enc_choice.SetSelection(enc_idx)
         self._motor_choice.Enable()
         self._enc_choice.Enable()
         self._btn_conn.Enable()
@@ -467,7 +529,11 @@ class FurutaPIDFrame(wx.Frame):
             # threading.Thread(target=self._debug_thread, daemon=True).start()
 
         except Exception as ex:
-            self._set_status(f"Connect failed: {ex}", 180, 0, 0)
+            self._set_status("Connect failed — resetting CAN adapter…", 180, 120, 0)
+            wx.Yield()
+            self._reset_can_usb(port)
+            time.sleep(1.5)
+            self._set_status(f"Connect failed: {ex}  (CAN reset attempted — try again)", 180, 0, 0)
 
     def _disconnect(self):
         self._stop_control()
