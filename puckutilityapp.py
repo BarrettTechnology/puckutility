@@ -906,8 +906,19 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 self.network.disconnect()
             except Exception:
                 pass
-            self._reset_can_usb(can_device)
-            time.sleep(1.5)
+            _did_reset = self._reset_can_usb(can_device)
+            if _did_reset:
+                self.frame_statusbar.SetStatusText('Resetting CAN adapter…', 1)
+                self.frame_statusbar.Refresh()
+                self.frame_statusbar.Update()
+                # Yield to the event loop while waiting for the USB device to
+                # re-enumerate — a plain sleep here blocks wx and causes the
+                # frame to go unresponsive on GTK compositors.
+                _reset_deadline = time.monotonic() + 1.5
+                while time.monotonic() < _reset_deadline:
+                    wx.SafeYield()
+                    time.sleep(0.05)
+            # else: no USB device to reset — proceed directly to the retry
             # Retry once after reset
             try:
                 self.network = canopen.Network()
@@ -1629,7 +1640,10 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             return
 
         if self.ADC_ON == True:
-            self.node.network.sync.stop()
+            try:
+                self.node.network.sync.stop()
+            except Exception:
+                pass  # BCM rejects stop if sync was already stopped; harmless
             time.sleep(0.05)  # Let any in-flight sync frame clear before SDO transactions
 
         if len(self.network.scanner.nodes) == 0:
@@ -1675,9 +1689,35 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
         # Clear faults, RTSO, OpEnabled
         print("Going OpEnabled")
-        self.node.sdo["ControlWord"].raw = CLEAR_FAULT
-        self.node.sdo["ControlWord"].raw = SHUTDOWN
-        self.node.sdo["ControlWord"].raw = OP_ENABLED
+        try:
+            self.node.sdo["ControlWord"].raw = CLEAR_FAULT
+            self.node.sdo["ControlWord"].raw = SHUTDOWN
+            self.node.sdo["ControlWord"].raw = OP_ENABLED
+        except SdoAbortedError as _e:
+            # Drive refused the ControlWord sequence — most commonly because an
+            # active fault (e.g. undervoltage) prevents the state transition.
+            # Read StatusWord so we can report which fault is blocking enable.
+            try:
+                _sw = self.node.sdo["StatusWord"].raw
+                _fault_active = bool(_sw & (1 << 3))
+                print(f"Enable failed — drive rejected ControlWord (SDO abort 0x{_e.code:08X}).")
+                if _fault_active:
+                    print(f"  Drive is in Fault state (StatusWord: {hex(_sw)}). "
+                          "Resolve the fault and retry.")
+                else:
+                    print(f"  StatusWord: {hex(_sw)}")
+            except Exception:
+                print(f"Enable failed — SDO abort 0x{_e.code:08X}. "
+                      "Check drive fault status.")
+            self.button_6.SetBackgroundColour(self.gray)
+            self.choice_test.SetSelection(0)
+            if self.ADC_ON:
+                try:
+                    self.node.network.sync.start()
+                except Exception:
+                    pass
+            return
+
         self.button_6.SetBackgroundColour(self.orange)
 
         status = self.node.sdo["StatusWord"].raw
@@ -2158,7 +2198,11 @@ class MyApp(wx.App):
     def _finish_init(self):
         self.frame = MyFrame(None, wx.ID_ANY, "")
         self.frame.Centre()
-        self._splash.Destroy()
+        # Show the frame first so it gets its initial paint while the
+        # STAY_ON_TOP splash still covers it.  Then destroy the splash —
+        # the compositor reveals an already-rendered frame with no gap.
+        # (Previous order was Destroy→Show, which left a brief instant with
+        # no window on screen between the two operations.)
         self.frame.Show()
         if MyApp.touchscreen:
             # Maximize so the window fills the work area on the 7" Pi screen
@@ -2166,21 +2210,21 @@ class MyApp(wx.App):
             # intact (ShowFullScreen strips that chrome, which isn't what we
             # want here).
             self.frame.Maximize(True)
-        # Pump pending events so the splash destroy actually paints out and
-        # the main frame finishes its first paint before we start the
-        # potentially blocking CAN connect below. Without this, a no-CAN
-        # startup would leave the splash visible while can_port hangs on
-        # the network connect call.
-        wx.SafeYield()
+        wx.SafeYield()             # let the frame paint while splash is still on top
+        self._splash.Destroy()     # now remove splash — frame is pre-rendered underneath
 
-        # silent=True so a missing CAN device at startup surfaces only on
-        # the status bar — no modal dialog walls off the launching app
-        # before the main window is fully usable.
-        result = self.frame.can_port(None, silent=True)
-        self.Bind(wx.EVT_KEY_DOWN,self.frame.onKeyDown)
-        self.Bind(wx.EVT_KEY_UP,self.frame.onKeyUp)
-
+        self.Bind(wx.EVT_KEY_DOWN, self.frame.onKeyDown)
+        self.Bind(wx.EVT_KEY_UP,   self.frame.onKeyUp)
         self.frame.set_tool_tips(None)
+
+        # Defer CAN connection until the frame is fully composited.  Running
+        # can_port immediately after Show() risks a brief event-loop stall
+        # from socket operations landing before the compositor has settled.
+        wx.CallLater(200, self._startup_connect)
+
+    def _startup_connect(self):
+        # silent=True so a missing CAN device surfaces only on the status bar.
+        result = self.frame.can_port(None, silent=True)
 
         # Transmit an NMT reboot command to this node
         if result == True:
