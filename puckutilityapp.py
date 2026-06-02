@@ -2444,8 +2444,9 @@ Examples:
                      dest='flash_canable',
                      help='Flash CandleLight Multiboard firmware via USB DFU '
                           '(uses bundled firmware when no path is given)')
-    ops.add_argument('--verbose', action='store_true',
-                     help='Show detailed output during --flash-canable')
+
+    parser.add_argument('--verbose', action='store_true',
+                        help='Show detailed output during --flash-canable')
 
     args = parser.parse_args()
 

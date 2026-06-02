@@ -5,6 +5,7 @@ packaging==24.2
 pyinstaller==6.11.1
 pyinstaller-hooks-contrib==2024.11
 pyusb==1.0.2
+libusb-package==1.0.26.3
 python-can==4.5.0
 python-config==0.1.2
 semver==3.0.2

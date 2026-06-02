@@ -30,6 +30,7 @@ def session_path(filename):
 
 
 # Conventional locations for system-config payloads.
+MAIN_DIR     = resource_path('')
 FIRMWARE_DIR = resource_path('firmware')
 CONFIG_DIR   = resource_path('config')
 

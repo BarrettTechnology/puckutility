@@ -19,7 +19,7 @@ from canopen_runner import (
     CLEAR_FAULT, SHUTDOWN, OP_ENABLED,
     MODE_IDLE, MODE_PHASE_VOLTAGE_ANGLE,
 )
-from paths import resource_path, FIRMWARE_DIR, CONFIG_DIR, _resolve_path
+from paths import resource_path, FIRMWARE_DIR, CONFIG_DIR, _resolve_path, MAIN_DIR
 
 
 # ---------------------------------------------------------------------------
@@ -244,17 +244,46 @@ DFU_VID         = 0x0483
 DFU_PID         = 0xdf11
 
 
+_USB_BACKEND_CACHE = []
+
+
+def _usb_backend():
+    """Resolve the pyusb backend. On Windows, prefer the libusb DLL shipped
+    inside the libusb-package wheel so end-users don't have to install libusb
+    system-wide. On other platforms, return None (let pyusb auto-discover the
+    system libusb)."""
+    if _USB_BACKEND_CACHE:
+        return _USB_BACKEND_CACHE[0]
+    backend = None
+    if platform.system() == "Windows":
+        try:
+            import libusb_package
+            backend = libusb_package.get_libusb1_backend()
+        except Exception:
+            backend = None
+    _USB_BACKEND_CACHE.append(backend)
+    return backend
+
+
+def _usb_find(**kwargs):
+    """usb.core.find with the platform-appropriate backend wired in."""
+    import usb.core
+    return usb.core.find(backend=_usb_backend(), **kwargs)
+
+
 def find_dfu_device():
     """Return True if an STM32 DFU bootloader (0483:df11) is connected."""
     try:
         import usb.core
-        return usb.core.find(idVendor=DFU_VID, idProduct=DFU_PID) is not None
+        return _usb_find(idVendor=DFU_VID, idProduct=DFU_PID) is not None
     except Exception:
         return False
 
 
 def _find_can_iface():
     """Return the SocketCAN interface name backed by the CandleLight device, or None."""
+    if platform.system() != "Linux":
+        return None
     import glob
     try:
         for iface_path in glob.glob('/sys/class/net/can*'):
@@ -297,7 +326,7 @@ def _enter_dfu_mode():
     """
     try:
         import usb.core
-        dev = usb.core.find(idVendor=CANDLELIGHT_VID, idProduct=CANDLELIGHT_PID)
+        dev = _usb_find(idVendor=CANDLELIGHT_VID, idProduct=CANDLELIGHT_PID)
         if dev is None:
             return None
 
@@ -320,9 +349,15 @@ def _enter_dfu_mode():
             err = str(e).lower()
             if 'access' in err or 'errno 13' in err or '[errno 13]' in err:
                 print("  Permission denied accessing USB device.")
-                print("  Install the udev rule, replug the adapter, and retry:")
-                print("    sudo cp scripts/90-canable.rules /etc/udev/rules.d/")
-                print("    sudo udevadm control --reload-rules && sudo udevadm trigger")
+                if platform.system() == "Windows":
+                    print("  Run Zadig (https://zadig.akeo.ie/) and bind the WinUSB driver to:")
+                    print("    CandleLight  (USB ID 1d50:606f)")
+                    print("    STM32  BOOTLOADER  (USB ID 0483:df11)")
+                    print("  Then replug the adapter and retry.")
+                else:
+                    print("  Install the udev rule, replug the adapter, and retry:")
+                    print("    sudo cp scripts/90-canable.rules /etc/udev/rules.d/")
+                    print("    sudo udevadm control --reload-rules && sudo udevadm trigger")
                 return None
             raise
 
@@ -352,6 +387,8 @@ def _try_usb_power_cycle(_dev_unused):
     Returns True if the power cycle was successfully initiated.
     Requires uhubctl to be installed.
     """
+    if platform.system() != "Linux":
+        return False
     import shutil, subprocess, glob
 
     if not shutil.which('uhubctl'):
@@ -451,7 +488,7 @@ def _disable_boot0_via_firmware():
     PINOP_DISABLE            = 5       # PINOP_Disable
     PINID_BOOT0              = 1       # PINID_BOOT0
 
-    dev = usb.core.find(idVendor=CANDLELIGHT_VID, idProduct=CANDLELIGHT_PID)
+    dev = _usb_find(idVendor=CANDLELIGHT_VID, idProduct=CANDLELIGHT_PID)
     if dev is None:
         return False
 
@@ -491,7 +528,7 @@ def _disable_boot0_via_firmware():
                 pass
 
 
-_BUNDLED_FW = os.path.join(FIRMWARE_DIR, 'canable-candlelight-multiboard.bin')
+_BUNDLED_FW = os.path.join(MAIN_DIR, 'canable-candlelight-multiboard.bin')
 
 
 def flash_canable(firmware_path=None, verbose=False):
@@ -513,17 +550,26 @@ def flash_canable(firmware_path=None, verbose=False):
         return False
     if not shutil.which('dfu-util'):
         print("Error: dfu-util is not installed.")
-        print("  Install with:  sudo apt-get install dfu-util")
+        _sys = platform.system()
+        if _sys == "Windows":
+            print("  Install with one of:")
+            print("    choco install dfu-util")
+            print("    scoop install dfu-util")
+            print("  or download from https://dfu-util.sourceforge.net/ and add to PATH.")
+        elif _sys == "Darwin":
+            print("  Install with:  brew install dfu-util")
+        else:
+            print("  Install with:  sudo apt-get install dfu-util")
         return False
     try:
         import usb.core
     except ImportError:
-        print("Error: pyusb is not installed — run:  pip install pyusb")
+        print("Error: pyusb is not installed -- run:  pip install pyusb")
         return False
 
-    dfu_dev = usb.core.find(idVendor=DFU_VID, idProduct=DFU_PID)
+    dfu_dev = _usb_find(idVendor=DFU_VID, idProduct=DFU_PID)
     if dfu_dev is None:
-        if usb.core.find(idVendor=CANDLELIGHT_VID, idProduct=CANDLELIGHT_PID) is None:
+        if _usb_find(idVendor=CANDLELIGHT_VID, idProduct=CANDLELIGHT_PID) is None:
             print("Error: no CandleLight (1d50:606f) or DFU (0483:df11) device found.")
             return False
 
@@ -547,8 +593,9 @@ def flash_canable(firmware_path=None, verbose=False):
 
     def _stop_spinner():
         spun[0] = False
-        _t[0].join(timeout=0.5)
-        print(f'\r{" " * _COLS}\r', end='', flush=True)
+        if _t[0] is not None:
+            _t[0].join(timeout=0.5)
+            print(f'\r{" " * _COLS}\r', end='', flush=True)
 
     def _fail(msg):
         _stop_spinner()
@@ -561,14 +608,14 @@ def flash_canable(firmware_path=None, verbose=False):
 
     # ---- enter DFU mode if not already there --------------------------------
     if dfu_dev is None:
-        _candle_for_cycle = usb.core.find(idVendor=CANDLELIGHT_VID, idProduct=CANDLELIGHT_PID)
-        _vprint("Sending DFU_DETACH to CandleLight…")
+        _candle_for_cycle = _usb_find(idVendor=CANDLELIGHT_VID, idProduct=CANDLELIGHT_PID)
+        _vprint("Sending DFU_DETACH to CandleLight...")
 
         dfu_state = None
         for _attempt in range(3):
             if _attempt:
                 time.sleep(1.0)
-                _vprint(f"  Retry {_attempt}/2…")
+                _vprint(f"  Retry {_attempt}/2...")
             dfu_state = _enter_dfu_mode()
             if dfu_state is not None:
                 break
@@ -590,7 +637,7 @@ def flash_canable(firmware_path=None, verbose=False):
                 print("Waiting for DFU bootloader", end='', flush=True)
                 for _ in range(600):
                     time.sleep(0.1)
-                    if usb.core.find(idVendor=DFU_VID, idProduct=DFU_PID):
+                    if _usb_find(idVendor=DFU_VID, idProduct=DFU_PID):
                         print("  found.")
                         break
                     print('.', end='', flush=True)
@@ -608,7 +655,7 @@ def flash_canable(firmware_path=None, verbose=False):
         _vprint("Waiting for DFU bootloader", end='', flush=True)
         for _ in range(timeout * 10):
             time.sleep(0.1)
-            if usb.core.find(idVendor=DFU_VID, idProduct=DFU_PID):
+            if _usb_find(idVendor=DFU_VID, idProduct=DFU_PID):
                 _vprint("  found.")
                 break
             _vprint('.', end='', flush=True)
@@ -616,16 +663,16 @@ def flash_canable(firmware_path=None, verbose=False):
             # DFU ROM never appeared.  If the device came back as CandleLight
             # (AppDetach path, Boot0=LOW), OPT_BOOT0_Enable is now in the shadow
             # register; a second DFU_DETACH takes the software-jump path.
-            if dfu_state == 'detach' and usb.core.find(
+            if dfu_state == 'detach' and _usb_find(
                     idVendor=CANDLELIGHT_VID, idProduct=CANDLELIGHT_PID):
                 _vprint("\nDevice re-enumerated as CandleLight (Boot0 LOW).")
-                _vprint("Sending second DFU_DETACH — firmware now uses software jump path…")
+                _vprint("Sending second DFU_DETACH -- firmware now uses software jump path...")
                 dfu_state = _enter_dfu_mode()
                 if dfu_state == 'idle':
                     _vprint("Waiting for DFU bootloader", end='', flush=True)
                     for _ in range(200):
                         time.sleep(0.1)
-                        if usb.core.find(idVendor=DFU_VID, idProduct=DFU_PID):
+                        if _usb_find(idVendor=DFU_VID, idProduct=DFU_PID):
                             _vprint("  found.")
                             break
                         _vprint('.', end='', flush=True)
@@ -645,9 +692,9 @@ def flash_canable(firmware_path=None, verbose=False):
 
     # ---- flash firmware -----------------------------------------------------
     phase[0] = 'flashing'
-    _vprint(f"\nFlashing {os.path.basename(firmware_path)}…")
+    _vprint(f"\nFlashing {os.path.basename(firmware_path)}...")
     if verbose:
-        print("─" * _COLS)
+        print("-" * _COLS)
 
     flash_ok = False
     dfu_errors = []
@@ -669,7 +716,7 @@ def flash_canable(firmware_path=None, verbose=False):
     proc.wait()
 
     if verbose:
-        print("─" * _COLS)
+        print("-" * _COLS)
 
     if not flash_ok:
         _fail("Error: firmware flash failed.")
@@ -688,13 +735,13 @@ def flash_canable(firmware_path=None, verbose=False):
     post_state = None
     for _ in range(100):
         time.sleep(0.1)
-        if usb.core.find(idVendor=CANDLELIGHT_VID, idProduct=CANDLELIGHT_PID):
+        if _usb_find(idVendor=CANDLELIGHT_VID, idProduct=CANDLELIGHT_PID):
             post_state = 'candle'
             break
         _vprint('.', end='', flush=True)
 
     if post_state is None:
-        if usb.core.find(idVendor=DFU_VID, idProduct=DFU_PID):
+        if _usb_find(idVendor=DFU_VID, idProduct=DFU_PID):
             post_state = 'dfu'
         else:
             _fail("Warning: device did not re-enumerate after flash.")
@@ -707,6 +754,18 @@ def flash_canable(firmware_path=None, verbose=False):
     # udev brings can0 up.  Boot0=LOW on the Multiboard so OPT_BOOT0_Enable
     # (written by the firmware before jumping to DFU ROM) is functionally
     # equivalent to OPT_BOOT0_Disable — the device always boots from Flash.
+
+    # Windows has no SocketCAN — flashing is complete once the device
+    # re-enumerates as CandleLight.  CAN access on Windows goes through PCAN.
+    if platform.system() != "Linux":
+        if not verbose:
+            _stop_spinner()
+        if post_state == 'candle':
+            print("CandleLight firmware flashed successfully.")
+            return True
+        print("Warning: device re-enumerated in DFU mode after flash.")
+        print("  Unplug and replug the adapter to return to CandleLight mode.")
+        return True
 
     # ---- bring up the SocketCAN interface -----------------------------------
     # The fresh enumeration triggers a udev net ADD event that runs the RUN+=
