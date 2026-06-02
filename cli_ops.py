@@ -494,15 +494,8 @@ def _disable_boot0_via_firmware():
 _BUNDLED_FW = os.path.join(FIRMWARE_DIR, 'canable-candlelight-multiboard.bin')
 
 
-def flash_canable(firmware_path=None):
+def flash_canable(firmware_path=None, verbose=False):
     """Flash CandleLight Multiboard firmware to an STM32G431-based canable via USB DFU.
-
-    Flow:
-      1. Send DFU_DETACH to the running Elmue firmware (1d50:606f) to enter DFU ROM.
-      2. Flash firmware.bin via dfu-util with ':leave' to trigger post-flash DFU exit.
-      3. After flash, send ELM_ReqSetPinStatus(PINOP_Disable, PINID_BOOT0) to the
-         Elmue firmware — this writes OPT_BOOT0_Disable (nSWBOOT0=1, nBOOT0=1) so
-         the device always boots from Flash and ignores the hardware Boot0 pin.
 
     No sudo required.  Requires 90-canable.rules udev rules to be installed.
     The firmware path defaults to the bundled canable-candlelight-multiboard.bin.
@@ -514,162 +507,201 @@ def flash_canable(firmware_path=None):
     if firmware_path is None:
         firmware_path = _BUNDLED_FW
 
+    # ---- preflight ----------------------------------------------------------
     if not os.path.isfile(firmware_path):
         print(f"Error: firmware file not found: {firmware_path}")
         return False
-
     if not shutil.which('dfu-util'):
         print("Error: dfu-util is not installed.")
         print("  Install with:  sudo apt-get install dfu-util")
         return False
-
     try:
         import usb.core
     except ImportError:
         print("Error: pyusb is not installed — run:  pip install pyusb")
         return False
 
-    # ---- enter DFU mode if not already there --------------------------------
     dfu_dev = usb.core.find(idVendor=DFU_VID, idProduct=DFU_PID)
     if dfu_dev is None:
-        can_dev = usb.core.find(idVendor=CANDLELIGHT_VID, idProduct=CANDLELIGHT_PID)
-        if can_dev is None:
+        if usb.core.find(idVendor=CANDLELIGHT_VID, idProduct=CANDLELIGHT_PID) is None:
             print("Error: no CandleLight (1d50:606f) or DFU (0483:df11) device found.")
             return False
 
-        print("Sending DFU_DETACH to CandleLight…")
-        # Capture USB port location now — needed for power-cycle if AppDetach is returned.
-        # The device is still connected in AppDetach state (no action taken yet).
+    # ---- spinner / output helpers -------------------------------------------
+    _COLS = 60
+    phase  = ['entering DFU']
+    spun   = [True]
+    _chars = '|/-\\'
+
+    def _spin():
+        i = 0
+        while spun[0]:
+            print(f'\rFlashing CandleLight firmware  [{phase[0]}]  {_chars[i % 4]} ',
+                  end='', flush=True)
+            i += 1
+            time.sleep(0.1)
+
+    def _vprint(*args, **kwargs):
+        if verbose:
+            print(*args, **kwargs)
+
+    def _stop_spinner():
+        spun[0] = False
+        _t[0].join(timeout=0.5)
+        print(f'\r{" " * _COLS}\r', end='', flush=True)
+
+    def _fail(msg):
+        _stop_spinner()
+        print(msg)
+
+    _t = [None]
+    if not verbose:
+        _t[0] = threading.Thread(target=_spin, daemon=True)
+        _t[0].start()
+
+    # ---- enter DFU mode if not already there --------------------------------
+    if dfu_dev is None:
         _candle_for_cycle = usb.core.find(idVendor=CANDLELIGHT_VID, idProduct=CANDLELIGHT_PID)
+        _vprint("Sending DFU_DETACH to CandleLight…")
 
         dfu_state = None
         for _attempt in range(3):
             if _attempt:
                 time.sleep(1.0)
-                print(f"  Retry {_attempt}/2…")
+                _vprint(f"  Retry {_attempt}/2…")
             dfu_state = _enter_dfu_mode()
             if dfu_state is not None:
                 break
 
         if dfu_state is None:
-            print("Error: failed to enter DFU mode after 3 attempts.")
+            _fail("Error: failed to enter DFU mode after 3 attempts.")
             return False
 
         if dfu_state == 'detach':
-            # Boot0 is disabled; the firmware wrote OPT_BOOT0_Enable (pending).
-            # A power-on reset is required for the new option bytes to take effect,
-            # allowing the STM32 to enter DFU ROM (Boot0 pin is HIGH on Multiboard).
-            print()
-            print("Boot0 was disabled — a power-cycle is needed to enter DFU mode.")
-
-            # Try to trigger the power cycle automatically via uhubctl.
-            # If the hub supports per-port power switching this avoids a manual replug.
             cycled = _candle_for_cycle is not None and _try_usb_power_cycle(_candle_for_cycle)
             if cycled:
-                print("USB port power-cycled automatically.")
-                print("Waiting for DFU bootloader", end='', flush=True)
+                _vprint("USB port power-cycled automatically.")
                 timeout = 15
             else:
+                # User must act — pause spinner and print the prompt.
+                if not verbose:
+                    _stop_spinner()
                 print("Please unplug and replug the USB cable to enter DFU mode.")
                 print("Waiting for DFU bootloader", end='', flush=True)
-                timeout = 60
-        else:
-            # 'idle': firmware will enter DFU ROM on its own after ~300 ms.
-            print("Waiting for DFU bootloader", end='', flush=True)
-            timeout = 20  # 2 s is plenty; be generous
+                for _ in range(600):
+                    time.sleep(0.1)
+                    if usb.core.find(idVendor=DFU_VID, idProduct=DFU_PID):
+                        print("  found.")
+                        break
+                    print('.', end='', flush=True)
+                else:
+                    print()
+                    print("Error: DFU bootloader did not enumerate after replug.")
+                    return False
+                # Skip the normal DFU-wait below; already found.
+                dfu_state = 'idle'
+                timeout = 0
 
+        else:
+            timeout = 20  # 'idle': firmware jumps on its own after ~300 ms
+
+        _vprint("Waiting for DFU bootloader", end='', flush=True)
         for _ in range(timeout * 10):
             time.sleep(0.1)
             if usb.core.find(idVendor=DFU_VID, idProduct=DFU_PID):
-                print("  found.")
+                _vprint("  found.")
                 break
-            print('.', end='', flush=True)
+            _vprint('.', end='', flush=True)
         else:
-            print()
-
-            # DFU ROM didn't appear.  If the device came back as CandleLight after
-            # the first DFU_DETACH (AppDetach path), OPT_BOOT0_Enable was written to
-            # flash and is now active in the shadow register.  A second DFU_DETACH
-            # therefore sees dfu_require_reset=false and takes the direct software-
-            # jump path to DFU ROM — no power cycle or Boot0 pin needed.
+            # DFU ROM never appeared.  If the device came back as CandleLight
+            # (AppDetach path, Boot0=LOW), OPT_BOOT0_Enable is now in the shadow
+            # register; a second DFU_DETACH takes the software-jump path.
             if dfu_state == 'detach' and usb.core.find(
                     idVendor=CANDLELIGHT_VID, idProduct=CANDLELIGHT_PID):
-                print("Device re-enumerated as CandleLight (Boot0 LOW).")
-                print("Sending second DFU_DETACH — firmware now uses software jump path…")
+                _vprint("\nDevice re-enumerated as CandleLight (Boot0 LOW).")
+                _vprint("Sending second DFU_DETACH — firmware now uses software jump path…")
                 dfu_state = _enter_dfu_mode()
                 if dfu_state == 'idle':
-                    print("Waiting for DFU bootloader", end='', flush=True)
+                    _vprint("Waiting for DFU bootloader", end='', flush=True)
                     for _ in range(200):
                         time.sleep(0.1)
                         if usb.core.find(idVendor=DFU_VID, idProduct=DFU_PID):
-                            print("  found.")
+                            _vprint("  found.")
                             break
-                        print('.', end='', flush=True)
+                        _vprint('.', end='', flush=True)
                     else:
-                        print()
-                        print("DFU bootloader did not enumerate on second attempt.")
+                        _fail("Error: DFU bootloader did not enumerate on second attempt.")
                         return False
                 else:
-                    print(f"Unexpected DFU state after second DETACH: {dfu_state}")
+                    _fail(f"Error: unexpected DFU state after second DETACH: {dfu_state}")
                     return False
             else:
-                print("DFU bootloader did not enumerate.")
+                _fail("Error: DFU bootloader did not enumerate.")
                 return False
     else:
-        print("DFU bootloader already present (0483:df11).")
+        _vprint("DFU bootloader already present (0483:df11).")
 
     time.sleep(0.3)
 
-    # ---- flash firmware (device auto-resets after manifest) -----------------
-    print(f"\nFlashing {os.path.basename(firmware_path)}…")
-    print("─" * 60)
+    # ---- flash firmware -----------------------------------------------------
+    phase[0] = 'flashing'
+    _vprint(f"\nFlashing {os.path.basename(firmware_path)}…")
+    if verbose:
+        print("─" * _COLS)
 
     flash_ok = False
+    dfu_errors = []
     proc = subprocess.Popen(
         ['dfu-util', '-d', f'{DFU_VID:04x}:{DFU_PID:04x}',
          '-a', '0', '-s', '0x08000000:leave', '-D', firmware_path],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
     )
     for line in proc.stdout:
-        # Suppress the benign get_status error: with ':leave' the firmware jumps
-        # to the application before dfu-util can poll status — this is expected.
+        # Suppress benign get_status error: ':leave' causes the device to jump
+        # to the application before dfu-util can poll status — expected behavior.
         if 'Error during download get_status' in line:
             continue
-        print(line, end='', flush=True)
         if 'File downloaded successfully' in line or 'Download done' in line:
             flash_ok = True
+        elif 'dfu-util: Error' in line or 'dfu-util: Warning' in line:
+            dfu_errors.append(line.rstrip())
+        _vprint(line, end='', flush=True)
     proc.wait()
-    print("─" * 60)
+
+    if verbose:
+        print("─" * _COLS)
 
     if not flash_ok:
-        print("Flash FAILED.")
+        _fail("Error: firmware flash failed.")
+        for e in dfu_errors:
+            print(f"  {e}")
         return False
 
-    print("Firmware flashed successfully!")
+    _vprint("Firmware flashed successfully!")
 
     # ---- wait for device after flash ----------------------------------------
     # With ':leave' dfu-util sends DFU_DETACH; the STM32 DFU ROM may briefly
     # re-enumerate as 0483:df11 before jumping to the application.  Always wait
     # for CandleLight (1d50:606f); only fall back to 'dfu' if it never appears.
-    print("\nWaiting for device after flash", end='', flush=True)
+    phase[0] = 'reconnecting'
+    _vprint("\nWaiting for device after flash", end='', flush=True)
     post_state = None
     for _ in range(100):
         time.sleep(0.1)
         if usb.core.find(idVendor=CANDLELIGHT_VID, idProduct=CANDLELIGHT_PID):
             post_state = 'candle'
             break
-        print('.', end='', flush=True)
+        _vprint('.', end='', flush=True)
 
     if post_state is None:
         if usb.core.find(idVendor=DFU_VID, idProduct=DFU_PID):
             post_state = 'dfu'
         else:
-            print("\nWarning: device did not re-enumerate after flash.")
+            _fail("Warning: device did not re-enumerate after flash.")
             print("  Unplug and replug the adapter, then run --flash-canable again.")
             return True
 
-    label = 'CandleLight' if post_state == 'candle' else 'DFU mode'
-    print(f"  {label}.")
+    _vprint(f"  {'CandleLight' if post_state == 'candle' else 'DFU mode'}.")
 
     # After the flash the device re-enumerates fresh.  gs_usb binds cleanly and
     # udev brings can0 up.  Boot0=LOW on the Multiboard so OPT_BOOT0_Enable
@@ -679,13 +711,15 @@ def flash_canable(firmware_path=None):
     # ---- bring up the SocketCAN interface -----------------------------------
     # The fresh enumeration triggers a udev net ADD event that runs the RUN+=
     # rule (as root) to configure and bring up can0.  Poll until IFF_UP is set.
+    phase[0] = 'starting can0'
+
     def _iface_is_up(name):
         try:
             return bool(int(open(f'/sys/class/net/{name}/flags').read().strip(), 16) & 0x1)
         except Exception:
             return False
 
-    print("\nWaiting for SocketCAN interface", end='', flush=True)
+    _vprint("\nWaiting for SocketCAN interface", end='', flush=True)
     iface = None
     for _ in range(120):  # 12 s
         time.sleep(0.1)
@@ -693,7 +727,7 @@ def flash_canable(firmware_path=None):
         if candidate and _iface_is_up(candidate):
             iface = candidate
             break
-        print('.', end='', flush=True)
+        _vprint('.', end='', flush=True)
 
     if iface is None:
         # Interface appeared but udev hasn't brought it up yet — try explicitly.
@@ -707,19 +741,19 @@ def flash_canable(firmware_path=None):
             subprocess.run(['/sbin/ip', 'link', 'set', iface, 'up'],
                            capture_output=True)
 
+    if not verbose:
+        _stop_spinner()
+
     if not iface:
-        print()
-        print("SocketCAN interface not found.")
+        print("Error: SocketCAN interface not found.")
         print("  Run:  sudo ./scripts/setup-socketcan.sh")
         return False
-
-    print(f"  {iface}.")
 
     if _iface_is_up(iface):
         print(f"CandleLight is ready on {iface}.")
         return True
     else:
-        print(f"  {iface} is not up (udev rule may not have run).")
+        print(f"Warning: {iface} is not up (udev rule may not have run).")
         print(f"  Run:  sudo ip link set {iface} type can bitrate 1000000 txqueuelen 1000 fd on")
         print(f"        sudo ip link set {iface} up")
         return False

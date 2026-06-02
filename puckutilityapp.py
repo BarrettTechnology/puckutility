@@ -2444,6 +2444,8 @@ Examples:
                      dest='flash_canable',
                      help='Flash CandleLight Multiboard firmware via USB DFU '
                           '(uses bundled firmware when no path is given)')
+    ops.add_argument('--verbose', action='store_true',
+                     help='Show detailed output during --flash-canable')
 
     args = parser.parse_args()
 
@@ -2459,7 +2461,7 @@ Examples:
     # --flash-canable uses pyusb directly; --can is not required
     if args.flash_canable is not None:
         from cli_ops import flash_canable
-        ok = flash_canable(args.flash_canable or None)
+        ok = flash_canable(args.flash_canable or None, verbose=args.verbose)
         sys.exit(0 if ok else 1)
 
     # All other operations require --can
