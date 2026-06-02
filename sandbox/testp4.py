@@ -14,8 +14,38 @@ import math
 import platform
 import time
 
+import can
 import canopen
 from timeit import default_timer as timer
+from candlelight_bus import CandlelightBus
+
+# Set True to use CAN FD for all CANopen traffic.
+#   Linux:   SocketCAN FD-capable interface required (ip link set ... dbitrate ...)
+#   Windows: CandlelightBus handles FD automatically (all frames sent as FD+BRS)
+USE_FD          = False
+FD_DATA_BITRATE = 5_000_000   # data-phase bitrate when USE_FD = True
+
+
+class FDNetwork(canopen.Network):
+    """canopen.Network that sends every outgoing frame as CAN FD + BRS.
+
+    Used when USE_FD=True on both platforms so that all SDO, PDO, and SYNC
+    messages use the faster data-phase bitrate.  Mirrors the parent's
+    send_message exactly, adding only is_fd and bitrate_switch flags.
+    """
+    def send_message(self, can_id: int, data: bytes, remote: bool = False) -> None:
+        if not self.bus:
+            raise RuntimeError("Not connected to CAN bus")
+        msg = can.Message(arbitration_id=can_id,
+                          data=data,
+                          is_extended_id=can_id > 0x7FF,
+                          is_remote_frame=remote,
+                          is_fd=True,
+                          bitrate_switch=True)
+        with self.send_lock:
+            self.bus.send(msg)
+        self.check()
+
 
 period = 5 # seconds, for cyclic sync sinusoids
 
@@ -397,14 +427,25 @@ if __name__ == "__main__":
 
     try:
       print("Establishing a new network...")
-      network = canopen.Network()
 
       time.sleep(0.2) # Wait for any bus-off to clear
 
+      NetworkClass = FDNetwork if USE_FD else canopen.Network
+
       if platform.system() == "Windows":
-        network.connect(bustype='pcan', channel='PCAN_USBBUS'+str(int(can_device[-1:])+1), bitrate=1000000)
+        # can_device is the USB adapter index (0 for first device).
+        bus = CandlelightBus(channel=int(can_device), bitrate=1000000,
+                             fd=USE_FD, data_bitrate=FD_DATA_BITRATE)
+        network = NetworkClass(bus=bus)
+        network.connect()  # bus already set; just starts the can.Notifier
+
       elif platform.system() == "Linux":
-        network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)
+        network = NetworkClass()
+        if USE_FD:
+          network.connect(bustype='socketcan', channel=can_device,
+                          bitrate=1000000, fd=True, data_bitrate=FD_DATA_BITRATE)
+        else:
+          network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)
 
       print("Connection succeeded, adding CANopen node...")
       # Add our canopen node along with its object dictionary (for parsing)

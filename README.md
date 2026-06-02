@@ -19,7 +19,7 @@ Set up the Python virtual environment and install dependencies.
 
 ### Linux
 ```
-./scripts/setup-venv.sh
+scripts/setup-venv.sh
 source scripts/activate
 scripts/setup-pip.sh
 ```
