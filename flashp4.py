@@ -64,18 +64,11 @@ def flash(can_device, can_id, file_name, progress=None):
     if not os.path.isfile(file_name): # Check that the given file exists
         return flash_result.FILE_NOT_FOUND
   
-    network = canopen.Network() # Start with an empty network
     system = platform.system()      # Determine the operating system
     print("Connecting to {0} in {1}...".format(can_device, system))
-    try: 
-        if system == "Windows":
-            network.connect(bustype='pcan', 
-                            channel='PCAN_USBBUS'+str(int(can_device[-1:])+1), 
-                            bitrate=1000000)
-        elif system == "Linux":
-            network.connect(bustype='socketcan', 
-                            channel=can_device, 
-                            bitrate=1000000)
+    try:
+        import can_backend
+        network = can_backend.make_network(can_device, bitrate=1000000)
     except:
         return flash_result.CANDEV_FAILED
   

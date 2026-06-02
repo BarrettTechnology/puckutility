@@ -142,32 +142,12 @@ class CLIProgress:
             print()  # newline after the progress line
 
 
-def _pcan_channel(can_device):
-    """Map a --can value to a PCAN channel name. Accepts a bare bus index
-    (e.g. '0' -> PCAN_USBBUS1) or a full 'PCAN_USBBUSn' string passed verbatim."""
-    text = str(can_device).strip()
-    if text.upper().startswith('PCAN_'):
-        return text.upper()
-    try:
-        return 'PCAN_USBBUS' + str(int(text) + 1)
-    except ValueError:
-        raise ValueError(
-            f"invalid PCAN device {can_device!r}: expected a bus index "
-            f"(e.g. 0 for PCAN_USBBUS1) or a PCAN_USBBUSn name")
-
-
 def _cli_make_network(can_device):
-    network = canopen.Network()
-    system = platform.system()
-    if system == "Windows":
-        network.connect(bustype='pcan', channel=_pcan_channel(can_device), bitrate=1000000)
-    elif system == "Linux":
-        network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)
-    elif system == "Darwin":
-        network.connect(bustype='pcan', channel='PCAN_USBBUS1', bitrate=1000000)
-    else:
-        raise RuntimeError(f"unsupported platform for CAN access: {system}")
-    return network
+    """Thin wrapper around can_backend.make_network so cli paths honour the
+    active adapter selection (PCAN vs CandleLight) set by the GUI menu or
+    by future CLI flags."""
+    import can_backend
+    return can_backend.make_network(can_device, bitrate=1000000)
 
 
 def _cli_connect(can_device):
@@ -831,10 +811,36 @@ def flash_canable(firmware_path=None, verbose=False):
 
     _vprint(f"  {'CandleLight' if post_state == 'candle' else 'DFU mode'}.")
 
-    # After the flash the device re-enumerates fresh.  gs_usb binds cleanly and
-    # udev brings can0 up.  Boot0=LOW on the Multiboard so OPT_BOOT0_Enable
-    # (written by the firmware before jumping to DFU ROM) is functionally
-    # equivalent to OPT_BOOT0_Disable — the device always boots from Flash.
+    # Hardware Boot0 is wired HIGH on the Multiboard, so without intervention
+    # the chip would boot back into DFU ROM on every power cycle. Send the
+    # Elmue vendor command to write OPT_BOOT0=1 / nSWBOOT0=1 in the option
+    # bytes via the freshly-running firmware -- those bits make the chip
+    # ignore the Boot0 pin and always boot from Flash. Matches the HUD ECU
+    # Hacker programmer's behavior. Persistent across power cycles.
+    if post_state == 'candle':
+        phase[0] = 'disabling boot0'
+        # Right after the flash, the device has just re-enumerated and Windows
+        # is still binding its driver. ctrl_transfer often fails the first try
+        # with LIBUSB_ERROR_NOT_FOUND ("Entity not found") because the interface
+        # isn't claimable yet. Retry with backoff -- each call re-finds the
+        # device so we never operate on a stale handle.
+        boot0_ok = False
+        for _attempt in range(6):
+            time.sleep(0.5)
+            if _disable_boot0_via_firmware():
+                boot0_ok = True
+                break
+            _vprint(f"  retry {_attempt + 1}/6 ...")
+        if boot0_ok:
+            _vprint("Boot0 pin disabled in option bytes -- device will boot from Flash.")
+        else:
+            print("Warning: failed to disable Boot0 in option bytes after 6 attempts.")
+            print("  Device may boot into DFU on next power cycle.")
+            print("  Re-run --flash-canable to retry just the Boot0 step.")
+    elif post_state == 'dfu':
+        _vprint("Warning: device stayed in DFU after flash -- Boot0 option bytes")
+        _vprint("  cannot be written until the firmware is running. Unplug and")
+        _vprint("  replug the adapter, then re-run --flash-canable.")
 
     # Windows has no SocketCAN — flashing is complete once the device
     # re-enumerates as CandleLight.  CAN access on Windows goes through PCAN.

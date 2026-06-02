@@ -342,6 +342,30 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
         threading.excepthook = _hook
 
+    def _replace_network(self, can_device, bitrate=1_000_000):
+        """Tear down any existing self.network so its underlying bus releases
+        its USB handles cleanly, then build a new one through can_backend.
+
+        Without the explicit disconnect, an old CandlelightBus instance gets
+        dropped without bus.shutdown() being called -- it then lingers in
+        Python's GC, and pyusb's finalizer eventually crashes the process
+        with an access violation on libusb_unref_device. canopen.Network's
+        disconnect() does call bus.shutdown(), which releases the USB
+        interface and disposes the device wrapper before GC sees it.
+        """
+        old = getattr(self, 'network', None)
+        if old is not None:
+            try:
+                old.disconnect()
+            except Exception:
+                pass
+            # Drop the reference so the old bus is collectable now that its
+            # underlying USB state has been cleanly released.
+            self.network = None
+        import can_backend
+        self.network = can_backend.make_network(can_device, bitrate=bitrate)
+        return self.network
+
     def _on_can_device_lost(self):
         """Runs on the wx main thread when the CAN adapter is unexpectedly lost."""
         if self.Rescanning:
@@ -879,17 +903,10 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             pass
 
         print("Establishing a new network...")
-        self.network = canopen.Network()
         can_device = self.choice_port.GetStringSelection()
 
         try:
-            if platform.system() == "Windows":
-                self.network.connect(bustype='pcan', channel='PCAN_USBBUS'+str(int(can_device[-1:])+1), bitrate=1000000)
-                # self.network.connect(bustype='slcan', channel='COM7@128000', bitrate=1000000) # for SLCAN
-            elif platform.system() == "Linux":
-                self.network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)
-            elif platform.system() == "Darwin":
-                self.network.connect(bustype='pcan', channel='PCAN_USBBUS1',bitrate=1000000)
+            self._replace_network(can_device, bitrate=1000000)
             # This will attempt to read an SDO from nodes 1 - 127
             self.network.scanner.reset()
             self.network.scanner.search()
@@ -921,13 +938,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             # else: no USB device to reset — proceed directly to the retry
             # Retry once after reset
             try:
-                self.network = canopen.Network()
-                if platform.system() == "Linux":
-                    self.network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)
-                elif platform.system() == "Windows":
-                    self.network.connect(bustype='pcan', channel='PCAN_USBBUS'+str(int(can_device[-1:])+1), bitrate=1000000)
-                elif platform.system() == "Darwin":
-                    self.network.connect(bustype='pcan', channel='PCAN_USBBUS1', bitrate=1000000)
+                self._replace_network(can_device, bitrate=1000000)
                 self.network.scanner.reset()
                 self.network.scanner.search()
                 print('CAN reset succeeded — continuing scan')
@@ -1607,12 +1618,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         # THIS SEEMS LIKE IT SHOULDN'T HAPPEN HERE, use can_port / scan_pucks??
 
         print("Establishing a new network...")
-        self.network = canopen.Network()
-
-        if platform.system() == "Windows":
-          self.network.connect(bustype='pcan', channel='PCAN_USBBUS'+str(int(can_device[-1:])+1), bitrate=1000000)
-        elif platform.system() == "Linux":
-          self.network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)
+        self._replace_network(can_device, bitrate=1000000)
         self.node = self.network.add_node(int(node_id), 'puck4.eds')
         
         # Save all OD entries to EEPROM (takes about 0.55 sec)

@@ -572,14 +572,10 @@ def run_main():
 
     # Open the CAN device
     print("Establishing a new network...")
-    network = canopen.Network()
-
     time.sleep(0.2) # Wait for any bus-off to clear
 
-    if platform.system() == "Windows":
-      network.connect(bustype='pcan', channel='PCAN_USBBUS'+str(int(can_device[-1:])+1), bitrate=1000000)
-    elif platform.system() == "Linux":
-      network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)
+    import can_backend
+    network = can_backend.make_network(can_device, bitrate=1000000)
 
     print("Connection succeeded, adding CANopen node...")
     # Add our canopen node along with its object dictionary (for parsing)
@@ -603,14 +599,10 @@ def start(can_device, can_id, edsfile, csvfile, progress=None):
 
     # Open the CAN device
     print("Establishing a new network...")
-    network = canopen.Network()
-
     time.sleep(0.2) # Wait for any bus-off to clear
 
-    if platform.system() == "Windows":
-      network.connect(bustype='pcan', channel='PCAN_USBBUS'+str(int(can_device[-1:])+1), bitrate=1000000)
-    elif platform.system() == "Linux":
-      network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)
+    import can_backend
+    network = can_backend.make_network(can_device, bitrate=1000000)
 
     print("Connection succeeded, adding CANopen node...")
     # Add our canopen node along with its object dictionary (for parsing)

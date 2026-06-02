@@ -181,11 +181,22 @@ class CandlelightBus(can.BusABC):
         self._marker = 0
 
         # ── Open USB device ───────────────────────────────────────────────────
-        backend = usb.backend.libusb1.get_backend()
+        # libusb-1.0.dll isn't shipped with Windows. Prefer the copy bundled
+        # inside the `libusb-package` pip dependency (works in any Python env
+        # without putting a DLL on PATH); fall back to pyusb's default search
+        # path so a system-installed libusb still works.
+        backend = None
+        try:
+            import libusb_package
+            backend = libusb_package.get_libusb1_backend()
+        except Exception:
+            backend = None
+        if backend is None:
+            backend = usb.backend.libusb1.get_backend()
         if backend is None:
             raise can.CanInitializationError(
-                "libusb-1.0.dll not found – ensure it is on PATH "
-                "or in the script directory"
+                "libusb-1.0.dll not found - install libusb-package "
+                "(pip install libusb-package) or place libusb-1.0.dll on PATH"
             )
 
         dev = usb.core.find(idVendor=vid, idProduct=pid, backend=backend)
@@ -293,7 +304,13 @@ class CandlelightBus(can.BusABC):
 
         try:
             raw = bytes(self._dev.read(EP_IN, BULK_READ_SIZE, timeout=ms))
-        except usb.core.USBTimeoutError:
+        except usb.core.USBError as exc:
+            # pyusb 1.1+ exposes USBTimeoutError; older 1.0.x only raises USBError
+            # with errno 10060 (Windows) or 110 (Linux). Treat both as "no data".
+            if getattr(exc, 'errno', None) in (10060, 110):
+                return None, False
+            if not self._is_shutdown:
+                logger.error("USB read error: %s", exc)
             return None, False
         except Exception as exc:
             if not self._is_shutdown:
@@ -332,7 +349,12 @@ class CandlelightBus(can.BusABC):
         elif msg_type == MSG_ERROR:
             if len(raw) >= 6:
                 err_id = struct.unpack_from('<I', raw, 2)[0]
-                logger.warning("CAN error frame: err_id=0x%04X", err_id)
+                # err_id 0x40 = CAN_ERR_ACK (no one ACKing TX), 0x00 = bus idle.
+                # Both are spammed continuously when only the canable is on the
+                # bus -- log once per distinct code, not per frame.
+                if err_id != getattr(self, '_last_err_id', None):
+                    logger.warning("CAN error frame: err_id=0x%04X", err_id)
+                    self._last_err_id = err_id
 
         return None, False
 
