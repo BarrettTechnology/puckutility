@@ -1585,23 +1585,18 @@ class calibrate():
             "\n- Ensure proper configuration file has been loaded" \
             "\n- Verify output friction is less than cal torque for the motor ({}mNm)" \
             "\n\nWould you like to continue calibration?"  .format(pos_change1,pos_change2,round(22.5*(1-error)),cal_torque)
-            dlg = wx.MessageDialog(None,msg,'Warning!',wx.YES_NO | wx.ICON_WARNING)
-            answer = dlg.ShowModal()
-            dlg.Destroy()
-  
+            # Route through _prompt so the headless CLI adapter can answer via
+            # stdin instead of popping a wx dialog (which would crash/block a
+            # headless run). Returns True to continue, False to abort.
+            continue_cal = self._prompt('Warning!', msg)
+
             _upd(100)
             if self.ADC_ON == False and self.adcWasON == True:
                 self.on_off_adc(self)
             if calAll == False:
                 self.OnTaskComplete()
                 self.Enable()
-            try:
-                if answer == wx.ID_YES:
-                    return True
-                if answer == wx.ID_NO:
-                    return False
-            except:
-                pass
+            return continue_cal
 
         except Exception as _exc:
             if calAll:

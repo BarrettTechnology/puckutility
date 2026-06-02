@@ -119,6 +119,9 @@ def _cli_calibrate_all(node, network=None):
     if not adapter.calibrate_igainfactor(None, calAll=True, _upd=lambda v: None):
         print("  Calibration aborted.")
         return False
+    # NOTE: calibrate_enczero returns None on success and only False on a
+    # user-requested abort, so check `is False` explicitly here — `if not ...`
+    # would wrongly treat a successful run as an abort.
     if adapter.calibrate_enczero(None, calAll=True, _upd=lambda v: None) is False:
         print("  Calibration aborted.")
         return False
@@ -139,15 +142,31 @@ class CLIProgress:
             print()  # newline after the progress line
 
 
+def _pcan_channel(can_device):
+    """Map a --can value to a PCAN channel name. Accepts a bare bus index
+    (e.g. '0' -> PCAN_USBBUS1) or a full 'PCAN_USBBUSn' string passed verbatim."""
+    text = str(can_device).strip()
+    if text.upper().startswith('PCAN_'):
+        return text.upper()
+    try:
+        return 'PCAN_USBBUS' + str(int(text) + 1)
+    except ValueError:
+        raise ValueError(
+            f"invalid PCAN device {can_device!r}: expected a bus index "
+            f"(e.g. 0 for PCAN_USBBUS1) or a PCAN_USBBUSn name")
+
+
 def _cli_make_network(can_device):
     network = canopen.Network()
     system = platform.system()
     if system == "Windows":
-        network.connect(bustype='pcan', channel='PCAN_USBBUS'+str(int(can_device[-1:])+1), bitrate=1000000)
+        network.connect(bustype='pcan', channel=_pcan_channel(can_device), bitrate=1000000)
     elif system == "Linux":
         network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)
     elif system == "Darwin":
         network.connect(bustype='pcan', channel='PCAN_USBBUS1', bitrate=1000000)
+    else:
+        raise RuntimeError(f"unsupported platform for CAN access: {system}")
     return network
 
 
@@ -182,8 +201,12 @@ def _cli_config(can_device, node_id, csv_path):
     print("  Saving to EEPROM...")
     default_timeout = canopen.sdo.SdoClient.RESPONSE_TIMEOUT
     canopen.sdo.SdoClient.RESPONSE_TIMEOUT = 1.0
-    save_node.sdo['Save']['All'].raw = 0x65766173  # 'save'
-    canopen.sdo.SdoClient.RESPONSE_TIMEOUT = default_timeout
+    try:
+        save_node.sdo['Save']['All'].raw = 0x65766173  # 'save'
+    finally:
+        # Always restore the class-level timeout, even if the save SDO raises,
+        # so later nodes in an --all / --system-config run aren't affected.
+        canopen.sdo.SdoClient.RESPONSE_TIMEOUT = default_timeout
     print("  Rebooting puck...")
     save_net.send_message(0x0, [0x81, node_id])
     time.sleep(0.5)
@@ -531,6 +554,30 @@ def _disable_boot0_via_firmware():
 _BUNDLED_FW = os.path.join(MAIN_DIR, 'canable-candlelight-multiboard.bin')
 
 
+# Standard install locations for STM32CubeProgrammer's CLI. Used on Windows
+# so flash_canable can shell out without requiring the user to set PATH.
+# Tested with STM32CubeProgrammer v2.22.0; any 2.x release should accept the
+# same -c/-w/-s flags and emit the success markers we grep for below.
+_CUBE_PROGRAMMER_CLI_PATHS = [
+    r"C:\Program Files\STMicroelectronics\STM32Cube\STM32CubeProgrammer\bin\STM32_Programmer_CLI.exe",
+    r"C:\Program Files (x86)\STMicroelectronics\STM32Cube\STM32CubeProgrammer\bin\STM32_Programmer_CLI.exe",
+]
+
+
+def _find_cube_programmer_cli():
+    """Locate STM32_Programmer_CLI.exe on Windows. Returns the absolute path,
+    or None if CubeProgrammer is not installed. Checks PATH first so users
+    who explicitly placed the binary on PATH get their override respected."""
+    import shutil
+    on_path = shutil.which('STM32_Programmer_CLI')
+    if on_path:
+        return on_path
+    for candidate in _CUBE_PROGRAMMER_CLI_PATHS:
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
 def flash_canable(firmware_path=None, verbose=False):
     """Flash CandleLight Multiboard firmware to an STM32G431-based canable via USB DFU.
 
@@ -548,19 +595,28 @@ def flash_canable(firmware_path=None, verbose=False):
     if not os.path.isfile(firmware_path):
         print(f"Error: firmware file not found: {firmware_path}")
         return False
-    if not shutil.which('dfu-util'):
-        print("Error: dfu-util is not installed.")
-        _sys = platform.system()
-        if _sys == "Windows":
-            print("  Install with one of:")
-            print("    choco install dfu-util")
-            print("    scoop install dfu-util")
-            print("  or download from https://dfu-util.sourceforge.net/ and add to PATH.")
-        elif _sys == "Darwin":
-            print("  Install with:  brew install dfu-util")
-        else:
-            print("  Install with:  sudo apt-get install dfu-util")
-        return False
+    _sys = platform.system()
+    _cube_cli = None
+    if _sys == "Windows":
+        # Windows uses STM32CubeProgrammer's CLI, which talks through STM's
+        # WHQL-signed DFU driver (auto-installed by Windows Update for 0483:DF11).
+        # No driver swap, no UAC, no dfu-util needed. We don't bundle the CLI
+        # to keep the installer small -- prompt the user to install it once.
+        _cube_cli = _find_cube_programmer_cli()
+        if _cube_cli is None:
+            print("Error: STM32CubeProgrammer is not installed.")
+            print("  Download (free) from:")
+            print("    https://www.st.com/en/development-tools/stm32cubeprog.html")
+            print("  After installing, re-run this command.")
+            return False
+    else:
+        if not shutil.which('dfu-util'):
+            print("Error: dfu-util is not installed.")
+            if _sys == "Darwin":
+                print("  Install with:  brew install dfu-util")
+            else:
+                print("  Install with:  sudo apt-get install dfu-util")
+            return False
     try:
         import usb.core
     except ImportError:
@@ -698,22 +754,47 @@ def flash_canable(firmware_path=None, verbose=False):
 
     flash_ok = False
     dfu_errors = []
-    proc = subprocess.Popen(
-        ['dfu-util', '-d', f'{DFU_VID:04x}:{DFU_PID:04x}',
-         '-a', '0', '-s', '0x08000000:leave', '-D', firmware_path],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-    )
-    for line in proc.stdout:
-        # Suppress benign get_status error: ':leave' causes the device to jump
-        # to the application before dfu-util can poll status — expected behavior.
-        if 'Error during download get_status' in line:
-            continue
-        if 'File downloaded successfully' in line or 'Download done' in line:
-            flash_ok = True
-        elif 'dfu-util: Error' in line or 'dfu-util: Warning' in line:
-            dfu_errors.append(line.rstrip())
-        _vprint(line, end='', flush=True)
-    proc.wait()
+    if platform.system() == "Windows":
+        # Windows: shell out to STM32CubeProgrammer's CLI. It talks through
+        # STM's WHQL-signed DFU driver, so no driver swap or UAC is needed.
+        # -c port=USB1 selects the first USB DFU device (we already verified
+        # 0483:df11 is present). -s after the write makes the bootloader leave
+        # DFU and start the application.
+        proc = subprocess.Popen(
+            [_cube_cli, '-c', 'port=USB1',
+             '-w', firmware_path, '0x08000000', '-s'],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        )
+        for line in proc.stdout:
+            stripped = line.rstrip()
+            if ('File download complete' in line
+                    or 'Start operation achieved successfully' in line):
+                flash_ok = True
+            elif stripped.lower().startswith('error'):
+                dfu_errors.append(stripped)
+            _vprint(line, end='', flush=True)
+        proc.wait()
+        if proc.returncode != 0 and flash_ok:
+            # CubeProgrammer occasionally returns nonzero even after a
+            # successful programme + start; trust the output markers over rc.
+            pass
+    else:
+        proc = subprocess.Popen(
+            ['dfu-util', '-d', f'{DFU_VID:04x}:{DFU_PID:04x}',
+             '-a', '0', '-s', '0x08000000:leave', '-D', firmware_path],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        )
+        for line in proc.stdout:
+            # Suppress benign get_status error: ':leave' causes the device to jump
+            # to the application before dfu-util can poll status -- expected behavior.
+            if 'Error during download get_status' in line:
+                continue
+            if 'File downloaded successfully' in line or 'Download done' in line:
+                flash_ok = True
+            elif 'dfu-util: Error' in line or 'dfu-util: Warning' in line:
+                dfu_errors.append(line.rstrip())
+            _vprint(line, end='', flush=True)
+        proc.wait()
 
     if verbose:
         print("-" * _COLS)
