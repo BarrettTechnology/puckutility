@@ -2693,43 +2693,46 @@ class calibrate():
                 for _ri, _rk in enumerate(_top_bins):
                     print("  {:>4d}  {:>4d}  {:>10.4f}".format(_ri + 1, _rk, float(amps[_rk])))
 
+                # New OD format (matches firmware pwm.c:correct_pos):
+                #   out -= [A_s·sin(kθ) + A_c·cos(kθ)] / 256,  θ = 2π·(pos mod 4096)/4096
+                # We need this to reproduce the legacy correction
+                #   δ_old(pos) = -_bA · cos(kθ + ψ),   ψ = _bphi - 2π·k·enc_start/enc_resolution
+                # Expanding -cos(kθ + ψ) gives:
+                #   A_s =  256·_bA·sin(ψ),   A_c = -256·_bA·cos(ψ)   (Q8.8 int16)
+                # enc_start offset stays (FFT phase is sweep-relative); the legacy +π sign
+                # flip is now absorbed into the signs of A_s/A_c, so no separate flip.
+                def _clamp_i16(v):
+                    return max(-32768, min(32767, int(round(v))))
+
                 print("\n  Uploading encoder compensation harmonics to node {} ...".format(node_id))
-                print("  {:>4}  {:>6}  {:>6}  {:>10}  {:>10}".format(
-                    "Bin", "k", "Amp", "Phase(mrad)", "Phase(rad)"))
-                print("  " + "-" * 42)
+                print("  {:>4}  {:>6}  {:>10}  {:>8}  {:>8}".format(
+                    "Bin", "k", "Amp(cts)", "A_s(Q88)", "A_c(Q88)"))
+                print("  " + "-" * 44)
 
                 # Disable compensation while writing bins
                 self.node.sdo[0x3027][1].raw = 0
 
                 for _bi in range(N_BINS):
-                    _amp_sub   = 2 + _bi * 3
-                    _k_sub     = 3 + _bi * 3
-                    _phase_sub = 4 + _bi * 3
+                    _as_sub = 2 + _bi * 3
+                    _k_sub  = 3 + _bi * 3
+                    _ac_sub = 4 + _bi * 3
 
                     if _bi < n_upload:
-                        _bk        = int(_top_bins[_bi])
-                        _bA        = float(amps[_bk])
-                        _bphi      = float(phases[_bk])
-                        _amp_val   = max(0, int(round(_bA)))
-                        _k_val     = _bk
-                        # Two corrections applied to the raw FFT phase:
-                        # 1. enc_start offset: FFT phase is relative to wherever the
-                        #    sweep started; firmware uses absolute encoder position,
-                        #    so subtract 2π·k·enc_start/enc_resolution.
-                        # 2. Sign correction (+π): firmware applies -compensation
-                        #    internally, so flip sign via cos(θ+π) = -cos(θ).
-                        _phi_abs    = (_bphi
-                                       - 2.0 * math.pi * _bk * float(enc_start) / float(enc_resolution)
-                                       + math.pi)
-                        _phase_mrad = int(round((_phi_abs % (2.0 * math.pi)) * 1000.0))
-                        print("  {:>4d}  {:>6d}  {:>6d}  {:>10d}  {:>10.4f}".format(
-                            _bi, _k_val, _amp_val, _phase_mrad, _bphi))
+                        _bk      = int(_top_bins[_bi])
+                        _bA      = float(amps[_bk])
+                        _bphi    = float(phases[_bk])
+                        _psi     = _bphi - 2.0 * math.pi * _bk * float(enc_start) / float(enc_resolution)
+                        _A_s_val = _clamp_i16( 256.0 * _bA * math.sin(_psi))
+                        _A_c_val = _clamp_i16(-256.0 * _bA * math.cos(_psi))
+                        _k_val   = _bk
+                        print("  {:>4d}  {:>6d}  {:>10.4f}  {:>8d}  {:>8d}".format(
+                            _bi, _k_val, _bA, _A_s_val, _A_c_val))
                     else:
-                        _amp_val = _k_val = _phase_mrad = 0
+                        _A_s_val = _A_c_val = _k_val = 0
 
-                    self.node.sdo[0x3027][_amp_sub].raw   = _amp_val
-                    self.node.sdo[0x3027][_k_sub].raw     = _k_val
-                    self.node.sdo[0x3027][_phase_sub].raw = _phase_mrad
+                    self.node.sdo[0x3027][_as_sub].raw = _A_s_val
+                    self.node.sdo[0x3027][_k_sub].raw  = _k_val
+                    self.node.sdo[0x3027][_ac_sub].raw = _A_c_val
 
                 # Enable compensation
                 self.node.sdo[0x3027][1].raw = 1
@@ -2740,37 +2743,37 @@ class calibrate():
 
                 # Readback verification
                 print("\n  Readback verification:")
-                print("  {:>4}  {:>6}  {:>6}  {:>10}  {}".format(
-                    "Bin", "k", "Amp", "Phase(mrad)", "OK?"))
+                print("  {:>4}  {:>6}  {:>8}  {:>8}  {}".format(
+                    "Bin", "k", "A_s", "A_c", "OK?"))
                 print("  " + "-" * 40)
                 _active_rb = self.node.sdo[0x3027][1].raw
                 print("  Active flag readback: {}".format(_active_rb))
                 _rb_ok = True
                 for _bi in range(N_BINS):
-                    _amp_rb   = self.node.sdo[0x3027][2 + _bi * 3].raw
-                    _k_rb     = self.node.sdo[0x3027][3 + _bi * 3].raw
-                    _phase_rb = self.node.sdo[0x3027][4 + _bi * 3].raw
+                    _as_rb = self.node.sdo[0x3027][2 + _bi * 3].raw
+                    _k_rb  = self.node.sdo[0x3027][3 + _bi * 3].raw
+                    _ac_rb = self.node.sdo[0x3027][4 + _bi * 3].raw
                     if _bi < n_upload:
-                        _bk_exp    = int(_top_bins[_bi])
-                        _bA_exp    = max(0, int(round(float(amps[_top_bins[_bi]]))))
-                        _phi_abs_exp = (float(phases[_top_bins[_bi]])
-                                        - 2.0 * math.pi * _bk_exp * float(enc_start) / float(enc_resolution)
-                                        + math.pi)
-                        _bph_exp   = int(round((_phi_abs_exp % (2.0 * math.pi)) * 1000.0))
+                        _bk_exp  = int(_top_bins[_bi])
+                        _bA_exp  = float(amps[_top_bins[_bi]])
+                        _psi_exp = (float(phases[_top_bins[_bi]])
+                                    - 2.0 * math.pi * _bk_exp * float(enc_start) / float(enc_resolution))
+                        _as_exp  = _clamp_i16( 256.0 * _bA_exp * math.sin(_psi_exp))
+                        _ac_exp  = _clamp_i16(-256.0 * _bA_exp * math.cos(_psi_exp))
                     else:
-                        _bk_exp = _bA_exp = _bph_exp = 0
-                    _ok = (_amp_rb == _bA_exp and _k_rb == _bk_exp
-                           and _phase_rb == _bph_exp)
+                        _bk_exp = _as_exp = _ac_exp = 0
+                    _ok = (_as_rb == _as_exp and _k_rb == _bk_exp
+                           and _ac_rb == _ac_exp)
                     if not _ok:
                         _rb_ok = False
-                    print("  {:>4d}  {:>6}  {:>6}  {:>10}  {}".format(
+                    print("  {:>4d}  {:>6}  {:>8}  {:>8}  {}".format(
                         _bi,
                         "{} (exp {})".format(_k_rb, _bk_exp) if _k_rb != _bk_exp
                             else str(_k_rb),
-                        "{} (exp {})".format(_amp_rb, _bA_exp) if _amp_rb != _bA_exp
-                            else str(_amp_rb),
-                        "{} (exp {})".format(_phase_rb, _bph_exp) if _phase_rb != _bph_exp
-                            else str(_phase_rb),
+                        "{} (exp {})".format(_as_rb, _as_exp) if _as_rb != _as_exp
+                            else str(_as_rb),
+                        "{} (exp {})".format(_ac_rb, _ac_exp) if _ac_rb != _ac_exp
+                            else str(_ac_rb),
                         "OK" if _ok else "MISMATCH"))
                 if _rb_ok:
                     print("  All bins verified OK.")
@@ -2790,18 +2793,15 @@ class calibrate():
                         _bk     = int(_bk)
                         _bA_raw = float(amps[_bk])
                         _bphi   = float(phases[_bk])
-                        _phi_abs = (_bphi
-                                    - 2.0 * math.pi * _bk * float(enc_start) / float(enc_resolution)
-                                    + math.pi)
-                        _phi_abs_norm = _phi_abs % (2.0 * math.pi)
+                        _psi = _bphi - 2.0 * math.pi * _bk * float(enc_start) / float(enc_resolution)
                         _top10_bins.append({
                             "rank":               _bi + 1,
                             "k":                  _bk,
                             "amplitude_fft_cts":  _bA_raw,
-                            "amplitude_stored":   max(0, int(round(_bA_raw))),
                             "phase_fft_rad":      _bphi,
-                            "phase_abs_rad":      _phi_abs_norm,
-                            "phase_stored_mrad":  int(round(_phi_abs_norm * 1000.0)),
+                            "psi_rad":            _psi,
+                            "A_s_q88":            _clamp_i16( 256.0 * _bA_raw * math.sin(_psi)),
+                            "A_c_q88":            _clamp_i16(-256.0 * _bA_raw * math.cos(_psi)),
                             "cos_coeff":          _bA_raw * math.cos(_bphi),
                             "sin_coeff":          -_bA_raw * math.sin(_bphi),
                         })
