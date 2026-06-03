@@ -10,8 +10,9 @@ import configparser
 import platform
 from canopen_runner import (
     CLEAR_FAULT, SHUTDOWN, OP_ENABLED,
-    MODE_IDLE, MODE_PHASE_VOLTAGE_ANGLE, MODE_PROFILE_TRQ,
+    MODE_IDLE, MODE_PHASE_VOLTAGE_ANGLE, MODE_PROFILE_TRQ, MODE_PROFILE_VEL,
 )
+from canopen.sdo import SdoAbortedError
 from paths import _resolve_path, FIRMWARE_DIR, CONFIG_DIR
 
 # TODO - No active issues
@@ -3176,6 +3177,48 @@ class calibrate():
 
             except ImportError:
                 print("  (FFT analysis skipped — numpy not installed)")
+            except SdoAbortedError as _fft_exc:
+                if _fft_exc.code == 0x06020000:
+                    # Object does not exist — look it up in the EDS so we can
+                    # name the missing object and describe what it should hold.
+                    _DTYPE_MAP = {
+                        0x0002: 'INTEGER8',   0x0003: 'INTEGER16', 0x0004: 'INTEGER32',
+                        0x0005: 'UNSIGNED8',  0x0006: 'UNSIGNED16', 0x0007: 'UNSIGNED32',
+                        0x0008: 'REAL32',     0x0009: 'VISIBLE_STRING',
+                    }
+                    # In this block the first 0x06020000 is the 0x3027
+                    # (EncCompensation) write — firmware doesn't support it.
+                    _obj_idx = 0x3027
+                    _obj_desc = '0x{:04X}'.format(_obj_idx)
+                    _sub_descs = []
+                    try:
+                        _od = self.node.object_dictionary[_obj_idx]
+                        _obj_desc = '0x{:04X} "{}" ({} sub-entries per EDS)'.format(
+                            _obj_idx, _od.name, len(_od))
+                        for _si, _label in [(1, 'active flag'), (2, 'bin amplitude'),
+                                            (3, 'bin harmonic k'), (4, 'bin phase (mrad)')]:
+                            try:
+                                _sv = _od[_si]
+                                _dt = _DTYPE_MAP.get(
+                                    getattr(_sv, 'data_type', None), 'unknown')
+                                _ac = getattr(_sv, 'access_type', 'rw')
+                                _sub_descs.append(
+                                    'sub{} "{}" ({}, {}) — {}'.format(
+                                        _si, _sv.name, _dt, _ac, _label))
+                            except (KeyError, AttributeError):
+                                pass
+                    except (KeyError, AttributeError):
+                        pass
+                    print("  WARNING: FFT analysis failed — object does not exist on node {}:".format(
+                        node_id))
+                    print("    {}".format(_obj_desc))
+                    for _sd in _sub_descs:
+                        print("    {}".format(_sd))
+                    print("  Encoder harmonic compensation (0x3027) is not supported by "
+                          "this firmware — analysis results saved, upload skipped.")
+                else:
+                    print("  WARNING: FFT analysis failed — SDO abort 0x{:08X}: {}".format(
+                        _fft_exc.code, _fft_exc))
             except Exception as _fft_exc:
                 print("  WARNING: FFT analysis failed: {}".format(_fft_exc))
 
@@ -3355,6 +3398,475 @@ class calibrate():
             if self.ADC_ON == False and self.adcWasON:
                 self.on_off_adc(self)
             self.Enable()
+
+    def cogging_error_compensation(self, event, calAll=False, _upd=None):
+        """
+        Cogging torque characterisation sweep.
+
+        Drives the motor at constant low velocity (forward + reverse) and samples
+        q-axis current (Iq) vs mechanical angle.  Bidirectional averaging cancels
+        the constant friction bias, isolating the periodic cogging profile.
+
+        Math:
+          Iq_fwd(θ) = [ T_fric + T_cog_load(θ)] / Kt   (positive; CW motion)
+          Iq_rev(θ) = [-T_fric + T_cog_load(θ)] / Kt   (negative; CCW motion)
+          avg(θ)    = (Iq_fwd + Iq_rev) / 2 = T_cog_load(θ) / Kt
+
+        Output files (in logs/):
+          cogging_sweep_*.csv       — per-bin (angle, fwd, rev, avg, fit)
+          cogging_harmonics_*.json  — FFT harmonic decomposition
+          cogging_profile_*.png     — 2×2: fwd/rev/avg, AC+fit, per-pole overlay, spectrum
+          cogging_spectrum_*.png    — harmonic bar chart + RMS-vs-N reconstruction curve
+
+        SEND_TO_PUCK = False: no SDO upload; firmware cogging object not yet implemented.
+        """
+        SEND_TO_PUCK = False  # Set True when firmware 0x3028 cogging object is ready
+
+        if not self.check_for_node():
+            return
+
+        if self.ADC_ON:
+            self.adcWasON = True
+            self.on_off_adc(self)
+        else:
+            self.adcWasON = False
+
+        if calAll:
+            if _upd is None:
+                _upd = lambda v: None
+        else:
+            self.OnStartTask(None)
+            _upd = lambda v: self.UpdateUI(v)
+        if _upd is None:
+            _upd = lambda v: None
+
+        self.Disable()
+        self.frame_statusbar.SetStatusText("Cogging characterisation sweep...", 1)
+        self.frame_statusbar.Update()
+        wx.Yield()
+
+        try:
+            import cmath as _cm
+            import datetime, os
+            from paths import resource_path, session_path
+            ts = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+
+            enc_resolution = self.node.sdo['EncoderConfig']['Resolution'].raw
+            motor_poles    = self.node.sdo['Calibration']['poles'].raw
+            i_peak         = self.node.sdo['Calibration']['i_peak'].raw
+            kt             = self.node.sdo['Calibration']['kt'].raw  # mNm/A
+            pole_pairs     = motor_poles // 2
+            cts_per_elec   = enc_resolution * 2.0 / motor_poles
+
+            node_id   = getattr(self.node, 'id', '?')
+            _pc       = None
+            try:
+                _pc = int(self.node.sdo[0x1018][2].raw)
+            except Exception:
+                pass
+            model_str = getattr(self, '_PRODUCT_CODE_MODELS', {}).get(_pc, 'unknown')
+            _file_pfx = 'node{}_{}_'.format(node_id, model_str.replace(' ', '_'))
+
+            N_BINS       = 128    # angle bins per revolution (k_max=64; resolves k=21,42,63)
+            TARGET_RPM   = 5.0   # mechanical RPM — faster traversal reduces per-tooth velocity ripple
+            SETTLE_S     = 2.5   # wait for speed to settle before sampling
+            N_REVS       = 2     # mechanical revolutions to collect per direction
+            SAMPLE_S     = 0.025 # sampling interval (s)
+            N_HARMONICS  = 16    # Fourier harmonics to fit
+
+            vel_cts_per_sec = int(round(TARGET_RPM / 60.0 * enc_resolution))
+            n_samples       = int(N_REVS * 60.0 / TARGET_RPM / SAMPLE_S)
+            est_s           = (SETTLE_S + N_REVS * 60.0 / TARGET_RPM) * 2 + 5
+            bin_width_deg   = 360.0 / N_BINS
+
+            print("\nCogging characterisation — sweep parameters")
+            print("  {} pole pairs  {:.2f} cts/elec  enc_res={}"
+                  "  i_peak={} mA  Kt={} mNm/A".format(
+                      pole_pairs, cts_per_elec, enc_resolution, i_peak, kt))
+            print("  {:.1f} RPM  {} revs/pass  {} bins/rev  ~{:.0f} s total".format(
+                TARGET_RPM, N_REVS, N_BINS, est_s))
+            _upd(2)
+
+            # ---- Enable in profile-velocity mode ----
+            self.node.sdo["ControlWord"].raw = CLEAR_FAULT
+            self.node.sdo["ControlWord"].raw = SHUTDOWN
+            self.node.sdo["ControlWord"].raw = OP_ENABLED
+            self.node.sdo["SetModeOfOperation"].raw = MODE_PROFILE_VEL
+            time.sleep(0.2)
+            wx.Yield()
+
+            def _sample_pass(vel_cmd, label, upd_start, upd_end):
+                """Collect (angle_deg, iq_mA) at each sample tick over N_REVS."""
+                print("  {} pass  ({:+d} cts/s = {:.1f} RPM, {} revs) ...".format(
+                    label, vel_cmd, abs(vel_cmd) * 60.0 / enc_resolution, N_REVS))
+                self.node.sdo['TargetVelocity'].raw = vel_cmd
+                _sleep_responsive(SETTLE_S)
+                wx.Yield()
+
+                samples = []  # list of (angle_deg, iq_mA)
+                for step in range(n_samples):
+                    time.sleep(SAMPLE_S)
+                    raw_now  = self.node.sdo['Encoder']['RawPosition'].raw
+                    iq_norm  = self.node.sdo['CurrentFeedback'].raw  # ±1000 = ±i_peak
+                    iq_ma    = iq_norm / 1000.0 * i_peak
+                    angle_deg = (raw_now % enc_resolution) / enc_resolution * 360.0
+                    samples.append((angle_deg, iq_ma))
+                    _upd(upd_start + step * (upd_end - upd_start) // n_samples)
+                    wx.Yield()
+                return samples
+
+            print("Cogging sweep:")
+            samples_fwd = _sample_pass(+vel_cts_per_sec, 'forward', 5, 44)
+
+            self.node.sdo['TargetVelocity'].raw = 0
+            _sleep_responsive(1.5)
+            wx.Yield()
+
+            samples_rev = _sample_pass(-vel_cts_per_sec, 'reverse', 47, 86)
+
+            self.node.sdo['TargetVelocity'].raw = 0
+            _sleep_responsive(1.0)
+            self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
+            wx.Yield()
+            _upd(88)
+
+            print("  {} fwd samples, {} rev samples".format(
+                len(samples_fwd), len(samples_rev)))
+
+            # ---- Bin by absolute mechanical angle ----
+            fwd_bins = [[] for _ in range(N_BINS)]
+            rev_bins = [[] for _ in range(N_BINS)]
+            for deg, iq in samples_fwd:
+                fwd_bins[int(deg / bin_width_deg) % N_BINS].append(iq)
+            for deg, iq in samples_rev:
+                rev_bins[int(deg / bin_width_deg) % N_BINS].append(iq)
+
+            avg_fwd = [sum(b) / len(b) if b else 0.0 for b in fwd_bins]
+            avg_rev = [sum(b) / len(b) if b else 0.0 for b in rev_bins]
+            avg_iq  = [(avg_fwd[b] + avg_rev[b]) / 2.0 for b in range(N_BINS)]
+            bin_deg = [b * bin_width_deg for b in range(N_BINS)]
+
+            # ---- DFT / Fourier fit ----
+            def _dft(samples, n_harm):
+                N, X = len(samples), []
+                for k in range(n_harm + 1):
+                    wk  = _cm.exp(-2j * math.pi * k / N)
+                    val = 0.0 + 0j
+                    w   = 1.0 + 0j
+                    for c in samples:
+                        val += c * w
+                        w   *= wk
+                    X.append(val / N)
+                return X
+
+            def _reconstruct_f(X, out_size):
+                """Evaluate Fourier series at out_size evenly-spaced points (float)."""
+                table = []
+                for p in range(out_size):
+                    val = X[0].real
+                    for k in range(1, len(X)):
+                        a = 2.0 * math.pi * k * p / out_size
+                        val += 2.0 * (X[k].real * math.cos(a) - X[k].imag * math.sin(a))
+                    table.append(val)
+                return table
+
+            print("Fitting Fourier series ({} harmonics) ...".format(N_HARMONICS))
+            X_iq   = _dft(avg_iq, N_HARMONICS)
+            fit_iq = _reconstruct_f(X_iq, N_BINS)
+
+            dc_offset_ma = X_iq[0].real
+            iq_ac        = [v - dc_offset_ma for v in avg_iq]
+            rms_iq_ma    = (sum(v * v for v in iq_ac) / len(iq_ac)) ** 0.5
+            max_iq_ma    = max(abs(v) for v in iq_ac)
+            rms_cog_mnm  = kt * rms_iq_ma / 1000.0   # Kt mNm/A × Iq mA × 1e-3 → mNm
+            max_cog_mnm  = kt * max_iq_ma / 1000.0
+
+            print("\n  Cogging profile stats:")
+            print("  DC offset: {:+.2f} mA  (friction/load bias)".format(dc_offset_ma))
+            print("  AC RMS Iq: {:.2f} mA  →  RMS cogging {:.2f} mNm".format(
+                rms_iq_ma, rms_cog_mnm))
+            print("  AC peak Iq: {:.2f} mA  →  peak cogging {:.2f} mNm".format(
+                max_iq_ma, max_cog_mnm))
+
+            # ---- Per-pole-pair overlay ----
+            elec_bins = max(1, N_BINS // pole_pairs)
+            pp_acc  = [0.0] * elec_bins
+            pp_cnt  = [0]   * elec_bins
+            for b in range(N_BINS):
+                eb = b % elec_bins
+                pp_acc[eb] += iq_ac[b]
+                pp_cnt[eb] += 1
+            pp_avg = [pp_acc[e] / max(pp_cnt[e], 1) for e in range(elec_bins)]
+
+            # ---- CSV ----
+            csv_path = session_path('{}cogging_sweep_{}.csv'.format(_file_pfx, ts))
+            os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+            with open(csv_path, 'w') as _f:
+                _f.write("# Cogging torque sweep — Node {}  {}  ({})\n".format(
+                    node_id, model_str, ts))
+                _f.write("# {:.1f} RPM  {} revs/pass  {} bins/rev\n".format(
+                    TARGET_RPM, N_REVS, N_BINS))
+                _f.write("# DC offset (friction bias): {:+.3f} mA\n".format(dc_offset_ma))
+                _f.write("# T_cogging ≈ Kt × avg_iq_mA × 1e-3  (Kt={} mNm/A)\n".format(kt))
+                _f.write("angle_deg,iq_fwd_mA,iq_rev_mA,iq_avg_mA,iq_fit_mA\n")
+                for b in range(N_BINS):
+                    _f.write("{:.3f},{:.4f},{:.4f},{:.4f},{:.4f}\n".format(
+                        bin_deg[b], avg_fwd[b], avg_rev[b], avg_iq[b], fit_iq[b]))
+            print("\n  Cogging sweep CSV → {}".format(csv_path))
+
+            # ---- FFT harmonic analysis (numpy) ----
+            try:
+                import numpy as _np
+                import json as _json
+
+                tf      = _np.array(avg_iq, dtype=_np.float64)
+                X_np    = _np.fft.rfft(tf)
+                N_fft   = len(avg_iq)
+                amps    = 2.0 * _np.abs(X_np) / N_fft
+                phases  = _np.angle(X_np)
+                amps[0]  /= 2.0
+                amps[-1] /= 2.0
+
+                order  = 1 + _np.argsort(amps[1:])[::-1]
+                top_n  = min(40, len(order))
+
+                print("\n  FFT harmonic analysis  (N={})".format(N_fft))
+                print("  {:>4s}  {:>10s}  {:>10s}  {:>12s}  {:>12s}".format(
+                    "k", "Amp(mA)", "Phase(rad)", "cos coeff", "sin coeff"))
+                print("  " + "-" * 54)
+
+                harmonic_list = []
+                for _ki in range(top_n):
+                    k   = int(order[_ki])
+                    A   = float(amps[k])
+                    phi = float(phases[k])
+                    a_k = A * _np.cos(phi)
+                    b_k = -A * _np.sin(phi)
+                    print("  {:>4d}  {:>10.4f}  {:>10.5f}  {:>12.4f}  {:>12.4f}".format(
+                        k, A, phi, float(a_k), float(b_k)))
+                    harmonic_list.append({
+                        "k":                 k,
+                        "cycles_per_rev":    k,
+                        "amplitude_mA":      A,
+                        "amplitude_mNm":     float(kt * A / 1000.0),
+                        "phase_rad":         phi,
+                        "cos_coeff":         float(a_k),
+                        "sin_coeff":         float(b_k),
+                    })
+
+                # Minimum harmonics for RMS reconstruction < 0.5 mA
+                sorted_ks       = [int(order[i]) for i in range(len(order))]
+                X_recon         = _np.zeros(N_fft // 2 + 1, dtype=_np.complex128)
+                X_recon[0]      = X_np[0]
+                best_n          = len(sorted_ks)
+                RECON_THRESH_MA = 0.5
+                for _ni in range(1, len(sorted_ks) + 1):
+                    for _ki in range(_ni):
+                        X_recon[sorted_ks[_ki]] = X_np[sorted_ks[_ki]]
+                    recon   = _np.fft.irfft(X_recon, n=N_fft)
+                    rms_err = float(_np.sqrt(_np.mean((tf - recon) ** 2)))
+                    if rms_err < RECON_THRESH_MA:
+                        best_n = _ni
+                        break
+
+                print("\n  Harmonics for RMS < {:.1f} mA: {}".format(RECON_THRESH_MA, best_n))
+                print("  Expected dominant cogging periods/rev: {} (= 2 × {} pole pairs)".format(
+                    2 * pole_pairs, pole_pairs))
+
+                fft_data = {
+                    "node_id":              node_id,
+                    "model":                model_str,
+                    "timestamp":            ts,
+                    "enc_resolution":       enc_resolution,
+                    "pole_pairs":           pole_pairs,
+                    "target_rpm":           TARGET_RPM,
+                    "n_bins":               N_fft,
+                    "dc_offset_mA":         float(amps[0]),
+                    "rms_iq_ac_mA":         rms_iq_ma,
+                    "max_iq_ac_mA":         max_iq_ma,
+                    "rms_cogging_mNm":      rms_cog_mnm,
+                    "max_cogging_mNm":      max_cog_mnm,
+                    "kt_mNm_per_A":         kt,
+                    "harmonics_for_0p5mA":  best_n,
+                    "harmonics_by_amplitude": harmonic_list,
+                }
+                json_path = session_path('{}cogging_harmonics_{}.json'.format(_file_pfx, ts))
+                with open(json_path, 'w') as _jf:
+                    _json.dump(fft_data, _jf, indent=2)
+                print("  Harmonics JSON → {}".format(json_path))
+
+                # ---- Profile plot: 2×2 ----
+                try:
+                    import matplotlib
+                    matplotlib.use('Agg')
+                    import matplotlib.pyplot as plt
+
+                    _colors = plt.cm.tab10.colors
+                    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+                    fig.suptitle(
+                        'Cogging Torque Profile — Node {}  {}  ({})\n'
+                        '{} pole pairs  {:.1f} RPM  {} bins/rev'
+                        '  DC={:+.2f} mA  AC RMS={:.2f} mA  peak={:.2f} mA'.format(
+                            node_id, model_str, ts,
+                            pole_pairs, TARGET_RPM, N_BINS,
+                            dc_offset_ma, rms_iq_ma, max_iq_ma))
+
+                    ax = axes[0, 0]
+                    ax.plot(bin_deg, avg_fwd, 'b-', linewidth=0.9, alpha=0.7,
+                            label='Forward (CW)')
+                    ax.plot(bin_deg, avg_rev, 'r-', linewidth=0.9, alpha=0.7,
+                            label='Reverse (CCW)')
+                    ax.plot(bin_deg, avg_iq,  'k-', linewidth=1.5,
+                            label='Bidir avg')
+                    ax.axhline(dc_offset_ma, color='gray', linewidth=0.8,
+                               linestyle='--',
+                               label='DC bias {:+.2f} mA'.format(dc_offset_ma))
+                    ax.set_xlabel('Mechanical angle (°)')
+                    ax.set_ylabel('Iq (mA)')
+                    ax.set_title('Forward / reverse / bidirectional average')
+                    ax.legend(fontsize=8)
+                    ax.grid(True, alpha=0.3)
+
+                    ax = axes[0, 1]
+                    ax.plot(bin_deg, iq_ac, 'b.', markersize=2, alpha=0.5,
+                            label='AC component')
+                    fit_iq_ac = [v - dc_offset_ma for v in fit_iq]
+                    ax.plot(bin_deg, fit_iq_ac, 'r-', linewidth=1.5,
+                            label='Fourier fit ({} harmonics)'.format(N_HARMONICS))
+                    ax.axhline(0, color='k', linewidth=0.5, linestyle='--')
+                    ax.set_xlabel('Mechanical angle (°)')
+                    ax.set_ylabel('Iq AC component (mA)')
+                    ax.set_title('Cogging profile (DC removed) + Fourier fit')
+                    ax.legend(fontsize=8)
+                    ax.grid(True, alpha=0.3)
+
+                    ax = axes[1, 0]
+                    elec_deg = [e / elec_bins * 360.0 for e in range(elec_bins)]
+                    for pp in range(pole_pairs):
+                        start = pp * elec_bins
+                        pp_pts = [iq_ac[start + e] for e in range(elec_bins)
+                                  if start + e < N_BINS]
+                        if pp_pts:
+                            ax.plot(elec_deg[:len(pp_pts)], pp_pts,
+                                    color=_colors[pp % 10], alpha=0.7,
+                                    linewidth=0.9, label='Pole pair {}'.format(pp + 1))
+                    ax.plot(elec_deg, pp_avg, 'k-', linewidth=2, label='Average')
+                    ax.axhline(0, color='k', linewidth=0.5, linestyle='--')
+                    ax.set_xlabel('Electrical angle (°)')
+                    ax.set_ylabel('Iq AC (mA)')
+                    ax.set_title('Per-pole-pair overlay\n'
+                                 '(consistent = electrical cogging; '
+                                 'spread = mechanical variation)')
+                    ax.legend(fontsize=7, ncol=min(4, pole_pairs + 1))
+                    ax.grid(True, alpha=0.3)
+
+                    ax = axes[1, 1]
+                    k_show = min(48, len(amps) - 1)
+                    ax.bar(range(1, k_show + 1), amps[1:k_show + 1],
+                           color='steelblue', width=0.8)
+                    dom_k = pole_pairs  # fundamental cogging harmonic (1×/elec cycle)
+                    if 0 < dom_k <= k_show:
+                        ax.axvline(dom_k, color='orange', linestyle='--',
+                                   label='k={} (1×/elec)'.format(dom_k))
+                    if 0 < 2 * dom_k <= k_show:
+                        ax.axvline(2 * dom_k, color='red', linestyle='--',
+                                   label='k={} (2×/elec)'.format(2 * dom_k))
+                    ax.set_xlabel('Harmonic k (cycles/rev)')
+                    ax.set_ylabel('Amplitude (mA)')
+                    ax.set_title('Harmonic spectrum  ({} bins)'.format(N_fft))
+                    ax.legend(fontsize=8)
+                    ax.grid(True, alpha=0.3)
+
+                    plt.tight_layout()
+                    plot_path = session_path(
+                        '{}cogging_profile_{}.png'.format(_file_pfx, ts))
+                    plt.savefig(plot_path, dpi=100)
+                    plt.close()
+                    print("  Profile plot → {}".format(plot_path))
+                except ImportError:
+                    print("  (Profile plot skipped — matplotlib not installed)")
+                except Exception as _pe:
+                    print("  WARNING: profile plot failed: {}".format(_pe))
+
+                # ---- Spectrum plot: bar + RMS-vs-N ----
+                try:
+                    import matplotlib
+                    matplotlib.use('Agg')
+                    import matplotlib.pyplot as _plt2
+
+                    rms_curve = []
+                    X_r2  = _np.zeros(N_fft // 2 + 1, dtype=_np.complex128)
+                    X_r2[0] = X_np[0]
+                    for _ni2 in range(1, min(50, len(sorted_ks)) + 1):
+                        X_r2[sorted_ks[_ni2 - 1]] = X_np[sorted_ks[_ni2 - 1]]
+                        recon2 = _np.fft.irfft(X_r2, n=N_fft)
+                        rms_curve.append(float(_np.sqrt(_np.mean((tf - recon2) ** 2))))
+
+                    _fig2, (_ax1, _ax2) = _plt2.subplots(1, 2, figsize=(12, 4))
+                    _fig2.suptitle(
+                        'Cogging Spectrum — Node {}  {}  ({})'.format(
+                            node_id, model_str, ts), fontsize=11)
+
+                    _ax1.bar(range(1, k_show + 1), amps[1:k_show + 1],
+                             color='steelblue', width=0.8)
+                    if best_n <= k_show:
+                        _ax1.axvline(best_n, color='red', linestyle='--',
+                                     label='N={} (RMS<{:.1f} mA)'.format(
+                                         best_n, RECON_THRESH_MA))
+                        _ax1.legend(fontsize=8)
+                    else:
+                        _ax1.set_title('Harmonic amplitudes  ({} bins)'
+                                       '  N_min={}'.format(N_fft, best_n))
+                    _ax1.set_xlabel('Harmonic k')
+                    _ax1.set_ylabel('Amplitude (mA)')
+                    _ax1.grid(True, alpha=0.3)
+
+                    _ax2.plot(range(1, len(rms_curve) + 1), rms_curve, 'b-o', markersize=3)
+                    _ax2.axhline(RECON_THRESH_MA, color='red', linestyle='--',
+                                 label='{:.1f} mA threshold'.format(RECON_THRESH_MA))
+                    _ax2.axvline(best_n, color='red', linestyle=':',
+                                 label='N={}'.format(best_n))
+                    _ax2.set_xlabel('Number of harmonics')
+                    _ax2.set_ylabel('RMS error (mA)')
+                    _ax2.set_title('Reconstruction RMS vs harmonic count')
+                    _ax2.legend(fontsize=8)
+                    _ax2.grid(True, alpha=0.3)
+
+                    _plt2.tight_layout()
+                    spec_path = session_path(
+                        '{}cogging_spectrum_{}.png'.format(_file_pfx, ts))
+                    _plt2.savefig(spec_path, dpi=100)
+                    _plt2.close(_fig2)
+                    print("  Spectrum plot → {}".format(spec_path))
+                except ImportError:
+                    print("  (Spectrum plot skipped — matplotlib not installed)")
+                except Exception as _spe:
+                    print("  WARNING: spectrum plot failed: {}".format(_spe))
+
+            except ImportError:
+                print("  (FFT analysis skipped — numpy not installed)")
+            except Exception as _fft_exc:
+                print("  WARNING: FFT analysis failed: {}".format(_fft_exc))
+
+            _upd(98)
+
+            if SEND_TO_PUCK:
+                pass  # Future: upload harmonic coefficients to firmware cogging object
+            else:
+                print("\n  SEND_TO_PUCK = False — compensation not uploaded.")
+                print("  Firmware cogging compensation object not yet implemented.")
+                print("  Review output files and re-run after firmware update.")
+
+            print("\nCogging characterisation complete.")
+
+        except Exception as _exc:
+            self._cal_fault(_exc)
+        finally:
+            self.OnTaskComplete()
+            if self.ADC_ON == False and self.adcWasON:
+                self.on_off_adc(self)
+            self.Enable()
+            _upd(100)
 
     def _load_enc_correction_table(self):
         """Return (table, path) from the most recent enc_correction_full CSV, or (None, None)."""

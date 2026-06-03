@@ -107,6 +107,11 @@ def _cli_calibrate_enczero(node, network=None):
         None, calAll=True, _upd=lambda v: None)
 
 
+def _cli_calibrate_cogging(node, network=None):
+    return _HeadlessCalibrateAdapter(node, network).cogging_error_compensation(
+        None, calAll=True, _upd=lambda v: None)
+
+
 def _cli_calibrate_all(node, network=None):
     adapter = _HeadlessCalibrateAdapter(node, network)
     print(f"  Running full calibration sequence for node {node.id}...")

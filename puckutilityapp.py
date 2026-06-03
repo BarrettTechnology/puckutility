@@ -958,7 +958,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                                'Flash CandleLight firmware with:\n\n'
                                '  puckutilityapp.py --flash-canable')
                     else:
-                        msg = 'No CAN device found! \nCheck connection and try again'
+                        msg = 'No CAN device found! \n\nCheck connection and try again\nVerify CAN termination is present'
                 # Hide the gauge so it doesn't keep painting over the error text;
                 # Refresh the status bar so its previous gauge area is repainted
                 # cleanly.
@@ -2380,7 +2380,7 @@ def _setup_logging():
 # dispatch to them when CLI flags are present.
 from cli_ops import (
     _cli_connect, _cli_flash, _cli_config, _cli_calibrate_all,
-    _cli_make_network, _cli_system_config,
+    _cli_calibrate_cogging, _cli_make_network, _cli_system_config,
 )
 
 
@@ -2444,6 +2444,9 @@ Examples:
                      help='Path to motor configuration CSV file')
     ops.add_argument('--calibrate', action='store_true',
                      help='Run full calibration (test_encoder, ibias, igainfactor, enczero)')
+    ops.add_argument('--calibrate-cogging', action='store_true',
+                     dest='calibrate_cogging',
+                     help='Run cogging torque characterisation sweep (data only; SEND_TO_PUCK=False)')
     ops.add_argument('--system-config', metavar='INI', dest='system_config',
                      help='Path to system configuration INI file')
     ops.add_argument('--flash-canable', metavar='FIRMWARE', nargs='?', const='',
@@ -2459,7 +2462,8 @@ Examples:
     # No operation flag → launch GUI. --touchscreen is a GUI-mode flag, so
     # passing it alone (or with nothing else) still falls into this branch.
     if not (args.scan or args.flash or args.config
-            or args.calibrate or args.system_config or args.flash_canable is not None):
+            or args.calibrate or args.calibrate_cogging
+            or args.system_config or args.flash_canable is not None):
         MyApp.touchscreen = args.touchscreen
         app = MyApp(0)
         app.MainLoop()
@@ -2489,8 +2493,8 @@ Examples:
     # Remaining operations need an explicit target
     if not args.id and not args.all:
         parser.error('specify target nodes with --id or use --all to scan')
-    if not (args.flash or args.config or args.calibrate):
-        parser.error('specify an operation: --scan, --flash, --config, --calibrate, or --system-config')
+    if not (args.flash or args.config or args.calibrate or args.calibrate_cogging):
+        parser.error('specify an operation: --scan, --flash, --config, --calibrate, --calibrate-cogging, or --system-config')
 
     # Always scan first so we can validate requested IDs against the live bus
     scan_net, found_ids = _cli_connect(args.can)
@@ -2513,7 +2517,7 @@ Examples:
             sys.exit(1)
 
     # Execute operation across all validated target nodes
-    if args.calibrate:
+    if args.calibrate or args.calibrate_cogging:
         cal_net = _cli_make_network(args.can)
     for node_id in node_ids:
         print(f"\n--- Node {node_id} ---")
@@ -2524,5 +2528,8 @@ Examples:
         elif args.calibrate:
             cal_node = cal_net.add_node(node_id, 'puck4.eds')
             _cli_calibrate_all(cal_node)
-    if args.calibrate:
+        elif args.calibrate_cogging:
+            cal_node = cal_net.add_node(node_id, 'puck4.eds')
+            _cli_calibrate_cogging(cal_node)
+    if args.calibrate or args.calibrate_cogging:
         cal_net.disconnect()
