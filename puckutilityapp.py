@@ -163,6 +163,24 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 wx.Choice = _orig_choice
                 wx.TextCtrl = _orig_textctrl
 
+        # Cache references to the cogging compensation ON/OFF radio items on
+        # frame_menubar so the handler and startup sync can use them without
+        # storing them in puckutilityapp_gui.py.  Find the "Cogging Error
+        # Compensation" submenu item (the one with a sub-menu, not the bare
+        # calibration entry of the same name), then take the first two items.
+        try:
+            _items = list(self.frame_menubar.GetMenu(0).GetMenuItems())
+            for _it in _items:
+                if (_it.GetItemLabel() == "Cogging Error Compensation"
+                        and _it.GetSubMenu() is not None):
+                    _sub_items = list(_it.GetSubMenu().GetMenuItems())
+                    if len(_sub_items) >= 2:
+                        self.frame_menubar.COG_ON  = _sub_items[0]
+                        self.frame_menubar.COG_OFF = _sub_items[1]
+                    break
+        except Exception:
+            pass
+
         # Frame-level Tab/Shift-Tab interception. EVT_CHAR_HOOK on the focused
         # window bubbles up to the frame; binding here gives us a single hook
         # that fires for keystrokes from ANY control (buttons, choices, the
@@ -773,6 +791,14 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         except Exception:
             pass
 
+        # Sync the Cogging Compensation menu to the puck's current state.
+        try:
+            cog_on = bool(self.node.sdo[0x3028][1].raw)
+            self.frame_menubar.COG_ON.Check(cog_on)
+            self.frame_menubar.COG_OFF.Check(not cog_on)
+        except Exception:
+            pass
+
     def tpdo1_callback(self, msg):
         global node
 
@@ -835,7 +861,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             print(f"  EMCY data: {emcy_error.data.hex()}")
         wx.CallAfter(self.frame_statusbar.SetStatusText, error_msg, 1)
 
-        if code == 0x3220:  # Voltage fault — read bus voltage vs. limits
+        if code in (0x3210, 0x3220):  # Voltage fault — read bus voltage vs. limits
             def _log_voltage():
                 try:
                     bus_v = self.node.sdo['Amplifier']['BusVoltage'].raw
@@ -847,6 +873,28 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 except Exception as _e:
                     print(f"  Could not read voltage details: {_e}")
             wx.CallAfter(_log_voltage)
+
+        if code in (0x2310, 0x2320):  # Current fault — read current feedback vs. limit
+            def _log_current():
+                try:
+                    iq = self.node.sdo['CurrentFeedback'].raw
+                    i_peak = self.node.sdo['Calibration']['i_peak'].raw
+                    i_user = self.node.sdo['UserPeakCurrent'].raw
+                    print(f"  CurrentFeedback={iq} mA  i_peak={i_peak} mA  "
+                          f"UserPeakCurrent={i_user} mA")
+                except Exception as _e:
+                    print(f"  Could not read current details: {_e}")
+            wx.CallAfter(_log_current)
+
+        if code in (0x4210, 0x4310):  # Temperature fault — read temperature vs. limit
+            def _log_temp():
+                try:
+                    temp   = self.node.sdo['Amplifier']['Temperature'].raw
+                    max_t  = self.node.sdo['Object2384']['AmplifierMaxTemperature'].raw
+                    print(f"  Temperature={temp} °C  AmplifierMaxTemperature={max_t} °C")
+                except Exception as _e:
+                    print(f"  Could not read temperature details: {_e}")
+            wx.CallAfter(_log_temp)
 
         if is_fault:
             # SetSelection on wxGTK fires EVT_CHOICE, which would trigger
@@ -2288,7 +2336,7 @@ class MyApp(wx.App):
 def _setup_logging():
     """Create a per-session log folder, tee stdout/stderr into it, and expose
     the folder via paths.SESSION_LOG_DIR so calibration outputs land there too.
-    Keeps the 10 most recent session folders."""
+    Keeps the 50 most recent session folders."""
     import paths as _paths
 
     # In a PyInstaller --onefile bundle, __file__ resolves into the extracted
@@ -2308,12 +2356,12 @@ def _setup_logging():
             os.path.expanduser('~'), '.local', 'share', 'PuckUtilityApp', 'logs')
         os.makedirs(log_dir, exist_ok=True)
 
-    # Rotate: keep at most 10 session folders (oldest first).
+    # Rotate: keep at most 50 session folders (oldest first).
     # Also tolerate legacy bare .log files left by older versions.
     existing = sorted(
         e for e in os.listdir(log_dir) if e.startswith('puck_')
     )
-    while len(existing) >= 10:
+    while len(existing) >= 50:
         victim = os.path.join(log_dir, existing.pop(0))
         if os.path.isdir(victim):
             import shutil
