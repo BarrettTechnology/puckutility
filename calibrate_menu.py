@@ -465,7 +465,16 @@ class calibrate():
         self.GetStatusBar().Refresh()
         self.GetStatusBar().Update()
 
+        _cog_was_active = False
         try:
+            try:
+                _cog_was_active = bool(self.node.sdo[0x3028][1].raw)
+                if _cog_was_active:
+                    self.node.sdo[0x3028][1].raw = 0
+                    print("  Cogging compensation disabled for calibration sequence.")
+            except Exception:
+                pass
+
             continueCal = self.test_encoder(None, True)
             self.Disable()
             if continueCal == False:
@@ -501,6 +510,12 @@ class calibrate():
         except Exception as e:
             self._cal_fault(e)
         finally:
+            if _cog_was_active:
+                try:
+                    self.node.sdo[0x3028][1].raw = 1
+                    print("  Cogging compensation restored (ON).")
+                except Exception:
+                    pass
             self.Enable()
         #event.Skip()
 
@@ -2139,6 +2154,16 @@ class calibrate():
             model_str = getattr(self, '_PRODUCT_CODE_MODELS', {}).get(_pc, 'unknown')
             _file_pfx = 'node{}_{}_'.format(node_id, model_str.replace(' ', '_'))
 
+            def _enc_img(name):
+                p = session_path('encoder/images/{}'.format(name))
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+                return p
+
+            def _enc_data(name):
+                p = session_path('encoder/data/{}'.format(name))
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+                return p
+
             N_PER_CYCLE        = 64    # steps per electrical cycle → 5.625° per step
             STEP_S             = 0.025 # settle time per step (s) — calibration sweeps
             RETEST_STEP_S      = 0.015 # settle time for retest (EncPos is smoother than RawPos)
@@ -2162,6 +2187,19 @@ class calibrate():
                 print("  cal: {} steps/cycle × {} cycles = {} steps  "
                       "retest: {} steps/cycle (bidir)  ~{:.0f} s total".format(
                     N_PER_CYCLE, pole_pairs, N_TOTAL, RETEST_N_PER_CYCLE, _est_s))
+
+            # Disable encoder compensation during calibration sweep so the
+            # measurement reflects the true encoder error, not a previously
+            # saved (possibly wrong) correction. Re-enabled after upload.
+            _enc_was_active = False
+            if not _retest_only:
+                try:
+                    _enc_was_active = bool(self.node.sdo[0x3027][1].raw)
+                    if _enc_was_active:
+                        self.node.sdo[0x3027][1].raw = 0
+                        print("  Encoder compensation disabled for calibration sweep.")
+                except Exception:
+                    pass
 
             # ---- Enable in PHASE_VOLTAGE_ANGLE mode and ramp current ----
             self.node.sdo["ControlWord"].raw = CLEAR_FAULT
@@ -2388,8 +2426,7 @@ class calibrate():
                 _lax3.grid(True, alpha=0.3)
 
                 _lplt.tight_layout()
-                _lin_plot_path = session_path('{}enc_linearity_{}.png'.format(_file_pfx, ts))
-                os.makedirs(os.path.dirname(_lin_plot_path), exist_ok=True)
+                _lin_plot_path = _enc_img('{}enc_linearity_{}.png'.format(_file_pfx, ts))
                 _lplt.savefig(_lin_plot_path, dpi=100)
                 _lplt.close(_lfig)
                 print("  Linearity plot → {}".format(_lin_plot_path))
@@ -2490,8 +2527,7 @@ class calibrate():
                     ).format(node_id, e_zero, e_polarity, enc_resolution,
                              motor_poles, cts_per_elec, N_PER_CYCLE, N_HARMONICS)
 
-            full_path = session_path('{}enc_correction_full_{}.csv'.format(_file_pfx, ts))
-            os.makedirs(os.path.dirname(full_path), exist_ok=True)
+            full_path = _enc_data('{}enc_correction_full_{}.csv'.format(_file_pfx, ts))
             with open(full_path, 'w') as _f:
                 _f.write("# Encoder position correction — full mechanical revolution\n")
                 _f.write("# index = raw_encoder_pos % enc_resolution\n")
@@ -2500,7 +2536,7 @@ class calibrate():
                 for _p, _c in enumerate(table_full):
                     _f.write("{},{}\n".format(_p, _c))
 
-            elec_path = session_path('{}enc_correction_elec_{}.csv'.format(_file_pfx, ts))
+            elec_path = _enc_data('{}enc_correction_elec_{}.csv'.format(_file_pfx, ts))
             with open(elec_path, 'w') as _f:
                 _f.write("# Encoder position correction — per electrical cycle\n")
                 _f.write("# index = (raw_encoder_pos - e_zero) % round(cts_per_elec)\n")
@@ -2588,7 +2624,7 @@ class calibrate():
                 ax.grid(True, alpha=0.3)
 
                 plt.tight_layout()
-                plot_path = session_path('{}enc_correction_{}.png'.format(_file_pfx, ts))
+                plot_path = _enc_img('{}enc_correction_{}.png'.format(_file_pfx, ts))
                 plt.savefig(plot_path, dpi=100)
                 plt.close()
                 print("  Plot  → {}".format(plot_path))
@@ -2675,7 +2711,7 @@ class calibrate():
                     "dc_offset_cts": float(amps[0]),
                     "harmonics_by_amplitude": harmonic_list
                 }
-                fft_path = session_path('{}enc_correction_harmonics_{}.json'.format(_file_pfx, ts))
+                fft_path = _enc_data('{}enc_correction_harmonics_{}.json'.format(_file_pfx, ts))
                 with open(fft_path, 'w') as _jf:
                     _json.dump(fft_data, _jf, indent=2)
                 print("  FFT JSON → {}".format(fft_path))
@@ -2693,16 +2729,16 @@ class calibrate():
                 for _ri, _rk in enumerate(_top_bins):
                     print("  {:>4d}  {:>4d}  {:>10.4f}".format(_ri + 1, _rk, float(amps[_rk])))
 
-                # New OD format (matches firmware pwm.c:correct_pos):
+                # Firmware pwm.c:correct_pos applies:
                 #   out -= [A_s·sin(kθ) + A_c·cos(kθ)] / 256,  θ = 2π·(pos mod 4096)/4096
-                # We need this to reproduce the legacy correction
-                #   δ_old(pos) = -_bA · cos(kθ + ψ),   ψ = _bphi - 2π·k·enc_start/enc_resolution
-                # Expanding -cos(kθ + ψ) gives:
-                #   A_s =  256·_bA·sin(ψ),   A_c = -256·_bA·cos(ψ)   (Q8.8 int16)
-                # enc_start offset stays (FFT phase is sweep-relative); the legacy +π sign
-                # flip is now absorbed into the signs of A_s/A_c, so no separate flip.
+                # which equals out += amp·cos(kθ + ψ) — adding the correction to raw pos.
+                #   A_s = +256·_bA·sin(ψ),   A_c = -256·_bA·cos(ψ)   (Q8.8 int16)
+                #   ψ = _bphi - 2π·k·enc_start/enc_resolution  (sweep-relative → absolute)
                 def _clamp_i16(v):
                     return max(-32768, min(32767, int(round(v))))
+
+                # Sort by k for firmware's iterative complex-rotation optimization
+                _top_bins = sorted(_top_bins, key=lambda _k: _k)
 
                 print("\n  Uploading encoder compensation harmonics to node {} ...".format(node_id))
                 print("  {:>4}  {:>6}  {:>10}  {:>8}  {:>8}".format(
@@ -2737,6 +2773,11 @@ class calibrate():
                 # Enable compensation
                 self.node.sdo[0x3027][1].raw = 1
                 print("  Encoder Compensation Active → 1")
+                try:
+                    self.frame_menubar.ON.Check(True)
+                    self.frame_menubar.OFF.Check(False)
+                except Exception:
+                    pass
                 if n_upload < N_BINS:
                     print("  (Bins {}–{} zeroed — only {} needed for <1ct RMS)".format(
                         n_upload, N_BINS - 1, n_upload))
@@ -2815,7 +2856,7 @@ class calibrate():
                         "n_bins":         len(_top10_bins),
                         "bins":           _top10_bins,
                     }
-                    _top10_path = session_path(
+                    _top10_path = _enc_data(
                         '{}enc_compensation_top10_{}.json'.format(_file_pfx, ts))
                     with open(_top10_path, 'w') as _jf:
                         _json.dump(_top10_data, _jf, indent=2)
@@ -2990,7 +3031,7 @@ class calibrate():
                     _cax2.grid(True, alpha=0.3)
 
                     _cplt.tight_layout()
-                    _cplot_path = session_path(
+                    _cplot_path = _enc_img(
                         '{}enc_linearity_compensation_active_{}.png'.format(_file_pfx, ts))
                     _cplt.savefig(_cplot_path, dpi=100)
                     _cplt.close(_cfig)
@@ -3116,9 +3157,8 @@ class calibrate():
                     _rtax3.grid(True, alpha=0.3)
 
                     _rtplt.tight_layout()
-                    _rt_lin_path = session_path(
+                    _rt_lin_path = _enc_img(
                         '{}enc_linearity_retest_{}.png'.format(_file_pfx, ts))
-                    os.makedirs(os.path.dirname(_rt_lin_path), exist_ok=True)
                     _rtplt.savefig(_rt_lin_path, dpi=100)
                     _rtplt.close(_rtfig)
                     print("  Retest linearity plot → {}".format(_rt_lin_path))
@@ -3166,7 +3206,7 @@ class calibrate():
                     ax2.grid(True, alpha=0.3)
 
                     _plt.tight_layout()
-                    fft_plot_path = session_path('{}enc_correction_fft_{}.png'.format(_file_pfx, ts))
+                    fft_plot_path = _enc_img('{}enc_correction_fft_{}.png'.format(_file_pfx, ts))
                     _plt.savefig(fft_plot_path, dpi=100)
                     _plt.close(fig)
                     print("  FFT plot → {}".format(fft_plot_path))
@@ -3382,7 +3422,7 @@ class calibrate():
                 _ax.grid(True, alpha=0.3)
 
                 _rplt.tight_layout()
-                _recon_plot_path = session_path('{}enc_harmonic_recon_{}.png'.format(_file_pfx, ts))
+                _recon_plot_path = _enc_img('{}enc_harmonic_recon_{}.png'.format(_file_pfx, ts))
                 _rplt.savefig(_recon_plot_path, dpi=100)
                 _rplt.close(_rfig)
                 print("  Reconstruction plot → {}".format(_recon_plot_path))
@@ -3417,10 +3457,11 @@ class calibrate():
           cogging_harmonics_*.json  — FFT harmonic decomposition
           cogging_profile_*.png     — 2×2: fwd/rev/avg, AC+fit, per-pole overlay, spectrum
           cogging_spectrum_*.png    — harmonic bar chart + RMS-vs-N reconstruction curve
+          cogging_retest_*.png      — before/after Iq AC comparison (generated if upload succeeds)
 
-        SEND_TO_PUCK = False: no SDO upload; firmware cogging object not yet implemented.
+        Upload: dominant harmonic written to 0x3028 (Active, ASAmpCos, ACAmpSin, HarmonicK),
+        saved to EEPROM, then a bidirectional retest sweep is run with compensation active.
         """
-        SEND_TO_PUCK = False  # Set True when firmware 0x3028 cogging object is ready
 
         if not self.check_for_node():
             return
@@ -3467,6 +3508,16 @@ class calibrate():
             model_str = getattr(self, '_PRODUCT_CODE_MODELS', {}).get(_pc, 'unknown')
             _file_pfx = 'node{}_{}_'.format(node_id, model_str.replace(' ', '_'))
 
+            def _cog_img(name):
+                p = session_path('cogging/images/{}'.format(name))
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+                return p
+
+            def _cog_data(name):
+                p = session_path('cogging/data/{}'.format(name))
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+                return p
+
             N_BINS       = 128    # angle bins per revolution (k_max=64; resolves k=21,42,63)
             TARGET_RPM   = 5.0   # mechanical RPM — faster traversal reduces per-tooth velocity ripple
             SETTLE_S     = 2.5   # wait for speed to settle before sampling
@@ -3486,6 +3537,19 @@ class calibrate():
             print("  {:.1f} RPM  {} revs/pass  {} bins/rev  ~{:.0f} s total".format(
                 TARGET_RPM, N_REVS, N_BINS, est_s))
             _upd(2)
+
+            # ---- Disable any active cogging compensation before sweeping ----
+            # Sweeping with compensation active would corrupt the measurement:
+            # the FFT would fit the residual pattern (not raw cogging), and
+            # the uploaded correction would then replace, not improve, the
+            # previous compensation.
+            try:
+                _cog_was_active = bool(self.node.sdo[0x3028][1].raw)
+                if _cog_was_active:
+                    self.node.sdo[0x3028][1].raw = 0
+                    print("  NOTE: Cogging compensation was active — disabled for sweep.")
+            except Exception:
+                _cog_was_active = False
 
             # ---- Enable in profile-velocity mode ----
             self.node.sdo["ControlWord"].raw = CLEAR_FAULT
@@ -3599,8 +3663,7 @@ class calibrate():
             pp_avg = [pp_acc[e] / max(pp_cnt[e], 1) for e in range(elec_bins)]
 
             # ---- CSV ----
-            csv_path = session_path('{}cogging_sweep_{}.csv'.format(_file_pfx, ts))
-            os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+            csv_path = _cog_data('{}cogging_sweep_{}.csv'.format(_file_pfx, ts))
             with open(csv_path, 'w') as _f:
                 _f.write("# Cogging torque sweep — Node {}  {}  ({})\n".format(
                     node_id, model_str, ts))
@@ -3690,7 +3753,7 @@ class calibrate():
                     "harmonics_for_0p5mA":  best_n,
                     "harmonics_by_amplitude": harmonic_list,
                 }
-                json_path = session_path('{}cogging_harmonics_{}.json'.format(_file_pfx, ts))
+                json_path = _cog_data('{}cogging_harmonics_{}.json'.format(_file_pfx, ts))
                 with open(json_path, 'w') as _jf:
                     _json.dump(fft_data, _jf, indent=2)
                 print("  Harmonics JSON → {}".format(json_path))
@@ -3778,7 +3841,7 @@ class calibrate():
                     ax.grid(True, alpha=0.3)
 
                     plt.tight_layout()
-                    plot_path = session_path(
+                    plot_path = _cog_img(
                         '{}cogging_profile_{}.png'.format(_file_pfx, ts))
                     plt.savefig(plot_path, dpi=100)
                     plt.close()
@@ -3833,7 +3896,7 @@ class calibrate():
                     _ax2.grid(True, alpha=0.3)
 
                     _plt2.tight_layout()
-                    spec_path = session_path(
+                    spec_path = _cog_img(
                         '{}cogging_spectrum_{}.png'.format(_file_pfx, ts))
                     _plt2.savefig(spec_path, dpi=100)
                     _plt2.close(_fig2)
@@ -3848,15 +3911,198 @@ class calibrate():
             except Exception as _fft_exc:
                 print("  WARNING: FFT analysis failed: {}".format(_fft_exc))
 
-            _upd(98)
+            _upd(93)
 
-            if SEND_TO_PUCK:
-                pass  # Future: upload harmonic coefficients to firmware cogging object
-            else:
-                print("\n  SEND_TO_PUCK = False — compensation not uploaded.")
-                print("  Firmware cogging compensation object not yet implemented.")
-                print("  Review output files and re-run after firmware update.")
+            # ── Upload top-10 cogging harmonic bins to 0x3028 ───────────────
+            # Layout mirrors 0x3027: bin i uses subindices 2+i*3 (a_s), 3+i*3 (k), 4+i*3 (a_c)
+            # Firmware convention (straight mA, no ×256):
+            #   a_s = +A·sin(φ),  a_c = -A·cos(φ)
+            #   verify: √(a_s²+a_c²) = A;  φ = atan2(a_s, -a_c)
+            N_COG_BINS = 10
+            _upload_ok = False
+            try:
+                def _clamp_i16_cog(v):
+                    return max(-32768, min(32767, int(round(v))))
 
+                # Top N by amplitude, sorted ascending by k for firmware iteration
+                _top_cog = sorted_ks[:N_COG_BINS]
+                _n_cog   = len(_top_cog)
+                _top_cog = sorted(_top_cog, key=lambda _k: _k)
+
+                print("\n  Uploading cogging compensation (0x3028) to node {} ...".format(node_id))
+                print("  {:>4}  {:>6}  {:>10}  {:>8}  {:>8}".format(
+                    "Bin", "k", "Amp(mA)", "a_s", "a_c"))
+                print("  " + "-" * 44)
+
+                self.node.sdo[0x3028][1].raw = 0  # disable while writing
+
+                _n_written = 0
+                for _bi in range(N_COG_BINS):
+                    _as_sub = 2 + _bi * 3
+                    _k_sub  = 3 + _bi * 3
+                    _ac_sub = 4 + _bi * 3
+                    if _bi < _n_cog:
+                        _bk      = int(_top_cog[_bi])
+                        _bA      = float(amps[_bk])
+                        _bphi    = float(phases[_bk])
+                        _A_s_val = _clamp_i16_cog(+_bA * math.sin(_bphi))
+                        _A_c_val = _clamp_i16_cog(-_bA * math.cos(_bphi))
+                        _k_val   = _bk
+                        print("  {:>4d}  {:>6d}  {:>10.4f}  {:>8d}  {:>8d}".format(
+                            _bi, _k_val, _bA, _A_s_val, _A_c_val))
+                    else:
+                        _A_s_val = _A_c_val = _k_val = 0
+                    try:
+                        self.node.sdo[0x3028][_as_sub].raw = _A_s_val
+                        self.node.sdo[0x3028][_k_sub].raw  = _k_val
+                        self.node.sdo[0x3028][_ac_sub].raw = _A_c_val
+                        _n_written += 1
+                    except SdoAbortedError as _bin_exc:
+                        if _bin_exc.code == 0x06020000:
+                            print("  NOTE: firmware supports {} bin(s) — "
+                                  "stopping at bin {}.".format(_n_written, _bi))
+                        else:
+                            print("  WARNING: bin {} SDO abort 0x{:08X} — "
+                                  "stopping upload.".format(_bi, _bin_exc.code))
+                        break
+
+                if _n_written == 0:
+                    raise RuntimeError("No cogging bins could be written to 0x3028.")
+
+                self.node.sdo[0x3028][1].raw = 1
+                print("  Cogging Compensation Active → 1  ({} bin(s) written)".format(_n_written))
+
+                # Readback verification (only bins that were written)
+                print("\n  Readback verification:")
+                print("  {:>4}  {:>6}  {:>8}  {:>8}  {}".format(
+                    "Bin", "k", "a_s", "a_c", "OK?"))
+                print("  " + "-" * 40)
+                _active_rb = self.node.sdo[0x3028][1].raw
+                print("  Active flag readback: {}".format(_active_rb))
+                _rb_ok = True
+                for _bi in range(_n_written):
+                    _as_rb = self.node.sdo[0x3028][2 + _bi * 3].raw
+                    _k_rb  = self.node.sdo[0x3028][3 + _bi * 3].raw
+                    _ac_rb = self.node.sdo[0x3028][4 + _bi * 3].raw
+                    if _bi < _n_cog:
+                        _bk_exp  = int(_top_cog[_bi])
+                        _bA_exp  = float(amps[_bk_exp])
+                        _bph_exp = float(phases[_bk_exp])
+                        _as_exp  = _clamp_i16_cog(+_bA_exp * math.sin(_bph_exp))
+                        _ac_exp  = _clamp_i16_cog(-_bA_exp * math.cos(_bph_exp))
+                    else:
+                        _bk_exp = _as_exp = _ac_exp = 0
+                    _ok = (_as_rb == _as_exp and _k_rb == _bk_exp and _ac_rb == _ac_exp)
+                    if not _ok:
+                        _rb_ok = False
+                    print("  {:>4d}  {:>6}  {:>8}  {:>8}  {}".format(
+                        _bi,
+                        "{} (exp {})".format(_k_rb, _bk_exp) if _k_rb != _bk_exp
+                            else str(_k_rb),
+                        "{} (exp {})".format(_as_rb, _as_exp) if _as_rb != _as_exp
+                            else str(_as_rb),
+                        "{} (exp {})".format(_ac_rb, _ac_exp) if _ac_rb != _ac_exp
+                            else str(_ac_rb),
+                        "OK" if _ok else "MISMATCH"))
+                if _rb_ok:
+                    print("  All bins verified OK.")
+                else:
+                    print("  WARNING: one or more bins did not readback correctly.")
+
+                print("\n  Saving 0x3028 to EEPROM ...")
+                _save_subs = list(range(1, 2 + _n_written * 3))
+                for _si in _save_subs:
+                    self.node.sdo['Save']['Single'].raw = ((0x3028 << 8) | _si)
+                print("  Saved.")
+                _upload_ok = True
+
+            except SdoAbortedError as _cog_sdo_exc:
+                if _cog_sdo_exc.code == 0x06020000:
+                    print("\n  WARNING: 0x3028 (CoggingCompensation) not found on "
+                          "node {} — firmware does not support cogging upload.".format(node_id))
+                else:
+                    print("\n  WARNING: Cogging upload SDO abort "
+                          "0x{:08X}: {}".format(_cog_sdo_exc.code, _cog_sdo_exc))
+            except NameError:
+                print("\n  Cogging upload skipped — FFT analysis did not complete.")
+            except Exception as _cog_exc:
+                print("\n  WARNING: Cogging upload failed: {}".format(_cog_exc))
+
+            # ── Retest sweep with compensation active ────────────────────────
+            if _upload_ok:
+                print("\n  Retest sweep (compensation active) ...")
+                try:
+                    self.node.sdo["ControlWord"].raw = CLEAR_FAULT
+                    self.node.sdo["ControlWord"].raw = SHUTDOWN
+                    self.node.sdo["ControlWord"].raw = OP_ENABLED
+                    self.node.sdo["SetModeOfOperation"].raw = MODE_PROFILE_VEL
+                    time.sleep(0.2)
+                    wx.Yield()
+
+                    samples_fwd_rt = _sample_pass(+vel_cts_per_sec, 'retest fwd', 94, 97)
+                    self.node.sdo['TargetVelocity'].raw = 0
+                    _sleep_responsive(1.0)
+                    wx.Yield()
+                    samples_rev_rt = _sample_pass(-vel_cts_per_sec, 'retest rev', 97, 99)
+                    self.node.sdo['TargetVelocity'].raw = 0
+                    _sleep_responsive(1.0)
+                    self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
+                    wx.Yield()
+
+                    fwd_bins_rt = [[] for _ in range(N_BINS)]
+                    rev_bins_rt = [[] for _ in range(N_BINS)]
+                    for _rdeg, _riq in samples_fwd_rt:
+                        fwd_bins_rt[int(_rdeg / bin_width_deg) % N_BINS].append(_riq)
+                    for _rdeg, _riq in samples_rev_rt:
+                        rev_bins_rt[int(_rdeg / bin_width_deg) % N_BINS].append(_riq)
+                    avg_fwd_rt = [sum(b) / len(b) if b else 0.0 for b in fwd_bins_rt]
+                    avg_rev_rt = [sum(b) / len(b) if b else 0.0 for b in rev_bins_rt]
+                    avg_iq_rt  = [(avg_fwd_rt[b] + avg_rev_rt[b]) / 2.0
+                                  for b in range(N_BINS)]
+
+                    dc_rt    = sum(avg_iq_rt) / len(avg_iq_rt)
+                    iq_ac_rt = [v - dc_rt for v in avg_iq_rt]
+                    rms_rt   = (sum(v * v for v in iq_ac_rt) / len(iq_ac_rt)) ** 0.5
+                    rms_diff = (rms_rt - rms_iq_ma) / rms_iq_ma * 100.0 if rms_iq_ma > 0 else 0.0
+
+                    print("\n  Retest results:")
+                    print("  AC RMS Iq: before={:.2f} mA  after={:.2f} mA  ({:+.1f}%)".format(
+                        rms_iq_ma, rms_rt, rms_diff))
+
+                    try:
+                        import matplotlib
+                        matplotlib.use('Agg')
+                        import matplotlib.pyplot as _plt_rt
+
+                        _fig_rt, _ax_rt = _plt_rt.subplots(figsize=(12, 4))
+                        _fig_rt.suptitle(
+                            'Cogging Compensation — Before / After\n'
+                            'Node {}  {}  ({})  k={}'.format(
+                                node_id, model_str, ts, sorted_ks[0]), fontsize=11)
+                        _ax_rt.plot(bin_deg, iq_ac, 'b-', linewidth=1.2, alpha=0.8,
+                                    label='Before  RMS={:.2f} mA'.format(rms_iq_ma))
+                        _ax_rt.plot(bin_deg, iq_ac_rt, 'g-', linewidth=1.2, alpha=0.8,
+                                    label='After   RMS={:.2f} mA'.format(rms_rt))
+                        _ax_rt.axhline(0, color='k', linewidth=0.5, linestyle='--')
+                        _ax_rt.set_xlabel('Mechanical angle (°)')
+                        _ax_rt.set_ylabel('Iq AC (mA)')
+                        _ax_rt.legend(fontsize=9)
+                        _ax_rt.grid(True, alpha=0.3)
+                        _plt_rt.tight_layout()
+                        _rt_plot_path = _cog_img(
+                            '{}cogging_retest_{}.png'.format(_file_pfx, ts))
+                        _plt_rt.savefig(_rt_plot_path, dpi=100)
+                        _plt_rt.close(_fig_rt)
+                        print("  Before/after plot → {}".format(_rt_plot_path))
+                    except ImportError:
+                        pass
+                    except Exception as _rt_plt_exc:
+                        print("  WARNING: Retest plot failed: {}".format(_rt_plt_exc))
+
+                except Exception as _rt_exc:
+                    print("  WARNING: Retest sweep failed: {}".format(_rt_exc))
+
+            _upd(100)
             print("\nCogging characterisation complete.")
 
         except Exception as _exc:
@@ -3866,7 +4112,6 @@ class calibrate():
             if self.ADC_ON == False and self.adcWasON:
                 self.on_off_adc(self)
             self.Enable()
-            _upd(100)
 
     def _load_enc_correction_table(self):
         """Return (table, path) from the most recent enc_correction_full CSV, or (None, None)."""
@@ -3974,6 +4219,20 @@ class calibrate():
             self.frame_menubar.OFF.Check(not enable)
         except Exception as e:
             print("Error setting encoder compensation state: {}".format(e))
+
+    def cogging_compensation_state(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
+        if self.check_for_node() == False:
+            return
+        enable = event.GetId() == self.frame_menubar.COG_ON.GetId()
+        try:
+            self.node.sdo[0x3028][1].raw = 1 if enable else 0
+            self.node.sdo['Save']['Single'].raw = ((0x3028 << 8) | 1)
+            state_str = "ON" if enable else "OFF"
+            print("Cogging compensation set to {} and saved.".format(state_str))
+            self.frame_menubar.COG_ON.Check(enable)
+            self.frame_menubar.COG_OFF.Check(not enable)
+        except Exception as e:
+            print("Error setting cogging compensation state: {}".format(e))
 
     def set_user_dir(self, event):  # wxGlade: wxp3_frame.<event_handler>
         if self.check_for_node() == False: #len(self.network.scanner.nodes) == 0:
