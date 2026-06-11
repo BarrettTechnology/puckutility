@@ -79,6 +79,7 @@ cp flashp4.py "${OUTDIR}"/
 cp cli_ops.py "${OUTDIR}"/
 cp PuckUtilityAppGuide.pdf "${OUTDIR}"/
 cp -r firmware "${OUTDIR}"/
+cp canable-candlelight-multiboard.bin "${OUTDIR}"/
 
 # PCAN driver installer (downloaded fresh each build)
 curl https://web.barrett.com/support/Puck_ControlLibrary/PeakOemDrv.exe -o PeakOemDrv.exe

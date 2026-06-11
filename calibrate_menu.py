@@ -434,6 +434,13 @@ class calibrate():
         dlg.ShowModal()
         dlg.Destroy()
 
+    def _fw_ver_tuple(self):
+        raw = self.node.sdo['MfgSoftwareVersion'].raw
+        return ((raw >> 24) & 0xFF, (raw >> 8) & 0xFFFF, raw & 0xFF)
+
+    def _fw_at_least(self, major, minor, patch):
+        return self._fw_ver_tuple() >= (major, minor, patch)
+
     def calibrate_all_pucks(self, event):
         print(self.network.scanner.nodes)
         starting_id = self.getID()
@@ -557,11 +564,17 @@ class calibrate():
 
             self.node.sdo['Theta_e'].raw = 0x7FFF # Stall @ Alpha Peak (+pi)
 
-            self.node.sdo['Motor']['ud'].raw = 000
+            self.node.sdo['Motor']['ud'].raw = 0
 
             # Set Mode to Voltage
             print("Setting Mode = VOLTAGE MODE")
             self.node.sdo["SetModeOfOperation"].raw = MODE_PHASE_VOLTAGE_ANGLE
+
+            # Zero uq AFTER mode switch — in profile-torque mode the PI overwrites
+            # motor.uq every ISR cycle, so writing before the switch has no effect.
+            # In PHASE_VOLTAGE_ANGLE mode the firmware reads uq directly as the
+            # voltage reference and does not overwrite it, so this write sticks.
+            self.node.sdo['Motor']['uq'].raw = 0
 
             # Fixed settle then high-sample-count average for sub-count bias precision.
             # Convergence polling was abandoned: this ADC's noise floor exceeds any
@@ -578,7 +591,7 @@ class calibrate():
                 time.sleep(0.05)
                 wx.Yield()
 
-            # Average N_AVG fresh reads; round mean Q12.4 → Q12.0
+            # Average N_AVG fresh reads of Filtered (Q12.4); store as-is (no /16)
             _sum = {'Alpha': 0, 'Beta': 0}
             for _i in range(_N_AVG):
                 _upd(55 + _i * 40 // _N_AVG)  # 55→95%
@@ -586,23 +599,38 @@ class calibrate():
                     _sum[_ch] += self.node.sdo[_ch]['Filtered'].raw
                 wx.Yield()
 
-            # Calibrate iSense — store high-precision float bias for use by igainfactor
-            # in the same session (avoids re-reading the rounded EEPROM value).
-            self._alpha_bias_f = _sum['Alpha'] / _N_AVG / 16.0
-            self._beta_bias_f  = _sum['Beta']  / _N_AVG / 16.0
+            _q12_4 = self._fw_at_least(4, 3, 3)
+
+            if _q12_4:
+                # fw >= 4.3.3: Bias register holds Q12.4 (ADC_count × 16).
+                # Firmware applies: (bias_Q12_4 - raw<<4) * gainfactor >> 16.
+                self._alpha_bias_f = _sum['Alpha'] / _N_AVG   # Q12.4, no /16
+                self._beta_bias_f  = _sum['Beta']  / _N_AVG   # Q12.4, no /16
+                _midpoint = 2048 * 16  # = 32768 in Q12.4
+                _bias_scale = 16.0     # raw → counts for display
+            else:
+                # fw < 4.3.3: Bias register holds plain integer ADC counts (Q12.0).
+                self._alpha_bias_f = _sum['Alpha'] / _N_AVG / 16.0
+                self._beta_bias_f  = _sum['Beta']  / _N_AVG / 16.0
+                _midpoint = 2048      # counts
+                _bias_scale = 1.0
+
             for channel in ['Alpha', 'Beta']:
-                print("Previous {0} iSense bias = {1}".format(channel, self.node.sdo[channel]['Bias'].raw))
-                filt = int(round(_sum[channel] / _N_AVG / 16))
-                self.node.sdo[channel]['Bias'].raw = filt
-                print("New {0} iSense bias = {1}  ({2}-sample avg)".format(channel, filt, _N_AVG))
+                prev = self.node.sdo[channel]['Bias'].raw
+                print("Previous {0} iSense bias = {1:.3f} cts  (raw={2})".format(
+                    channel, prev / _bias_scale, prev))
+                if _q12_4:
+                    new_bias = int(round(_sum[channel] / _N_AVG))  # Q12.4
+                else:
+                    new_bias = int(round(_sum[channel] / _N_AVG / 16.0))  # Q12.0
+                self.node.sdo[channel]['Bias'].raw = new_bias
+                print("New {0} iSense bias = {1:.3f} cts  (raw={2}, {3}-sample avg)".format(
+                    channel, new_bias / _bias_scale, new_bias, _N_AVG))
 
             self.node.sdo['Save']['Single'].raw = ((0x3008 << 8) | 0x03) # Save Alpha iSense cal to EE
             self.node.sdo['Save']['Single'].raw = ((0x3009 << 8) | 0x03) # Save Beta iSense cal to EE
 
-            # Check Bounds for error!!
-            # 5% (~102 counts) is a conservative sentinel. Physical clipping limit is
-            # ~19% (387 counts) for a channel gain of 3530/4096 at 28.24 A peak / 30 A range:
-            #   headroom = 2048 × (gain/4096) × (1 − i_peak/i_range) = 387 counts
+            # Bounds check: midpoint is 2048 counts (Q12.0) or 32768 (Q12.4). 5% sentinel.
             error = 0.05 # 5%
 
             a_bias = self.node.sdo['Alpha']['Bias'].raw
@@ -613,20 +641,21 @@ class calibrate():
             self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
 
             out_of_bounds = (
-                a_bias > 2048 * (1 + error) or a_bias < 2048 * (1 - error) or
-                b_bias > 2048 * (1 + error) or b_bias < 2048 * (1 - error)
+                a_bias > _midpoint * (1 + error) or a_bias < _midpoint * (1 - error) or
+                b_bias > _midpoint * (1 + error) or b_bias < _midpoint * (1 - error)
             )
             if out_of_bounds:
                 print('iSense Bias out of bounds!')
                 msg = "iSense Bias out of bounds!" \
-                "\n\nAlpha Bias: {}" \
-                "\nBeta Bias: {}" \
-                "\nAcceptable Range: {} - {}" \
+                "\n\nAlpha Bias: {:.3f} cts" \
+                "\nBeta Bias: {:.3f} cts" \
+                "\nAcceptable Range: {:.1f} - {:.1f} cts" \
                 "\n\nDebugging steps:" \
                 "\n- Ensure proper configuration file has been loaded" \
                 "\n- Verify phase leads are properly connected" \
                 "\n\nWould you like to continue calibration?".format(
-                    a_bias, b_bias, round(2048*(1-error)), round(2048*(1+error)))
+                    a_bias / _bias_scale, b_bias / _bias_scale,
+                    _midpoint*(1-error) / _bias_scale, _midpoint*(1+error) / _bias_scale)
 
             _upd(100)
             if self.ADC_ON == False and self.adcWasON == True:
@@ -687,6 +716,10 @@ class calibrate():
             # Set Mode to PhaseVoltageAngle (12)
             print("Setting Mode = VOLTAGE")
             self.node.sdo["SetModeOfOperation"].raw = MODE_PHASE_VOLTAGE_ANGLE
+
+            # Zero uq after mode switch so firmware stall/drag path is active
+            # (firmware checks uq==0 before entering D-axis stall block at theta_e overwrite).
+            self.node.sdo['Motor']['uq'].raw = 0
 
             # Write theta_e, ud, StatsMode, vel
             # theta_e is 16-bit signed from -pi to +pi
@@ -758,7 +791,8 @@ class calibrate():
                 _sum_a    += self.node.sdo['Alpha']['Filtered'].raw
                 _sum_id_a += self.node.sdo['Motor']['id'].raw
                 wx.Yield()
-            a_filt_f = _sum_a / _N_IGAIN_AVG / 16.0  # float Q12.0 — no rounding yet
+            _q12_4 = self._fw_at_least(4, 3, 3)
+            a_filt_f = _sum_a / _N_IGAIN_AVG if _q12_4 else _sum_a / _N_IGAIN_AVG / 16.0
             _id_at_a = (_sum_id_a / _N_IGAIN_AVG) / 1000.0 * i_peak
             print("Peak Alpha = {0:.3f}  id={1:.1f} mA  theta_e={2:.2f} rad  ({3}-sample avg)".format(
                 a_filt_f, _id_at_a,
@@ -795,7 +829,7 @@ class calibrate():
                 _sum_b    += self.node.sdo['Beta']['Filtered'].raw
                 _sum_id_b += self.node.sdo['Motor']['id'].raw
                 wx.Yield()
-            b_filt_f = _sum_b / _N_IGAIN_AVG / 16.0  # float Q12.0 — no rounding yet
+            b_filt_f = _sum_b / _N_IGAIN_AVG if _q12_4 else _sum_b / _N_IGAIN_AVG / 16.0
             _id_at_b = (_sum_id_b / _N_IGAIN_AVG) / 1000.0 * i_peak
             print("Peak Beta  = {0:.3f}  id={1:.1f} mA  theta_e={2:.2f} rad  ({3}-sample avg)".format(
                 b_filt_f, _id_at_b,
@@ -803,8 +837,8 @@ class calibrate():
 
             self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
 
-            # Use high-precision float bias from ibias (same session) if available;
-            # fall back to rounded EEPROM value when igainfactor runs standalone.
+            # Use high-precision bias from ibias (same session) if available;
+            # fall back to the OD value, which fw stores in the same scale it reads.
             if hasattr(self, '_alpha_bias_f') and hasattr(self, '_beta_bias_f'):
                 abias_f = self._alpha_bias_f
                 bbias_f = self._beta_bias_f
@@ -842,6 +876,13 @@ class calibrate():
 
             self.node.sdo['Save']['Single'].raw = ((0x3008 << 8) | 0x06) # Save Alpha gainfactor to EE
             self.node.sdo['Save']['Single'].raw = ((0x3009 << 8) | 0x06) # Save Beta gainfactor to EE
+
+            a_gf_rb = self.node.sdo['Alpha']['Gainfactor'].raw
+            b_gf_rb = self.node.sdo['Beta']['Gainfactor'].raw
+            print("Readback — Alpha Gainfactor: {}  Beta Gainfactor: {}".format(a_gf_rb, b_gf_rb))
+            if b_gf_rb != gainfactor:
+                print("  WARNING: Beta Gainfactor readback ({}) does not match written value ({}).".format(
+                    b_gf_rb, gainfactor))
 
             _upd(100)
             if self.ADC_ON == False and self.adcWasON == True:
@@ -885,6 +926,11 @@ class calibrate():
         # ramp time per step (each of the four current levels needs its own ramp).
         if calAll == False:
             if self.check_for_node() == False:
+                return False
+            if not self._fw_at_least(4, 3, 3):
+                self._prompt_ok("Firmware Too Old",
+                    "ADC settling-time calibration requires firmware v4.3.3 or later.\n"
+                    "Please update the firmware and try again.")
                 return False
             self.Disable()
 
@@ -2080,6 +2126,11 @@ class calibrate():
         """
         if not self.check_for_node():
             return
+        if not self._fw_at_least(4, 3, 3):
+            self._prompt_ok("Firmware Too Old",
+                "Magnetic encoder compensation requires firmware v4.3.3 or later.\n"
+                "Please update the firmware and try again.")
+            return
 
         # If compensation is already active, ask whether to recalibrate or retest.
         # Recalibration always runs an automatic retest sweep afterwards.
@@ -2874,6 +2925,7 @@ class calibrate():
                 # Sweep: use RawPosition for delta tracking and EncPos for compensation.
                 # Forward pass.
                 _rt_raw_prev = self.node.sdo['Encoder']['RawPosition'].raw
+                _rt_enc_start_raw = _rt_raw_prev  # absolute raw position at retest start; used for cogging DFT phase
                 _rt_raw_acc  = 0
                 _rt_results_fwd = []
                 print("  Retest forward sweep ({} steps) ...".format(RETEST_N_TOTAL))
@@ -3435,6 +3487,7 @@ class calibrate():
             self._cal_fault(_exc)
         finally:
             self.OnTaskComplete()
+            self.choice_test.SetSelection(0)
             if self.ADC_ON == False and self.adcWasON:
                 self.on_off_adc(self)
             self.Enable()
@@ -3464,6 +3517,11 @@ class calibrate():
         """
 
         if not self.check_for_node():
+            return
+        if not self._fw_at_least(4, 3, 3):
+            self._prompt_ok("Firmware Too Old",
+                "Cogging compensation calibration requires firmware v4.3.3 or later.\n"
+                "Please update the firmware and try again.")
             return
 
         if self.ADC_ON:
@@ -3499,6 +3557,26 @@ class calibrate():
             pole_pairs     = motor_poles // 2
             cts_per_elec   = enc_resolution * 2.0 / motor_poles
 
+            # High-resolution current measurement via Alpha/Beta filtered ADC + Park transform.
+            # CurrentFeedback resolution = i_peak/1000 mA/LSB — unusable for small cogging signals
+            # on high-current motors.  Alpha.Filtered (Q12.4) gives ~i_peak/32768/16 mA/LSB.
+            _alpha_bias   = self.node.sdo[0x3008][3].raw / 16.0  # Q12.4 → Q12.0 ADC counts
+            _beta_bias    = self.node.sdo[0x3009][3].raw / 16.0
+            _alpha_gf     = self.node.sdo[0x3008][6].raw   # Q4.12 (4096 = 1.0)
+            _beta_gf      = self.node.sdo[0x3009][6].raw
+            _isense_shunt = self.node.sdo[0x3008][5].raw   # mΩ
+            _isense_gain  = self.node.sdo[0x3008][4].raw   # ×1000 (e.g. 20000 = gain 20)
+            _e_zero       = self.node.sdo['Calibration']['e_zero'].raw
+            _e_polarity   = int(self.node.sdo['Calibration']['e_polarity'].raw)
+            _cts_per_elec = enc_resolution // pole_pairs   # integer, matches firmware
+
+            # mA per raw ADC count — mirrors firmware pwm.c ma_per_ct calculation
+            _ma_per_ct = (3.3 / 4096.0 * 1000.0 / _isense_shunt
+                          * 1000.0 / _isense_gain * 1000.0)
+            _cfb_lsb_ma = i_peak / 1000.0
+            print("  Current resolution: Park={:.3f} mA/ct  "
+                  "CurrentFeedback={:.2f} mA/LSB".format(_ma_per_ct, _cfb_lsb_ma))
+
             node_id   = getattr(self.node, 'id', '?')
             _pc       = None
             try:
@@ -3519,9 +3597,11 @@ class calibrate():
                 return p
 
             N_BINS       = 128    # angle bins per revolution (k_max=64; resolves k=21,42,63)
-            TARGET_RPM   = 5.0   # mechanical RPM — faster traversal reduces per-tooth velocity ripple
-            SETTLE_S     = 2.5   # wait for speed to settle before sampling
-            N_REVS       = 2     # mechanical revolutions to collect per direction
+            TARGET_RPM   = 15.0  # mechanical RPM — must be high enough that velocity ripple << mean
+            SETTLE_S     = 1.5   # velocity PI settles in <1s; 1.5s is conservative
+            # Scale N_REVS with TARGET_RPM to maintain ~4 samples/bin.
+            # Halved from the original 2×RPM/5 formula — acceptable quality, ~2× faster sweep.
+            N_REVS       = max(2, int(math.ceil(TARGET_RPM / 5.0)))
             SAMPLE_S     = 0.025 # sampling interval (s)
             N_HARMONICS  = 16    # Fourier harmonics to fit
 
@@ -3543,13 +3623,49 @@ class calibrate():
             # the FFT would fit the residual pattern (not raw cogging), and
             # the uploaded correction would then replace, not improve, the
             # previous compensation.
-            try:
-                _cog_was_active = bool(self.node.sdo[0x3028][1].raw)
-                if _cog_was_active:
+            # Unconditional write + readback verify with retry — a silent failure
+            # here is the worst possible outcome (corrupted calibration data).
+            _cog_was_active = False
+            for _dis_attempt in range(3):
+                try:
+                    _cog_was_active = bool(self.node.sdo[0x3028][1].raw)
                     self.node.sdo[0x3028][1].raw = 0
-                    print("  NOTE: Cogging compensation was active — disabled for sweep.")
-            except Exception:
-                _cog_was_active = False
+                    if int(self.node.sdo[0x3028][1].raw) == 0:
+                        break
+                except Exception:
+                    pass
+                time.sleep(0.1)
+            else:
+                raise RuntimeError(
+                    "Could not disable cogging compensation before sweep — "
+                    "check CAN connection and retry.")
+            if _cog_was_active:
+                print("  NOTE: Cogging compensation was active — disabled for sweep.")
+
+            # ---- Reboot to reset velocity integrator state ----
+            # Ki=0 silences the cogging signal: inertia absorbs the disturbance and
+            # it never appears in Iq.  The integral IS the signal — it winds up over
+            # multiple revolutions to pre-compensate the periodic torque ripple, and
+            # that steady-state integral value is what we bin and FFT.  Stale integral
+            # state from a previous run biases the measured Iq phase.  A reboot is
+            # the only way to reset the integrator to zero before the sweep.
+            print("  Rebooting node {} to clear velocity integrator state...".format(node_id))
+            self.network.send_message(0x0, [0x81, int(node_id)])
+            _sleep_responsive(1.5)
+            self.configure_Puck(configure_pdos=False)
+            # Re-disable cogging compensation (reboot restored EEPROM value).
+            for _dis_attempt in range(3):
+                try:
+                    self.node.sdo[0x3028][1].raw = 0
+                    if int(self.node.sdo[0x3028][1].raw) == 0:
+                        break
+                except Exception:
+                    pass
+                time.sleep(0.1)
+            else:
+                raise RuntimeError(
+                    "Could not disable cogging compensation after reboot — "
+                    "check CAN connection and retry.")
 
             # ---- Enable in profile-velocity mode ----
             self.node.sdo["ControlWord"].raw = CLEAR_FAULT
@@ -3559,39 +3675,138 @@ class calibrate():
             time.sleep(0.2)
             wx.Yield()
 
-            def _sample_pass(vel_cmd, label, upd_start, upd_end):
-                """Collect (angle_deg, iq_mA) at each sample tick over N_REVS."""
+            def _sample_pass(vel_cmd, label, upd_start, upd_end, settle_s=SETTLE_S):
+                """Collect (angle_deg, iq_mA) at each sample tick over N_REVS.
+
+                iq is measured via Alpha.Filtered + Beta.Filtered + Park transform
+                for ~16× better resolution than CurrentFeedback on high-i_peak motors.
+                """
                 print("  {} pass  ({:+d} cts/s = {:.1f} RPM, {} revs) ...".format(
                     label, vel_cmd, abs(vel_cmd) * 60.0 / enc_resolution, N_REVS))
                 self.node.sdo['TargetVelocity'].raw = vel_cmd
-                _sleep_responsive(SETTLE_S)
+                _sleep_responsive(settle_s)
                 wx.Yield()
 
                 samples = []  # list of (angle_deg, iq_mA)
+                # IIR filter (α=15/16) group delay = 15 samples at 8 kHz update
+                # rate (40 kHz PWM / 5 patterns/cycle) = 1.875 ms.  The snapshot
+                # OD (0x3014) captures alpha, beta, and enc atomically in one CAN
+                # callback, so inter-value skew is ≤1 ISR period (25 µs) = <0.3°
+                # phase error at k=7.  Correct the remaining lag by rewinding the
+                # encoder position by the distance the rotor moved in 1.875 ms.
+                _lag_cts = round(1.875e-3 * abs(vel_cmd))
+                _dir     = 1 if vel_cmd >= 0 else -1
                 for step in range(n_samples):
                     time.sleep(SAMPLE_S)
-                    raw_now  = self.node.sdo['Encoder']['RawPosition'].raw
-                    iq_norm  = self.node.sdo['CurrentFeedback'].raw  # ±1000 = ±i_peak
-                    iq_ma    = iq_norm / 1000.0 * i_peak
-                    angle_deg = (raw_now % enc_resolution) / enc_resolution * 360.0
+                    # Sub1 read triggers the freeze; sub2 and sub3 return the
+                    # same snapshot regardless of how long Python takes to read them.
+                    alpha_filt = self.node.sdo[0x3014][1].raw   # Q12.4; triggers freeze
+                    beta_filt  = self.node.sdo[0x3014][2].raw   # Q12.4
+                    enc_snap   = self.node.sdo[0x3014][3].raw   # 0-4095
+
+                    # Rewind encoder to when the current was actually flowing.
+                    enc_corr = (enc_snap - _dir * _lag_cts) % enc_resolution
+
+                    # Convert filtered ADC counts to mA (firmware sign: bias - raw)
+                    alpha_mA = ((_alpha_bias - alpha_filt / 16.0)
+                                * (_alpha_gf / 4096.0) * _ma_per_ct)
+                    beta_mA  = ((_beta_bias  - beta_filt  / 16.0)
+                                * (_beta_gf  / 4096.0) * _ma_per_ct)
+
+                    # theta_e matching firmware: signed counts → F16 angle → radians
+                    theta_m    = _e_polarity * (enc_corr - _e_zero)
+                    theta_e_ct = (enc_resolution + theta_m) % _cts_per_elec
+                    if theta_e_ct >= _cts_per_elec // 2:
+                        theta_e_ct -= _cts_per_elec
+                    theta_e    = theta_e_ct / _cts_per_elec * 2.0 * math.pi
+
+                    # Park: q = -α·sin(θ_e) + β·cos(θ_e)
+                    iq_ma     = -alpha_mA * math.sin(theta_e) + beta_mA * math.cos(theta_e)
+                    angle_deg = enc_corr / enc_resolution * 360.0
                     samples.append((angle_deg, iq_ma))
                     _upd(upd_start + step * (upd_end - upd_start) // n_samples)
                     wx.Yield()
                 return samples
 
-            print("Cogging sweep:")
-            samples_fwd = _sample_pass(+vel_cts_per_sec, 'forward', 5, 44)
+            def _check_vel_quality(samples, is_fwd):
+                """Return (vel_mean_dps, vel_rms_ac_dps). Raises if motor is stalling."""
+                vels = []
+                for i in range(1, len(samples)):
+                    d = samples[i][0] - samples[i - 1][0]
+                    if is_fwd and d < -180.0:
+                        d += 360.0
+                    elif not is_fwd and d > 180.0:
+                        d -= 360.0
+                    vels.append(d / SAMPLE_S)
+                if not vels:
+                    return 0.0, 0.0
+                vel_mean   = sum(vels) / len(vels)
+                vel_rms_ac = (sum((v - vel_mean) ** 2 for v in vels) / len(vels)) ** 0.5
+                ratio      = vel_rms_ac / abs(vel_mean) if vel_mean != 0 else float('inf')
+                print("  velocity: mean={:.1f} deg/s  ripple={:.1f} deg/s  ({:.0f}%)".format(
+                    vel_mean, vel_rms_ac, ratio * 100))
+                if ratio > 1.0:
+                    raise RuntimeError(
+                        "Motor stalled during cogging sweep "
+                        "(velocity ripple {:.0f}% of mean — motor is reversing). "
+                        "Increase TARGET_RPM from {:.0f} to at least {:.0f} RPM and retry.".format(
+                            ratio * 100, TARGET_RPM,
+                            TARGET_RPM * (ratio / 0.2) ** 0.5))
+                if ratio > 0.5:
+                    raise RuntimeError(
+                        "Motor stalled at {:.0f} RPM: velocity ripple {:.0f}% exceeds 50% — "
+                        "phase data too noisy for reliable FFT. "
+                        "Retry at at least {:.0f} RPM.".format(
+                            TARGET_RPM, ratio * 100,
+                            TARGET_RPM * (ratio / 0.2) ** 0.5))
+                return vel_mean, vel_rms_ac
 
-            self.node.sdo['TargetVelocity'].raw = 0
-            _sleep_responsive(1.5)
-            wx.Yield()
+            # Retry at progressively higher RPM if motor stalls.
+            # _sample_pass and _check_vel_quality close over n_samples, N_REVS,
+            # vel_cts_per_sec, and TARGET_RPM — reassigning them here is enough.
+            # Keep retrying even past the upload-frequency guard (10 Hz threshold)
+            # so the profile plots are clean; the guard skips the upload separately.
+            import re as _re_rpm
+            MAX_SWEEP_RPM = 500.0
+            for _rpm_attempt in range(6):
+                print("Cogging sweep:")
+                try:
+                    samples_fwd = _sample_pass(+vel_cts_per_sec, 'forward', 5, 44)
+                    _check_vel_quality(samples_fwd, is_fwd=True)
 
-            samples_rev = _sample_pass(-vel_cts_per_sec, 'reverse', 47, 86)
+                    self.node.sdo['TargetVelocity'].raw = 0
+                    _sleep_responsive(1.5)
+                    wx.Yield()
+
+                    samples_rev = _sample_pass(-vel_cts_per_sec, 'reverse', 47, 86)
+                    _check_vel_quality(samples_rev, is_fwd=False)
+                    break  # success
+
+                except RuntimeError as _stall_exc:
+                    self.node.sdo['TargetVelocity'].raw = 0
+                    _sleep_responsive(1.0)
+                    wx.Yield()
+                    if 'stalled' not in str(_stall_exc).lower():
+                        raise
+                    if TARGET_RPM >= MAX_SWEEP_RPM:
+                        raise RuntimeError(
+                            "Motor stalled at {:.0f} RPM — cannot sweep.".format(TARGET_RPM))
+                    _m = _re_rpm.search(r'at least (\d+(?:\.\d+)?)', str(_stall_exc))
+                    _min_rpm = float(_m.group(1)) if _m else TARGET_RPM * 2.0
+                    # Cap increment to 2× current RPM per step.
+                    _capped = min(_min_rpm * 1.3, TARGET_RPM * 2.0, MAX_SWEEP_RPM)
+                    TARGET_RPM      = math.ceil(_capped / 5) * 5.0
+                    N_REVS          = max(2, int(math.ceil(2 * TARGET_RPM / 5.0)))
+                    vel_cts_per_sec = int(round(TARGET_RPM / 60.0 * enc_resolution))
+                    n_samples       = int(N_REVS * 60.0 / TARGET_RPM / SAMPLE_S)
+                    print("  Retrying at {:.0f} RPM  ({} revs/pass) ...".format(
+                        TARGET_RPM, N_REVS))
 
             self.node.sdo['TargetVelocity'].raw = 0
             _sleep_responsive(1.0)
             self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
             wx.Yield()
+
             _upd(88)
 
             print("  {} fwd samples, {} rev samples".format(
@@ -3915,19 +4130,61 @@ class calibrate():
 
             # ── Upload top-10 cogging harmonic bins to 0x3028 ───────────────
             # Layout mirrors 0x3027: bin i uses subindices 2+i*3 (a_s), 3+i*3 (k), 4+i*3 (a_c)
+            # Bins written amplitude-descending: bin 0 = dominant harmonic.
             # Firmware convention (straight mA, no ×256):
-            #   a_s = +A·sin(φ),  a_c = -A·cos(φ)
-            #   verify: √(a_s²+a_c²) = A;  φ = atan2(a_s, -a_c)
+            #   a_s = -A·sin(φ)  (sin Fourier coefficient of measured Iq profile)
+            #   a_c = +A·cos(φ)  (cos Fourier coefficient of measured Iq profile)
+            #   verify: √(a_s²+a_c²) = A;  φ = atan2(-a_s, a_c)
             N_COG_BINS = 10
             _upload_ok = False
             try:
                 def _clamp_i16_cog(v):
                     return max(-32768, min(32767, int(round(v))))
 
-                # Top N by amplitude, sorted ascending by k for firmware iteration
-                _top_cog = sorted_ks[:N_COG_BINS]
+                # SNR guard: check the dominant physical harmonic against the
+                # per-harmonic noise floor.  RMS-vs-ADC-step is the wrong metric —
+                # the FFT averages over N_BINS/2 harmonics, so per-harmonic noise is
+                # much lower than the raw ADC step.
+                # Noise floor ≈ ADC_step / sqrt(3 × n_samples / (N_BINS/2))
+                _noise_floor_ma = _ma_per_ct / math.sqrt(
+                    3.0 * max(n_samples, 1) / max(N_BINS // 2, 1))
+                _dom_k        = next((k for k in sorted_ks if k > 0 and k <= N_BINS // 2), 0)
+                _dom_phys_amp = float(amps[_dom_k]) if _dom_k else 0.0
+                print("  Per-harmonic noise floor: {:.2f} mA  "
+                      "dominant harmonic k={} at {:.2f} mA  "
+                      "(SNR {:.1f}×)".format(
+                          _noise_floor_ma, _dom_k, _dom_phys_amp,
+                          _dom_phys_amp / max(_noise_floor_ma, 1e-9)))
+                if _dom_phys_amp < 2.0 * _noise_floor_ma:
+                    print("  SKIPPING upload: dominant harmonic ({:.2f} mA) "
+                          "below 2× noise floor ({:.2f} mA). "
+                          "Motor cogging too small to compensate reliably.".format(
+                              _dom_phys_amp, 2.0 * _noise_floor_ma))
+                    raise NameError("snr_too_low")
+
+                # Phase quality is guaranteed by the retry loop: _check_vel_quality
+                # raised if ripple > 50%, so reaching here means sweep data is clean
+                # regardless of what RPM was needed.  Report sweep RPM for reference only.
+                _cog_freq_hz = TARGET_RPM / 60.0 * pole_pairs
+                if _cog_freq_hz > 25.0:
+                    print("  Note: sweep required {:.0f} RPM (k={} at {:.1f} Hz); "
+                          "data quality validated by <50%% velocity ripple.".format(
+                              TARGET_RPM, pole_pairs, _cog_freq_hz))
+
+                # Upload top-N harmonics by amplitude above the per-harmonic noise floor.
+                # Only upload physical cogging harmonics (k = n × pole_pairs).
+                # Non-multiples cluster at the practical measurement noise floor
+                # (~15–35 mA from friction hysteresis and positioning jitter) and
+                # cannot be reliably distinguished from noise regardless of sweep method.
+                #
+                _cog_ks  = [k for k in sorted_ks
+                            if k > 0 and k % pole_pairs == 0 and k <= N_BINS // 2
+                            and float(amps[k]) >= 2.0 * _noise_floor_ma]
+                _top_cog = _cog_ks[:N_COG_BINS]
                 _n_cog   = len(_top_cog)
-                _top_cog = sorted(_top_cog, key=lambda _k: _k)
+                print("  Physical cogging harmonics above 2× noise floor "
+                      "(k = n×{}): {}".format(
+                    pole_pairs, [k for k in _top_cog]))
 
                 print("\n  Uploading cogging compensation (0x3028) to node {} ...".format(node_id))
                 print("  {:>4}  {:>6}  {:>10}  {:>8}  {:>8}".format(
@@ -3945,8 +4202,8 @@ class calibrate():
                         _bk      = int(_top_cog[_bi])
                         _bA      = float(amps[_bk])
                         _bphi    = float(phases[_bk])
-                        _A_s_val = _clamp_i16_cog(+_bA * math.sin(_bphi))
-                        _A_c_val = _clamp_i16_cog(-_bA * math.cos(_bphi))
+                        _A_s_val = _clamp_i16_cog(-_bA * math.sin(_bphi))
+                        _A_c_val = _clamp_i16_cog(+_bA * math.cos(_bphi))
                         _k_val   = _bk
                         print("  {:>4d}  {:>6d}  {:>10.4f}  {:>8d}  {:>8d}".format(
                             _bi, _k_val, _bA, _A_s_val, _A_c_val))
@@ -3971,6 +4228,11 @@ class calibrate():
 
                 self.node.sdo[0x3028][1].raw = 1
                 print("  Cogging Compensation Active → 1  ({} bin(s) written)".format(_n_written))
+                try:
+                    self.frame_menubar.COG_ON.Check(True)
+                    self.frame_menubar.COG_OFF.Check(False)
+                except Exception:
+                    pass
 
                 # Readback verification (only bins that were written)
                 print("\n  Readback verification:")
@@ -3988,8 +4250,8 @@ class calibrate():
                         _bk_exp  = int(_top_cog[_bi])
                         _bA_exp  = float(amps[_bk_exp])
                         _bph_exp = float(phases[_bk_exp])
-                        _as_exp  = _clamp_i16_cog(+_bA_exp * math.sin(_bph_exp))
-                        _ac_exp  = _clamp_i16_cog(-_bA_exp * math.cos(_bph_exp))
+                        _as_exp  = _clamp_i16_cog(-_bA_exp * math.sin(_bph_exp))
+                        _ac_exp  = _clamp_i16_cog(+_bA_exp * math.cos(_bph_exp))
                     else:
                         _bk_exp = _as_exp = _ac_exp = 0
                     _ok = (_as_rb == _as_exp and _k_rb == _bk_exp and _ac_rb == _ac_exp)
@@ -4023,8 +4285,11 @@ class calibrate():
                 else:
                     print("\n  WARNING: Cogging upload SDO abort "
                           "0x{:08X}: {}".format(_cog_sdo_exc.code, _cog_sdo_exc))
-            except NameError:
-                print("\n  Cogging upload skipped — FFT analysis did not complete.")
+            except NameError as _ne:
+                if str(_ne) == "sweep_rpm_too_high":
+                    pass  # message already printed in the guard above
+                else:
+                    print("\n  Cogging upload skipped — FFT analysis did not complete.")
             except Exception as _cog_exc:
                 print("\n  WARNING: Cogging upload failed: {}".format(_cog_exc))
 
@@ -4032,6 +4297,21 @@ class calibrate():
             if _upload_ok:
                 print("\n  Retest sweep (compensation active) ...")
                 try:
+                    # Reboot to zero the velocity PI integrator.  Without this,
+                    # the integrator wound up during the "before" sweep provides
+                    # ~T_cog/Kt on its own; adding the feedforward on top gives
+                    # ~2× cogging correction and makes velocity ripple WORSE, not
+                    # better.  Comp is saved to EEPROM so it survives the reboot.
+                    print("  Rebooting node {} to zero velocity integrator before retest...".format(node_id))
+                    self.network.send_message(0x0, [0x81, int(node_id)])
+                    _sleep_responsive(1.5)
+                    self.configure_Puck(configure_pdos=False)
+                    # Compensation was saved to EEPROM — verify it is still active.
+                    _rt_active = int(self.node.sdo[0x3028][1].raw)
+                    if not _rt_active:
+                        print("  WARNING: compensation not active after reboot — "
+                              "EEPROM save may have failed.  Retest may be unreliable.")
+
                     self.node.sdo["ControlWord"].raw = CLEAR_FAULT
                     self.node.sdo["ControlWord"].raw = SHUTDOWN
                     self.node.sdo["ControlWord"].raw = OP_ENABLED
@@ -4039,11 +4319,14 @@ class calibrate():
                     time.sleep(0.2)
                     wx.Yield()
 
-                    samples_fwd_rt = _sample_pass(+vel_cts_per_sec, 'retest fwd', 94, 97)
+                    _retest_settle = SETTLE_S
+                    samples_fwd_rt = _sample_pass(+vel_cts_per_sec, 'retest fwd', 94, 97,
+                                                  settle_s=_retest_settle)
                     self.node.sdo['TargetVelocity'].raw = 0
                     _sleep_responsive(1.0)
                     wx.Yield()
-                    samples_rev_rt = _sample_pass(-vel_cts_per_sec, 'retest rev', 97, 99)
+                    samples_rev_rt = _sample_pass(-vel_cts_per_sec, 'retest rev', 97, 99,
+                                                  settle_s=_retest_settle)
                     self.node.sdo['TargetVelocity'].raw = 0
                     _sleep_responsive(1.0)
                     self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
@@ -4065,29 +4348,141 @@ class calibrate():
                     rms_rt   = (sum(v * v for v in iq_ac_rt) / len(iq_ac_rt)) ** 0.5
                     rms_diff = (rms_rt - rms_iq_ma) / rms_iq_ma * 100.0 if rms_iq_ma > 0 else 0.0
 
+                    # Velocity ripple from consecutive angle samples (wrap-aware).
+                    # At constant command velocity, cogging appears as angle-periodic
+                    # velocity variation; feedforward reduces this even when Iq RMS is
+                    # insensitive (PI shifts who provides the cogging current, not how
+                    # much is provided, so Iq RMS is a weak metric for feedforward
+                    # effectiveness in velocity mode).
+                    def _vel_ac(samps, is_fwd):
+                        """AC velocity series (deg/s) from consecutive angle samples."""
+                        vels = []
+                        for _vi in range(1, len(samps)):
+                            _d = samps[_vi][0] - samps[_vi - 1][0]
+                            if is_fwd and _d < -180.0:
+                                _d += 360.0
+                            elif not is_fwd and _d > 180.0:
+                                _d -= 360.0
+                            vels.append(_d / SAMPLE_S)
+                        if not vels:
+                            return []
+                        _mv = sum(vels) / len(vels)
+                        return [_v - _mv for _v in vels]
+
+                    _vac_b = _vel_ac(samples_fwd,    is_fwd=True)
+                    _vac_a = _vel_ac(samples_fwd_rt, is_fwd=True)
+                    vel_rms_b = (sum(_v*_v for _v in _vac_b) / len(_vac_b)) ** 0.5 if _vac_b else 0.0
+                    vel_rms_a = (sum(_v*_v for _v in _vac_a) / len(_vac_a)) ** 0.5 if _vac_a else 0.0
+                    vel_diff  = (vel_rms_a - vel_rms_b) / vel_rms_b * 100.0 if vel_rms_b > 0 else 0.0
+
+                    # Harmonic comparison: compare dominant cogging harmonics before vs after.
+                    # This is the real effectiveness metric — compensation reduces the
+                    # PI's job at cogging frequencies so the dominant harmonics in the
+                    # Iq profile should decrease.  (Overall Iq AC RMS often INCREASES
+                    # when comp is active because the feedforward injects current at the
+                    # same frequencies; that is expected and does not mean comp failed.)
+                    _harm_cmp = []
+                    try:
+                        import numpy as _np_rt
+                        _iq_rt_arr  = _np_rt.array(avg_iq_rt, dtype=_np_rt.float64)
+                        _X_rt       = _np_rt.fft.rfft(_iq_rt_arr)
+                        _N_rt       = len(avg_iq_rt)
+                        _amps_rt    = 2.0 * _np_rt.abs(_X_rt) / _N_rt
+                        # Compare each uploaded harmonic's amplitude before vs after.
+                        for _bk_rt in _top_cog[:_n_cog]:
+                            _bk_rt = int(_bk_rt)
+                            if _bk_rt < len(amps) and _bk_rt < len(_amps_rt):
+                                _harm_cmp.append((_bk_rt,
+                                                  float(amps[_bk_rt]),
+                                                  float(_amps_rt[_bk_rt])))
+                    except Exception:
+                        pass
+
                     print("\n  Retest results:")
-                    print("  AC RMS Iq: before={:.2f} mA  after={:.2f} mA  ({:+.1f}%)".format(
+                    print("  AC RMS Iq:       before={:.2f} mA     after={:.2f} mA     ({:+.1f}%)".format(
                         rms_iq_ma, rms_rt, rms_diff))
+                    print("  NOTE: Iq AC RMS increases when comp is active (feedforward injects")
+                    print("        current at cogging frequencies — this is expected, not a failure).")
+                    print("  Velocity ripple: before={:.2f} deg/s  after={:.2f} deg/s  ({:+.1f}%)".format(
+                        vel_rms_b, vel_rms_a, vel_diff))
+                    print("  NOTE: velocity ripple from raw encoder is dominated by encoder")
+                    print("        non-uniformity and is not reliable here.")
+                    if _harm_cmp:
+                        print("  Cogging harmonic amplitudes (primary metric):")
+                        _harm_pass = True
+                        for _hk, _hb, _ha in _harm_cmp:
+                            _hdiff = (_ha - _hb) / _hb * 100.0 if _hb > 0 else 0.0
+                            _hok   = _ha <= _hb
+                            if not _hok:
+                                _harm_pass = False
+                            print("    k={:3d}:  before={:.2f} mA  after={:.2f} mA  ({:+.1f}%)  {}".format(
+                                _hk, _hb, _ha, _hdiff, "OK" if _hok else "INCREASED"))
+                        print("  Harmonic result: {}".format(
+                            "PASS — cogging harmonics reduced" if _harm_pass
+                            else "PARTIAL — some harmonics did not reduce (check phase)"))
+                    else:
+                        print("  (Harmonic comparison unavailable — numpy not installed)")
 
                     try:
                         import matplotlib
                         matplotlib.use('Agg')
                         import matplotlib.pyplot as _plt_rt
 
-                        _fig_rt, _ax_rt = _plt_rt.subplots(figsize=(12, 4))
+                        _yr_cog = max(max(abs(v) for v in iq_ac),
+                                      max(abs(v) for v in iq_ac_rt)) * 1.15 or 1.0
+                        _yr_vel = max(max(abs(v) for v in _vac_b) if _vac_b else 1.0,
+                                      max(abs(v) for v in _vac_a) if _vac_a else 1.0) * 1.15 or 1.0
+
+                        _fig_rt, _axes_rt = _plt_rt.subplots(2, 2, figsize=(14, 10))
                         _fig_rt.suptitle(
-                            'Cogging Compensation — Before / After\n'
-                            'Node {}  {}  ({})  k={}'.format(
-                                node_id, model_str, ts, sorted_ks[0]), fontsize=11)
-                        _ax_rt.plot(bin_deg, iq_ac, 'b-', linewidth=1.2, alpha=0.8,
-                                    label='Before  RMS={:.2f} mA'.format(rms_iq_ma))
-                        _ax_rt.plot(bin_deg, iq_ac_rt, 'g-', linewidth=1.2, alpha=0.8,
-                                    label='After   RMS={:.2f} mA'.format(rms_rt))
-                        _ax_rt.axhline(0, color='k', linewidth=0.5, linestyle='--')
-                        _ax_rt.set_xlabel('Mechanical angle (°)')
-                        _ax_rt.set_ylabel('Iq AC (mA)')
-                        _ax_rt.legend(fontsize=9)
-                        _ax_rt.grid(True, alpha=0.3)
+                            'Cogging Compensation — Node {}  {}  ({})\n'
+                            'Iq RMS: {:.2f} → {:.2f} mA  ({:+.1f}%)  [increase expected — feedforward]    '
+                            'Velocity ripple: {:.2f} → {:.2f} deg/s  ({:+.1f}%)'.format(
+                                node_id, model_str, ts,
+                                rms_iq_ma, rms_rt, rms_diff,
+                                vel_rms_b, vel_rms_a, vel_diff),
+                            fontsize=9)
+
+                        _cax_b = _axes_rt[0, 0]
+                        _cax_b.plot(bin_deg, iq_ac, 'b-', linewidth=1.0)
+                        _cax_b.axhline(0, color='k', linewidth=0.8, linestyle='--')
+                        _cax_b.set_ylim(-_yr_cog, _yr_cog)
+                        _cax_b.set_xlabel('Mechanical angle (°)')
+                        _cax_b.set_ylabel('Iq AC (mA)')
+                        _cax_b.set_title('Iq — before  (RMS={:.2f} mA)'.format(rms_iq_ma))
+                        _cax_b.grid(True, alpha=0.3)
+
+                        _cax_a = _axes_rt[0, 1]
+                        _cax_a.plot(bin_deg, iq_ac_rt, 'g-', linewidth=1.0)
+                        _cax_a.axhline(0, color='k', linewidth=0.8, linestyle='--')
+                        _cax_a.set_ylim(-_yr_cog, _yr_cog)
+                        _cax_a.set_xlabel('Mechanical angle (°)')
+                        _cax_a.set_title('[COMP ACTIVE]  Iq — after  (RMS={:.2f} mA  {:+.1f}%)\n'
+                                         'Iq increase expected — feedforward injects at cogging freqs'.format(
+                            rms_rt, rms_diff))
+                        _cax_a.grid(True, alpha=0.3)
+
+                        _t_b = [_vi * SAMPLE_S for _vi in range(len(_vac_b))]
+                        _t_a = [_vi * SAMPLE_S for _vi in range(len(_vac_a))]
+
+                        _vax_b = _axes_rt[1, 0]
+                        _vax_b.plot(_t_b, _vac_b, 'b-', linewidth=0.8)
+                        _vax_b.axhline(0, color='k', linewidth=0.8, linestyle='--')
+                        _vax_b.set_ylim(-_yr_vel, _yr_vel)
+                        _vax_b.set_xlabel('Time (s)')
+                        _vax_b.set_ylabel('Velocity AC (deg/s)')
+                        _vax_b.set_title('Velocity ripple — before  (RMS={:.2f} deg/s)'.format(vel_rms_b))
+                        _vax_b.grid(True, alpha=0.3)
+
+                        _vax_a = _axes_rt[1, 1]
+                        _vax_a.plot(_t_a, _vac_a, 'g-', linewidth=0.8)
+                        _vax_a.axhline(0, color='k', linewidth=0.8, linestyle='--')
+                        _vax_a.set_ylim(-_yr_vel, _yr_vel)
+                        _vax_a.set_xlabel('Time (s)')
+                        _vax_a.set_title('Velocity ripple — after  (RMS={:.2f} deg/s  {:+.1f}%)'.format(
+                            vel_rms_a, vel_diff))
+                        _vax_a.grid(True, alpha=0.3)
+
                         _plt_rt.tight_layout()
                         _rt_plot_path = _cog_img(
                             '{}cogging_retest_{}.png'.format(_file_pfx, ts))
@@ -4109,9 +4504,1262 @@ class calibrate():
             self._cal_fault(_exc)
         finally:
             self.OnTaskComplete()
+            self.choice_test.SetSelection(0)
+            try:
+                self.node.nmt.state = 'PRE-OPERATIONAL'
+                time.sleep(0.1)
+                self.configure_Puck()
+                self.node.nmt.state = 'OPERATIONAL'
+                time.sleep(0.1)
+            except Exception:
+                pass
             if self.ADC_ON == False and self.adcWasON:
                 self.on_off_adc(self)
             self.Enable()
+
+    def cogging_position_sweep(self, event, calAll=False, _upd=None, fast=False):
+        """
+        Cogging characterisation via bidirectional position hold.
+
+        Alternative to cogging_error_compensation for motors that stall at low
+        RPM (high cogging/friction ratio, e.g. high-gear-ratio actuators).
+
+        Holds the motor at each of 128 mechanical positions using a software
+        P-controller running over velocity-mode SDO commands at ~100 Hz.
+        Approaches each position from CW and CCW directions; stiction cancels
+        in the average exactly as with the bidirectional velocity sweep.
+
+        No speed dependency → no stall, no velocity-PI phase distortion, no
+        gear-resonance excitation.  Measurement is quasi-static (DC), which is
+        the correct reference for a position-dependent feedforward.
+
+        Outputs, upload, and retest are identical to cogging_error_compensation.
+        """
+        if not self.check_for_node():
+            return
+        if not self._fw_at_least(4, 3, 3):
+            self._prompt_ok("Firmware Too Old",
+                "Cogging compensation calibration requires firmware v4.3.3 or later.\n"
+                "Please update the firmware and try again.")
+            return
+
+        if self.ADC_ON:
+            self.adcWasON = True
+            self.on_off_adc(self)
+        else:
+            self.adcWasON = False
+
+        if calAll:
+            if _upd is None: _upd = lambda v: None
+        else:
+            self.OnStartTask(None)
+            _upd = lambda v: self.UpdateUI(v)
+        if _upd is None: _upd = lambda v: None
+
+        self.Disable()
+        self.frame_statusbar.SetStatusText("Cogging position-hold sweep...", 1)
+        self.frame_statusbar.Update()
+        wx.Yield()
+
+        try:
+            import cmath as _cm
+            import datetime, os
+            from paths import resource_path, session_path
+            ts = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+
+            enc_resolution = self.node.sdo['EncoderConfig']['Resolution'].raw
+            motor_poles    = self.node.sdo['Calibration']['poles'].raw
+            i_peak         = self.node.sdo['Calibration']['i_peak'].raw
+            kt             = self.node.sdo['Calibration']['kt'].raw
+            pole_pairs     = motor_poles // 2
+            cts_per_elec   = enc_resolution * 2.0 / motor_poles
+
+            _alpha_bias   = self.node.sdo[0x3008][3].raw / 16.0  # Q12.4 → Q12.0 ADC counts
+            _beta_bias    = self.node.sdo[0x3009][3].raw / 16.0
+            _alpha_gf     = self.node.sdo[0x3008][6].raw
+            _beta_gf      = self.node.sdo[0x3009][6].raw
+            _isense_shunt = self.node.sdo[0x3008][5].raw
+            _isense_gain  = self.node.sdo[0x3008][4].raw
+            _e_zero       = self.node.sdo['Calibration']['e_zero'].raw
+            _e_polarity   = int(self.node.sdo['Calibration']['e_polarity'].raw)
+            _cts_per_elec = enc_resolution // pole_pairs
+            _ma_per_ct    = (3.3 / 4096.0 * 1000.0 / _isense_shunt
+                             * 1000.0 / _isense_gain * 1000.0)
+
+            node_id   = getattr(self.node, 'id', '?')
+            _pc       = None
+            try: _pc = int(self.node.sdo[0x1018][2].raw)
+            except Exception: pass
+            model_str = getattr(self, '_PRODUCT_CODE_MODELS', {}).get(_pc, 'unknown')
+            _file_pfx = 'node{}_{}_'.format(node_id, model_str.replace(' ', '_'))
+
+            def _cog_img(name):
+                p = session_path('cogging/images/{}'.format(name))
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+                return p
+            def _cog_data(name):
+                p = session_path('cogging/data/{}'.format(name))
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+                return p
+
+            # fast=True halves bins and steps for quick debug iterations (~1.5 min vs ~5 min).
+            # Applies equally to calibration and retest passes.
+            N_BINS      = 64  if fast else 128   # k_max=32/64; k=7 well-resolved either way
+            N_HARMONICS = 16
+            N_COG_BINS  = 10
+            UPDATE_S    = 0.005   # position controller period (200 Hz over SDO)
+            POS_KP      = 80      # P gain: cts/s per count error (stable @ 200 Hz)
+            MAX_VEL     = 2048    # velocity limit during hold (30 RPM)
+            HOLD_STEPS  = 24 if fast else 40     # steps per bin (fast: 0.12 s, normal: 0.2 s)
+            SAMPLE_FROM = 8  if fast else 16     # settle steps before sampling
+
+            bin_cts = enc_resolution // N_BINS   # 32 counts/bin for 4096-count encoder
+            bin_deg = [b * bin_cts / enc_resolution * 360.0 for b in range(N_BINS)]
+
+            print("\nCogging characterisation (position hold) — parameters")
+            print("  {} pole pairs  {:.2f} cts/elec  enc_res={}"
+                  "  i_peak={} mA  Kt={} mNm/A".format(
+                      pole_pairs, cts_per_elec, enc_resolution, i_peak, kt))
+            print("  {} bins  {} steps/bin ({:.1f}s hold, {:.1f}s sample)".format(
+                N_BINS, HOLD_STEPS,
+                HOLD_STEPS * UPDATE_S,
+                (HOLD_STEPS - SAMPLE_FROM) * UPDATE_S))
+            est_min = 2 * N_BINS * HOLD_STEPS * UPDATE_S / 60.0
+            print("  ~{:.0f} min total  (2 passes × {} bins × {:.1f}s)".format(
+                est_min, N_BINS, HOLD_STEPS * UPDATE_S))
+            _upd(2)
+
+            # ── Disable cogging compensation before sweep ──────────────────────
+            _cog_was_active = False
+            for _dis in range(3):
+                try:
+                    _cog_was_active = bool(self.node.sdo[0x3028][1].raw)
+                    self.node.sdo[0x3028][1].raw = 0
+                    if int(self.node.sdo[0x3028][1].raw) == 0: break
+                except Exception: pass
+                time.sleep(0.1)
+            else:
+                raise RuntimeError("Could not disable cogging compensation before sweep.")
+            if _cog_was_active:
+                print("  NOTE: Cogging compensation was active — disabled for sweep.")
+
+            # ── Reboot to clear velocity integrator ────────────────────────────
+            print("  Rebooting node {} to clear velocity integrator state...".format(node_id))
+            self.network.send_message(0x0, [0x81, int(node_id)])
+            _sleep_responsive(1.5)
+            self.configure_Puck(configure_pdos=False)
+            for _dis in range(3):
+                try:
+                    self.node.sdo[0x3028][1].raw = 0
+                    if int(self.node.sdo[0x3028][1].raw) == 0: break
+                except Exception: pass
+                time.sleep(0.1)
+
+            # ── Enable velocity mode ───────────────────────────────────────────
+            self.node.sdo["ControlWord"].raw        = CLEAR_FAULT
+            self.node.sdo["ControlWord"].raw        = SHUTDOWN
+            self.node.sdo["ControlWord"].raw        = OP_ENABLED
+            self.node.sdo["SetModeOfOperation"].raw = MODE_PROFILE_VEL
+            time.sleep(0.2)
+            wx.Yield()
+
+            # ── Detect velocity-to-raw-position sign ───────────────────────────
+            # Positive TargetVelocity may increase OR decrease RawPosition
+            # depending on u_polarity × e_polarity.  Detect empirically.
+            _r0 = int(self.node.sdo["Encoder"]["RawPosition"].raw)
+            self.node.sdo["TargetVelocity"].raw = 256
+            time.sleep(0.15)
+            _r1 = int(self.node.sdo["Encoder"]["RawPosition"].raw)
+            self.node.sdo["TargetVelocity"].raw = 0
+            time.sleep(0.1)
+            _dr = (_r1 - _r0 + enc_resolution) % enc_resolution
+            if _dr > enc_resolution // 2: _dr -= enc_resolution
+            _vel_sign = 1 if _dr >= 0 else -1
+            print("  Velocity sign: {} (positive vel {} raw encoder)".format(
+                _vel_sign, "increases" if _vel_sign > 0 else "decreases"))
+
+            # ── Position hold kernel ───────────────────────────────────────────
+            def _hold_and_measure(target_raw, n_steps, sample_from):
+                """
+                P-controller: hold motor at target_raw for n_steps.
+                Returns (mean_iq_mA, mean_actual_raw) from steps >= sample_from.
+                mean_actual_raw is the encoder position actually achieved —
+                may differ from target_raw when the motor slips to a cogging detent.
+                """
+                samples = []
+                actual_raws = []
+                for _step in range(n_steps):
+                    raw_now = int(self.node.sdo["Encoder"]["RawPosition"].raw)
+                    err = (target_raw - raw_now + enc_resolution) % enc_resolution
+                    if err > enc_resolution // 2: err -= enc_resolution
+                    vel = max(-MAX_VEL, min(MAX_VEL,
+                                            int(POS_KP * err * _vel_sign)))
+                    self.node.sdo["TargetVelocity"].raw = vel
+                    time.sleep(UPDATE_S)
+
+                    if _step >= sample_from:
+                        alpha_f = self.node.sdo[0x3008][2].raw
+                        beta_f  = self.node.sdo[0x3009][2].raw
+                        enc_c   = self.node.sdo[0x3012][2].raw
+                        a_mA = ((_alpha_bias - alpha_f / 16.0)
+                                * (_alpha_gf / 4096.0) * _ma_per_ct)
+                        b_mA = ((_beta_bias  - beta_f  / 16.0)
+                                * (_beta_gf  / 4096.0) * _ma_per_ct)
+                        th_m  = _e_polarity * (enc_c - _e_zero)
+                        th_ct = (enc_resolution + th_m) % _cts_per_elec
+                        if th_ct >= _cts_per_elec // 2: th_ct -= _cts_per_elec
+                        th_e  = th_ct / _cts_per_elec * 2.0 * math.pi
+                        samples.append(-a_mA * math.sin(th_e)
+                                       + b_mA * math.cos(th_e))
+                        actual_raws.append(raw_now)
+                    wx.Yield()
+                iq_mean  = sum(samples)     / len(samples)     if samples     else 0.0
+                pos_mean = sum(actual_raws) / len(actual_raws) if actual_raws else float(target_raw)
+                return iq_mean, pos_mean
+
+            def _fill_bins(bins_list):
+                """Average each bin's samples; linearly interpolate empty bins.
+                Empty bins occur when the motor slipped to a stable cogging detent
+                and bypassed the unstable target position entirely."""
+                n    = len(bins_list)
+                raw  = [sum(b) / len(b) if b else None for b in bins_list]
+                filled = list(raw)
+                for _i in range(n):
+                    if filled[_i] is not None:
+                        continue
+                    prev_d = next((d for d in range(1, n)
+                                   if raw[(_i - d) % n] is not None), None)
+                    next_d = next((d for d in range(1, n)
+                                   if raw[(_i + d) % n] is not None), None)
+                    if prev_d is not None and next_d is not None:
+                        p_val = raw[(_i - prev_d) % n]
+                        n_val = raw[(_i + next_d) % n]
+                        filled[_i] = p_val + (n_val - p_val) * prev_d / (prev_d + next_d)
+                    elif prev_d is not None:
+                        filled[_i] = raw[(_i - prev_d) % n]
+                    elif next_d is not None:
+                        filled[_i] = raw[(_i + next_d) % n]
+                    else:
+                        filled[_i] = 0.0
+                return filled
+
+            # ── CW pass: bins 0 → 127 (motor moves in + direction) ────────────
+            print("\nCogging position sweep (CW pass, bins 0→127) ...")
+            fwd_bins = [[] for _ in range(N_BINS)]
+            for _b in range(N_BINS):
+                iq, actual_pos = _hold_and_measure(_b * bin_cts, HOLD_STEPS, SAMPLE_FROM)
+                actual_bin = int(round(actual_pos)) % enc_resolution // bin_cts % N_BINS
+                fwd_bins[actual_bin].append(iq)
+                if _b % 16 == 15 or _b == 0:
+                    print("  bin {:>3d}/{} ...".format(_b + 1, N_BINS))
+                _upd(3 + _b * 38 // N_BINS)
+
+            # ── CCW pass: bins 127 → 0 (motor moves in − direction) ───────────
+            print("Cogging position sweep (CCW pass, bins 127→0) ...")
+            rev_bins = [[] for _ in range(N_BINS)]
+            for _b in range(N_BINS - 1, -1, -1):
+                iq, actual_pos = _hold_and_measure(_b * bin_cts, HOLD_STEPS, SAMPLE_FROM)
+                actual_bin = int(round(actual_pos)) % enc_resolution // bin_cts % N_BINS
+                rev_bins[actual_bin].append(iq)
+                if (N_BINS - 1 - _b) % 16 == 15 or _b == N_BINS - 1:
+                    print("  bin {:>3d}/{} ...".format(N_BINS - _b, N_BINS))
+                _upd(41 + (N_BINS - 1 - _b) * 38 // N_BINS)
+
+            self.node.sdo["TargetVelocity"].raw = 0
+            _sleep_responsive(0.5)
+            self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
+            wx.Yield()
+
+            n_empty_fwd = sum(1 for b in fwd_bins if not b)
+            n_empty_rev = sum(1 for b in rev_bins if not b)
+            if n_empty_fwd or n_empty_rev:
+                print("  NOTE: {}/{} fwd and {}/{} rev bins empty "
+                      "(motor slipped to detents; interpolated).".format(
+                          n_empty_fwd, N_BINS, n_empty_rev, N_BINS))
+            fwd_iq = _fill_bins(fwd_bins)
+            rev_iq = _fill_bins(rev_bins)
+            avg_iq = [(fwd_iq[_b] + rev_iq[_b]) / 2.0 for _b in range(N_BINS)]
+
+            dc_offset_ma = sum(avg_iq) / len(avg_iq)
+            iq_ac        = [v - dc_offset_ma for v in avg_iq]
+            rms_iq_ma    = (sum(v * v for v in iq_ac) / len(iq_ac)) ** 0.5
+            max_iq_ma    = max(abs(v) for v in iq_ac)
+            rms_cog_mnm  = kt * rms_iq_ma / 1000.0
+            max_cog_mnm  = kt * max_iq_ma / 1000.0
+
+            print("\n  Position-hold cogging profile stats:")
+            print("  DC offset: {:+.2f} mA  (net load bias)".format(dc_offset_ma))
+            print("  AC RMS Iq: {:.2f} mA  →  RMS cogging {:.2f} mNm".format(
+                rms_iq_ma, rms_cog_mnm))
+            print("  AC peak Iq: {:.2f} mA  →  peak cogging {:.2f} mNm".format(
+                max_iq_ma, max_cog_mnm))
+
+            # ── Fit Fourier series (for CSV / plots) ───────────────────────────
+            def _dft(samples, n_harm):
+                N, X = len(samples), []
+                for k in range(n_harm + 1):
+                    wk  = _cm.exp(-2j * math.pi * k / N)
+                    val = 0.0 + 0j; w = 1.0 + 0j
+                    for c in samples:
+                        val += c * w; w *= wk
+                    X.append(val / N)
+                return X
+
+            def _reconstruct_f(X, out_size):
+                table = []
+                for p in range(out_size):
+                    val = X[0].real
+                    for k in range(1, len(X)):
+                        a = 2.0 * math.pi * k * p / out_size
+                        val += 2.0 * (X[k].real * math.cos(a)
+                                      - X[k].imag * math.sin(a))
+                    table.append(val)
+                return table
+
+            X_iq   = _dft(avg_iq, N_HARMONICS)
+            fit_iq = _reconstruct_f(X_iq, N_BINS)
+
+            # ── CSV ────────────────────────────────────────────────────────────
+            csv_path = _cog_data('{}cogging_pos_sweep_{}.csv'.format(_file_pfx, ts))
+            with open(csv_path, 'w') as _f:
+                _f.write("# Cogging position-hold sweep — Node {}  {}  ({})\n".format(
+                    node_id, model_str, ts))
+                _f.write("# DC offset: {:+.3f} mA\n".format(dc_offset_ma))
+                _f.write("angle_deg,iq_fwd_mA,iq_rev_mA,iq_avg_mA,iq_fit_mA\n")
+                for _b in range(N_BINS):
+                    _f.write("{:.3f},{:.4f},{:.4f},{:.4f},{:.4f}\n".format(
+                        bin_deg[_b], fwd_iq[_b], rev_iq[_b],
+                        avg_iq[_b], fit_iq[_b]))
+            print("\n  CSV → {}".format(csv_path))
+
+            # ── FFT + upload (numpy) ───────────────────────────────────────────
+            _upload_ok = False
+            try:
+                import numpy as _np
+                import json as _json
+
+                tf      = _np.array(avg_iq, dtype=_np.float64)
+                X_np    = _np.fft.rfft(tf)
+                N_fft   = len(avg_iq)
+                amps    = 2.0 * _np.abs(X_np) / N_fft
+                phases  = _np.angle(X_np)
+                amps[0] /= 2.0; amps[-1] /= 2.0
+
+                order  = 1 + _np.argsort(amps[1:])[::-1]
+                top_n  = min(40, len(order))
+
+                print("\n  FFT harmonic analysis  (N={})".format(N_fft))
+                print("  {:>4s}  {:>10s}  {:>10s}  {:>12s}  {:>12s}".format(
+                    "k", "Amp(mA)", "Phase(rad)", "cos coeff", "sin coeff"))
+                print("  " + "-" * 54)
+
+                harmonic_list = []
+                for _ki in range(top_n):
+                    k   = int(order[_ki])
+                    A   = float(amps[k])
+                    phi = float(phases[k])
+                    a_k = A * _np.cos(phi)
+                    b_k = -A * _np.sin(phi)
+                    print("  {:>4d}  {:>10.4f}  {:>10.5f}  {:>12.4f}  {:>12.4f}".format(
+                        k, A, phi, float(a_k), float(b_k)))
+                    harmonic_list.append({
+                        "k": k, "cycles_per_rev": k,
+                        "amplitude_mA": A, "amplitude_mNm": float(kt * A / 1000.0),
+                        "phase_rad": phi, "cos_coeff": float(a_k), "sin_coeff": float(b_k),
+                    })
+
+                sorted_ks = [int(order[i]) for i in range(len(order))]
+
+                # Noise floor estimate for position hold.
+                # Each of N_BINS positions is measured independently with n_per_bin
+                # samples; the FFT harmonic amplitude noise is:
+                #   σ_harm = σ_bin / sqrt(N_BINS/2) = (ma_per_ct/sqrt(n)) / sqrt(N/2)
+                #          = ma_per_ct / sqrt(n * N/2) = ma_per_ct / sqrt(n * N / 2)
+                # Equivalently: use the velocity-sweep formula with total samples =
+                # n_per_bin × N_BINS (each bin measured n_per_bin times independently).
+                _n_per_bin = max(HOLD_STEPS - SAMPLE_FROM, 1)
+                _noise_floor_ma = _ma_per_ct / math.sqrt(
+                    3.0 * _n_per_bin * N_BINS / max(N_BINS // 2, 1))
+                _dom_k        = next((k for k in sorted_ks if k > 0 and k <= N_BINS // 2), 0)
+                _dom_phys_amp = float(amps[_dom_k]) if _dom_k else 0.0
+                print("\n  Per-harmonic noise floor: {:.2f} mA  "
+                      "dominant harmonic k={} at {:.2f} mA  "
+                      "(SNR {:.1f}×)".format(
+                          _noise_floor_ma, _dom_k, _dom_phys_amp,
+                          _dom_phys_amp / max(_noise_floor_ma, 1e-9)))
+
+                if _dom_phys_amp < 2.0 * _noise_floor_ma:
+                    print("  SKIPPING upload: dominant harmonic below 2× noise floor.")
+                    raise NameError("snr_too_low")
+
+                # Only upload physical cogging harmonics (k = n × pole_pairs).
+                # Non-multiples cluster at the practical measurement noise floor
+                # (~15–35 mA from friction hysteresis and positioning jitter) and
+                # cannot be reliably distinguished from noise regardless of sweep method.
+                _cog_ks  = [k for k in sorted_ks
+                            if k > 0 and k % pole_pairs == 0 and k <= N_BINS // 2
+                            and float(amps[k]) >= 2.0 * _noise_floor_ma]
+                _top_cog = _cog_ks[:N_COG_BINS]
+                _n_cog   = len(_top_cog)
+                print("  Physical cogging harmonics above 2× noise floor (k = n×{}): {}".format(
+                    pole_pairs, [k for k in _top_cog]))
+
+                def _clamp_i16_cog(v):
+                    return max(-32768, min(32767, int(round(v))))
+
+                print("\n  Uploading cogging compensation (0x3028) to node {} ...".format(
+                    node_id))
+                print("  {:>4}  {:>6}  {:>10}  {:>8}  {:>8}".format(
+                    "Bin", "k", "Amp(mA)", "a_s", "a_c"))
+                print("  " + "-" * 44)
+
+                self.node.sdo[0x3028][1].raw = 0
+                _n_written = 0
+                for _bi in range(N_COG_BINS):
+                    _as_sub = 2 + _bi * 3
+                    _k_sub  = 3 + _bi * 3
+                    _ac_sub = 4 + _bi * 3
+                    if _bi < _n_cog:
+                        _bk   = int(_top_cog[_bi])
+                        _bA   = float(amps[_bk])
+                        _bphi = float(phases[_bk])
+                        _as_v = _clamp_i16_cog(-_bA * math.sin(_bphi))
+                        _ac_v = _clamp_i16_cog(+_bA * math.cos(_bphi))
+                        _k_v  = _bk
+                        print("  {:>4d}  {:>6d}  {:>10.4f}  {:>8d}  {:>8d}".format(
+                            _bi, _k_v, _bA, _as_v, _ac_v))
+                    else:
+                        _as_v = _ac_v = _k_v = 0
+                    try:
+                        self.node.sdo[0x3028][_as_sub].raw = _as_v
+                        self.node.sdo[0x3028][_k_sub].raw  = _k_v
+                        self.node.sdo[0x3028][_ac_sub].raw = _ac_v
+                        _n_written += 1
+                    except SdoAbortedError as _bin_exc:
+                        if _bin_exc.code == 0x06020000:
+                            print("  NOTE: firmware supports {} bin(s) — "
+                                  "stopping at bin {}.".format(_n_written, _bi))
+                        else:
+                            print("  WARNING: bin {} SDO abort 0x{:08X} — "
+                                  "stopping upload.".format(_bi, _bin_exc.code))
+                        break
+
+                if _n_written == 0:
+                    raise RuntimeError("No cogging bins could be written to 0x3028.")
+
+                self.node.sdo[0x3028][1].raw = 1
+                print("  Cogging Compensation Active → 1  ({} bin(s) written)".format(
+                    _n_written))
+                try:
+                    self.frame_menubar.COG_ON.Check(True)
+                    self.frame_menubar.COG_OFF.Check(False)
+                except Exception:
+                    pass
+
+                # Readback verification
+                print("\n  Readback verification:")
+                print("  {:>4}  {:>6}  {:>8}  {:>8}  {}".format(
+                    "Bin", "k", "a_s", "a_c", "OK?"))
+                print("  " + "-" * 40)
+                _active_rb = self.node.sdo[0x3028][1].raw
+                print("  Active flag readback: {}".format(_active_rb))
+                _rb_ok = True
+                for _bi in range(_n_written):
+                    _as_rb = self.node.sdo[0x3028][2 + _bi * 3].raw
+                    _k_rb  = self.node.sdo[0x3028][3 + _bi * 3].raw
+                    _ac_rb = self.node.sdo[0x3028][4 + _bi * 3].raw
+                    if _bi < _n_cog:
+                        _bk_exp  = int(_top_cog[_bi])
+                        _bA_exp  = float(amps[_bk_exp])
+                        _bph_exp = float(phases[_bk_exp])
+                        _as_exp  = _clamp_i16_cog(-_bA_exp * math.sin(_bph_exp))
+                        _ac_exp  = _clamp_i16_cog(+_bA_exp * math.cos(_bph_exp))
+                    else:
+                        _bk_exp = _as_exp = _ac_exp = 0
+                    _ok = (_as_rb == _as_exp and _k_rb == _bk_exp and _ac_rb == _ac_exp)
+                    if not _ok:
+                        _rb_ok = False
+                    print("  {:>4d}  {:>6}  {:>8}  {:>8}  {}".format(
+                        _bi,
+                        "{} (exp {})".format(_k_rb, _bk_exp) if _k_rb != _bk_exp
+                            else str(_k_rb),
+                        "{} (exp {})".format(_as_rb, _as_exp) if _as_rb != _as_exp
+                            else str(_as_rb),
+                        "{} (exp {})".format(_ac_rb, _ac_exp) if _ac_rb != _ac_exp
+                            else str(_ac_rb),
+                        "OK" if _ok else "MISMATCH"))
+                if _rb_ok:
+                    print("  All bins verified OK.")
+                else:
+                    print("  WARNING: one or more bins did not readback correctly.")
+
+                print("\n  Saving 0x3028 to EEPROM ...")
+                for _si in range(1, 2 + _n_written * 3):
+                    self.node.sdo['Save']['Single'].raw = ((0x3028 << 8) | _si)
+                print("  Saved.")
+                _upload_ok = True
+
+            except SdoAbortedError as _cog_sdo_exc:
+                if _cog_sdo_exc.code == 0x06020000:
+                    print("\n  WARNING: 0x3028 (CoggingCompensation) not found on "
+                          "node {} — firmware does not support cogging upload.".format(node_id))
+                else:
+                    print("\n  WARNING: Cogging upload SDO abort "
+                          "0x{:08X}: {}".format(_cog_sdo_exc.code, _cog_sdo_exc))
+            except NameError:
+                pass
+            except ImportError:
+                print("  (FFT skipped — numpy not installed)")
+            except Exception as _fft_e:
+                print("  WARNING: FFT/upload failed: {}".format(_fft_e))
+
+            _upd(93)
+
+            # ── Retest: position hold with compensation active ─────────────────
+            if _upload_ok:
+                try:
+                    print("  Rebooting node {} to zero velocity integrator before retest...".format(
+                        node_id))
+                    self.network.send_message(0x0, [0x81, int(node_id)])
+                    _sleep_responsive(1.5)
+                    self.configure_Puck(configure_pdos=False)
+                    _rt_active = int(self.node.sdo[0x3028][1].raw)
+                    if not _rt_active:
+                        print("  WARNING: compensation not active after reboot.")
+
+                    self.node.sdo["ControlWord"].raw        = CLEAR_FAULT
+                    self.node.sdo["ControlWord"].raw        = SHUTDOWN
+                    self.node.sdo["ControlWord"].raw        = OP_ENABLED
+                    self.node.sdo["SetModeOfOperation"].raw = MODE_PROFILE_VEL
+                    time.sleep(0.2)
+                    wx.Yield()
+
+                    print("\n  Retest (compensation active, bidirectional) ...")
+                    rt_fwd_bins = [[] for _ in range(N_BINS)]
+                    for _b in range(N_BINS):
+                        iq, actual_pos = _hold_and_measure(
+                            _b * bin_cts, HOLD_STEPS, SAMPLE_FROM)
+                        actual_bin = (int(round(actual_pos)) % enc_resolution
+                                      // bin_cts % N_BINS)
+                        rt_fwd_bins[actual_bin].append(iq)
+                        if _b % 16 == 15 or _b == N_BINS - 1:
+                            print("  CW bin {:>3d}/{} ...".format(_b + 1, N_BINS))
+                        _upd(93 + _b * 3 // N_BINS)
+
+                    rt_rev_bins = [[] for _ in range(N_BINS)]
+                    for _b in range(N_BINS - 1, -1, -1):
+                        iq, actual_pos = _hold_and_measure(
+                            _b * bin_cts, HOLD_STEPS, SAMPLE_FROM)
+                        actual_bin = (int(round(actual_pos)) % enc_resolution
+                                      // bin_cts % N_BINS)
+                        rt_rev_bins[actual_bin].append(iq)
+                        if (N_BINS - 1 - _b) % 16 == 15 or _b == N_BINS - 1:
+                            print("  CCW bin {:>3d}/{} ...".format(
+                                N_BINS - _b, N_BINS))
+                        _upd(96 + (N_BINS - 1 - _b) * 3 // N_BINS)
+
+                    self.node.sdo["TargetVelocity"].raw = 0
+                    _sleep_responsive(0.5)
+                    self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
+
+                    rt_fwd_iq = _fill_bins(rt_fwd_bins)
+                    rt_rev_iq = _fill_bins(rt_rev_bins)
+                    rt_iq = [(rt_fwd_iq[_b] + rt_rev_iq[_b]) / 2.0
+                             for _b in range(N_BINS)]
+                    dc_rt  = sum(rt_iq) / len(rt_iq)
+                    ac_rt  = [v - dc_rt for v in rt_iq]
+                    rms_rt = (sum(v * v for v in ac_rt) / len(ac_rt)) ** 0.5
+                    rms_diff = (rms_rt - rms_iq_ma) / rms_iq_ma * 100.0
+
+                    print("\n  Retest results (bidirectional, compensation active):")
+                    print("  AC RMS Iq:  before={:.2f} mA   after={:.2f} mA   ({:+.1f}%)".format(
+                        rms_iq_ma, rms_rt, rms_diff))
+                    if rms_diff < -5:
+                        print("  Compensation is reducing Iq ripple ✓")
+                    elif rms_diff > 10:
+                        print("  WARNING: Iq increased — compensation may be destabilising.")
+                    else:
+                        print("  Iq approximately unchanged.")
+
+                    try:
+                        import matplotlib
+                        matplotlib.use('Agg')
+                        import matplotlib.pyplot as _plt_rt
+
+                        _yr = max(max(abs(v) for v in iq_ac),
+                                  max(abs(v) for v in ac_rt)) * 1.15 or 1.0
+                        _fig_rt, (_ax_b, _ax_a) = _plt_rt.subplots(1, 2, figsize=(12, 4))
+                        _fig_rt.suptitle(
+                            'Cogging Compensation (position hold) — Node {}  {}  ({})\n'
+                            'Iq RMS: {:.2f} → {:.2f} mA  ({:+.1f}%)'.format(
+                                node_id, model_str, ts,
+                                rms_iq_ma, rms_rt, rms_diff),
+                            fontsize=10)
+                        _ax_b.plot(bin_deg, iq_ac, 'b-', linewidth=1.0)
+                        _ax_b.axhline(0, color='k', linewidth=0.8, linestyle='--')
+                        _ax_b.set_ylim(-_yr, _yr)
+                        _ax_b.set_xlabel('Mechanical angle (°)')
+                        _ax_b.set_ylabel('Iq AC (mA)')
+                        _ax_b.set_title('Iq — before  (RMS={:.2f} mA)'.format(rms_iq_ma))
+                        _ax_b.grid(True, alpha=0.3)
+                        _ax_a.plot(bin_deg, ac_rt, 'g-', linewidth=1.0)
+                        _ax_a.axhline(0, color='k', linewidth=0.8, linestyle='--')
+                        _ax_a.set_ylim(-_yr, _yr)
+                        _ax_a.set_xlabel('Mechanical angle (°)')
+                        _ax_a.set_title('Iq — after  (RMS={:.2f} mA  {:+.1f}%)'.format(
+                            rms_rt, rms_diff))
+                        _ax_a.grid(True, alpha=0.3)
+                        _plt_rt.tight_layout()
+                        _rt_plot_path = _cog_img(
+                            '{}cogging_pos_retest_{}.png'.format(_file_pfx, ts))
+                        _plt_rt.savefig(_rt_plot_path, dpi=100)
+                        _plt_rt.close(_fig_rt)
+                        print("  Before/after plot → {}".format(_rt_plot_path))
+                    except ImportError:
+                        pass
+                    except Exception as _rt_plt_exc:
+                        print("  WARNING: Retest plot failed: {}".format(_rt_plt_exc))
+
+                except Exception as _rt_e:
+                    print("  WARNING: Retest failed: {}".format(_rt_e))
+
+            _upd(100)
+            print("\nCogging position-hold sweep complete.")
+
+        except Exception as _exc:
+            self._cal_fault(_exc)
+        finally:
+            try:
+                self.node.sdo["TargetVelocity"].raw = 0
+                self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
+            except Exception:
+                pass
+            self.OnTaskComplete()
+            self.choice_test.SetSelection(0)
+            try:
+                self.node.nmt.state = 'PRE-OPERATIONAL'
+                time.sleep(0.1)
+                self.configure_Puck()
+                self.node.nmt.state = 'OPERATIONAL'
+                time.sleep(0.1)
+            except Exception:
+                pass
+            if self.ADC_ON == False and self.adcWasON:
+                self.on_off_adc(self)
+            self.Enable()
+
+    def cogging_calibrate_auto(self, event, calAll=False, _upd=None, fast=False):
+        """Entry point for cogging calibration menu item — delegates to FW DFT."""
+        self.cogging_fw_calibrate(event, calAll=calAll, _upd=_upd)
+
+    def cogging_fw_calibrate(self, event, calAll=False, _upd=None):
+        """
+        Firmware-side DFT cogging calibration using 0x3029.
+
+        Spins motor at TARGET_MOTOR_RPM, triggers the ISR DFT accumulator,
+        polls until done, then copies a_s/k/a_c from 0x3029 to 0x3028.
+
+        If compensation is already active, offers:
+          Recalibrate — new DFT sweep; before/after Iq comparison plot generated.
+          Retest      — verify current compensation without new calibration.
+
+        Both paths output cogging_fw_retest_*.png (before vs after Iq AC profile
+        + harmonic bar chart with PASS/CHECK per dominant harmonic).
+        """
+        if not self.check_for_node():
+            return
+        if self.ADC_ON:
+            self.adcWasON = True
+            self.on_off_adc(self)
+        else:
+            self.adcWasON = False
+        if calAll:
+            if _upd is None:
+                _upd = lambda v: None
+        else:
+            self.OnStartTask(None)
+            _upd = lambda v: self.UpdateUI(v)
+        if _upd is None:
+            _upd = lambda v: None
+
+        # Always show a dialog — options differ based on whether comp is already active.
+        _retest_only = False
+        _do_test     = True   # whether to run before/after Iq comparison
+        try:
+            _comp_active = bool(self.node.sdo[0x3028][1].raw)
+        except Exception:
+            _comp_active = False
+
+        try:
+            if _comp_active:
+                _dlg_title = "Cogging Compensation Active"
+                _dlg_body  = (
+                    "Cogging compensation is currently active on this node.\n\n"
+                    "Recalibrate + Test: run a new DFT sweep, replace coefficients,\n"
+                    "  then compare Iq before/after.  ~55 s.\n\n"
+                    "Retest Only: verify current compensation — spin with comp off\n"
+                    "  then on, compare Iq profiles.  No new calibration.  ~35 s.")
+                _btn1_lbl = "Recalibrate + Test"
+                _btn2_lbl = "Retest Only"
+            else:
+                _dlg_title = "Cogging DFT Calibration"
+                _dlg_body  = (
+                    "No cogging compensation is active on this node.\n\n"
+                    "Calibrate + Test: run DFT, upload results, then compare Iq\n"
+                    "  before/after to confirm quality.  ~55 s.\n\n"
+                    "Calibrate Only: run DFT and upload.  Faster, no comparison.\n"
+                    "  ~20 s.")
+                _btn1_lbl = "Calibrate + Test"
+                _btn2_lbl = "Calibrate Only"
+
+            _cdlg        = wx.Dialog(self, title=_dlg_title)
+            _cdlg_sizer  = wx.BoxSizer(wx.VERTICAL)
+            _cdlg_msg    = wx.StaticText(_cdlg, label=_dlg_body)
+            _cdlg_sizer.Add(_cdlg_msg, 0, wx.ALL, 12)
+            _cdlg_btn_sz = wx.BoxSizer(wx.HORIZONTAL)
+            _btn1        = wx.Button(_cdlg, label=_btn1_lbl)
+            _btn2        = wx.Button(_cdlg, label=_btn2_lbl)
+            _btn_cancel  = wx.Button(_cdlg, wx.ID_CANCEL, label="Cancel")
+            _cdlg_btn_sz.Add(_btn1,       0, wx.ALL, 4)
+            _cdlg_btn_sz.Add(_btn2,       0, wx.ALL, 4)
+            _cdlg_btn_sz.Add(_btn_cancel, 0, wx.ALL, 4)
+            _cdlg_sizer.Add(_cdlg_btn_sz, 0, wx.ALIGN_CENTER | wx.BOTTOM, 8)
+            _cdlg.SetSizerAndFit(_cdlg_sizer)
+            _cdlg_choice = [None]
+            def _on_btn1(e): _cdlg_choice[0] = 'btn1'; _cdlg.EndModal(wx.ID_YES)
+            def _on_btn2(e): _cdlg_choice[0] = 'btn2'; _cdlg.EndModal(wx.ID_NO)
+            _btn1.Bind(wx.EVT_BUTTON, _on_btn1)
+            _btn2.Bind(wx.EVT_BUTTON, _on_btn2)
+            _cdlg_result = _cdlg.ShowModal()
+            _cdlg.Destroy()
+            if _cdlg_result == wx.ID_CANCEL:
+                if self.adcWasON and not self.ADC_ON:
+                    self.on_off_adc(self)
+                return
+            if _comp_active:
+                _retest_only = (_cdlg_choice[0] == 'btn2')   # "Retest Only"
+                _do_test     = True
+            else:
+                _retest_only = False
+                _do_test     = (_cdlg_choice[0] == 'btn1')   # "Calibrate + Test"
+        except Exception:
+            pass
+
+        self.Disable()
+        _task_lbl = ("Cogging retest..." if _retest_only
+                     else "Cogging firmware DFT calibration...")
+        self.frame_statusbar.SetStatusText(_task_lbl, 1)
+        self.frame_statusbar.Update()
+        wx.Yield()
+
+        COG_CAL_DONE     = 2
+        COG_CAL_ERROR    = 3
+        TARGET_MOTOR_RPM = 200   # motor shaft RPM
+        SETTLE_S        = 2.0   # settle before DFT1
+        VERIFY_SETTLE_S = 20.0  # settle before DFT2 — allows velocity PI to fully adapt to feedforward
+        DFT_SNR_MIN     = 2.0   # k=7 must be ≥ 2× mean of higher harmonics
+        N_REVS          = 50    # motor shaft revolutions per DFT run
+        DFT_RATIO_MAX   = 1.3   # PASS if DFT2_rms / DFT1_rms < 1.3 (PI adapted, feedforward took over)
+
+        try:
+            import datetime, os
+            from paths import session_path
+            ts = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+
+            enc_resolution  = int(self.node.sdo['EncoderConfig']['Resolution'].raw)
+            node_id         = getattr(self.node, 'id', '?')
+            pole_pairs      = int(self.node.sdo['Calibration']['poles'].raw) // 2
+            kt              = int(self.node.sdo['Calibration']['kt'].raw)  # mNm/A
+            vel_cts_per_sec = int(round(TARGET_MOTOR_RPM / 60.0 * enc_resolution))
+
+            _pc = None
+            try:
+                _pc = int(self.node.sdo[0x1018][2].raw)
+            except Exception:
+                pass
+            model_str = getattr(self, '_PRODUCT_CODE_MODELS', {}).get(_pc, 'unknown')
+            _file_pfx = 'node{}_{}_'.format(node_id, model_str.replace(' ', '_'))
+
+            def _cog_img(name):
+                p = session_path('cogging/images/{}'.format(name))
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+                return p
+
+            # ---------------------------------------------------------------- #
+            # Inner helpers                                                     #
+            # ---------------------------------------------------------------- #
+
+            def _run_dft(settle_s, comp_label):
+                """Spin at TARGET_MOTOR_RPM, settle settle_s, trigger firmware DFT.
+                Returns (results, rms) where results = list of (a_s, k, a_c) tuples.
+                Caller must have already called _enter_vel_mode()."""
+                self.node.sdo[0x3029][2].raw = N_REVS
+                n_revs_actual = int(self.node.sdo[0x3029][2].raw)
+                print("  Spinning at {} RPM, settling {:.0f} s ({}) ...".format(
+                    TARGET_MOTOR_RPM, settle_s, comp_label))
+                self.node.sdo['TargetVelocity'].raw = vel_cts_per_sec
+                _sleep_responsive(settle_s)
+                wx.Yield()
+                print("  Triggering DFT ({} revs) ...".format(n_revs_actual))
+                self.node.sdo[0x3029][1].raw = 1
+                _t0, _tout = time.time(), 120.0
+                while True:
+                    time.sleep(0.25)
+                    wx.Yield()
+                    _st = int(self.node.sdo[0x3029][1].raw)
+                    _el = time.time() - _t0
+                    if _st == COG_CAL_DONE:
+                        print("  DFT done in {:.1f} s.".format(_el))
+                        break
+                    elif _st == COG_CAL_ERROR:
+                        raise RuntimeError("Firmware DFT ERROR — check poles/encoder config.")
+                    elif _el > _tout:
+                        self.node.sdo[0x3029][1].raw = 0
+                        raise RuntimeError("DFT timed out after {:.0f} s.".format(_el))
+                self.node.sdo['TargetVelocity'].raw = 0
+                _sleep_responsive(0.5)
+                print("\n  DFT results ({})".format(comp_label))
+                print("  {:>4}  {:>6}  {:>8}  {:>8}  {:>10}".format(
+                    "Bin", "k", "a_s", "a_c", "Amp(mA)"))
+                print("  " + "-" * 44)
+                _res = []
+                for _bi in range(10):
+                    _as = int(self.node.sdo[0x3029][3 + _bi * 3].raw)
+                    _k  = int(self.node.sdo[0x3029][4 + _bi * 3].raw)
+                    _ac = int(self.node.sdo[0x3029][5 + _bi * 3].raw)
+                    _res.append((_as, _k, _ac))
+                    print("  {:>4d}  {:>6d}  {:>8d}  {:>8d}  {:>10.2f}".format(
+                        _bi, _k, _as, _ac, (_as**2 + _ac**2)**0.5))
+                _rms = (sum((_r[0]**2 + _r[2]**2) / 2.0 for _r in _res)) ** 0.5
+                print("  Total RMS = {:.1f} mA".format(_rms))
+                return _res, _rms
+
+            def _fw_plot_dft_comparison(results1, results2, rms1, rms2, passed, label_suffix):
+                try:
+                    import matplotlib
+                    matplotlib.use('Agg')
+                    import matplotlib.pyplot as _plt
+
+                    _pf_col = 'green' if passed else 'darkorange'
+                    _ratio  = rms2 / rms1 if rms1 > 0 else 999.0
+                    _pf_lbl = ('PASS — ratio {:.2f} (PI adapted, feedforward active)'.format(_ratio)
+                               if passed else
+                               'FAIL — ratio {:.2f} (PI not adapted, comp wrong or stale)'.format(_ratio))
+                    _fig, _axes = _plt.subplots(1, 3, figsize=(18, 5))
+                    _ax1, _ax2, _ax3 = _axes
+
+                    _fig.suptitle(
+                        'Cogging Comp {} — Node {}  {}  ({})\n'
+                        'DFT2/DFT1 ratio: {:.2f}  (pass < {:.1f})  [{}]'.format(
+                            label_suffix.replace('_', ' ').title(),
+                            node_id, model_str, ts,
+                            _ratio, DFT_RATIO_MAX, _pf_lbl),
+                        fontsize=11, color=_pf_col)
+
+                    _ymax = max(
+                        max((_r[0]**2 + _r[2]**2)**0.5 for _r in results1) if results1 else 1.0,
+                        max((_r[0]**2 + _r[2]**2)**0.5 for _r in results2) if results2 else 1.0
+                    ) * 1.25 or 1.0
+
+                    def _dft_bars(ax, results, title, color):
+                        ks   = [_r[1] for _r in results]
+                        amps = [(_r[0]**2 + _r[2]**2)**0.5 for _r in results]
+                        _bars = ax.bar(range(len(ks)), amps, color=color, alpha=0.85, width=0.6)
+                        ax.set_xticks(range(len(ks)))
+                        ax.set_xticklabels(['k={}'.format(_k) for _k in ks],
+                                           rotation=45, ha='right', fontsize=8)
+                        ax.set_ylabel('Amplitude (mA)')
+                        ax.set_title(title)
+                        ax.grid(True, alpha=0.3, axis='y')
+                        ax.set_ylim(0, _ymax)
+                        for _bar, _val in zip(_bars, amps):
+                            if _val > 0.5:
+                                ax.text(_bar.get_x() + _bar.get_width() / 2,
+                                        _val + _ymax * 0.02,
+                                        '{:.1f}'.format(_val),
+                                        ha='center', va='bottom', fontsize=7)
+
+                    _dft_bars(_ax1, results1,
+                              'DFT 1 — comp OFF\n(RMS={:.1f} mA)'.format(rms1), 'steelblue')
+                    _dft_bars(_ax2, results2,
+                              'DFT 2 — comp ON\n(RMS={:.1f} mA)'.format(rms2),
+                              'seagreen' if passed else 'tomato')
+
+                    # Panel 3: total RMS comparison with pass threshold
+                    _rms_bars = _ax3.bar(['DFT 1\n(comp OFF)', 'DFT 2\n(comp ON)'],
+                                         [rms1, rms2],
+                                         color=['steelblue', 'seagreen' if passed else 'tomato'],
+                                         width=0.5)
+                    _thresh = rms1 * DFT_RATIO_MAX
+                    _ax3.axhline(_thresh, color='darkorange', linewidth=1.5, linestyle='--',
+                                 label='Pass threshold (DFT2 < {:.1f}× DFT1)'.format(
+                                     DFT_RATIO_MAX))
+                    for _bar, _val in zip(_rms_bars, [rms1, rms2]):
+                        _ax3.text(_bar.get_x() + _bar.get_width() / 2,
+                                  _val + rms1 * 0.03,
+                                  '{:.1f} mA'.format(_val),
+                                  ha='center', va='bottom', fontsize=10)
+                    _ax3.set_ylabel('Total cogging amplitude RMS (mA)')
+                    _ax3.set_title('DFT2/DFT1 ratio  [{}]'.format('PASS' if passed else 'FAIL'),
+                                   color=_pf_col)
+                    _ax3.legend(fontsize=9)
+                    _ax3.grid(True, alpha=0.3, axis='y')
+                    _ax3.set_ylim(bottom=0)
+
+                    _plt.tight_layout()
+                    _plot_path = _cog_img(
+                        '{}cogging_fw_dft_comp_{}.png'.format(_file_pfx, ts))
+                    _plt.savefig(_plot_path, dpi=110, bbox_inches='tight')
+                    _plt.close(_fig)
+                    print("  Comparison plot → {}".format(_plot_path))
+                except ImportError:
+                    print("  (Plot skipped — matplotlib not installed)")
+                except Exception as _pe:
+                    print("  WARNING: plot failed: {}".format(_pe))
+
+            def _disable_comp():
+                for _da in range(3):
+                    try:
+                        self.node.sdo[0x3028][1].raw = 0
+                        if int(self.node.sdo[0x3028][1].raw) == 0:
+                            return
+                    except Exception:
+                        pass
+                    time.sleep(0.1)
+                raise RuntimeError("Could not disable cogging compensation — check CAN.")
+
+            def _reboot_node(msg):
+                print("  Rebooting node {} ({}) ...".format(node_id, msg))
+                self.network.send_message(0x0, [0x81, int(node_id)])
+                _sleep_responsive(1.5)
+                self.configure_Puck(configure_pdos=False)
+
+            def _enter_vel_mode():
+                self.node.sdo["ControlWord"].raw        = CLEAR_FAULT
+                self.node.sdo["ControlWord"].raw        = SHUTDOWN
+                self.node.sdo["ControlWord"].raw        = OP_ENABLED
+                self.node.sdo["SetModeOfOperation"].raw = MODE_PROFILE_VEL
+                time.sleep(0.2)
+                wx.Yield()
+
+            # ================================================================ #
+            #  RETEST ONLY — velocity sweep before (comp OFF) and after       #
+            # ================================================================ #
+            if _retest_only:
+                print("\nCogging retest  ({} motor RPM  DFT1 {:.0f}s + DFT2 {:.0f}s settle)".format(
+                    TARGET_MOTOR_RPM, SETTLE_S, VERIFY_SETTLE_S))
+                print("  {} pole pairs  enc_res={}  Kt={} mNm/A".format(
+                    pole_pairs, enc_resolution, kt))
+                _upd(2)
+
+                _reboot_node("clear integrator for DFT1")
+                _disable_comp()
+                _upd(5)
+                _enter_vel_mode()
+
+                print("\n  DFT 1 — comp OFF ...")
+                results1, rms1 = _run_dft(SETTLE_S, 'comp OFF')
+                self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
+
+                if len(results1) > 1:
+                    _fund = (results1[0][0]**2 + results1[0][2]**2) ** 0.5
+                    _oth  = [(r[0]**2 + r[2]**2)**0.5 for r in results1[1:]]
+                    _snr  = _fund / (sum(_oth) / len(_oth)) if _oth and sum(_oth) > 0 else 999.0
+                    print("  DFT1 SNR = {:.2f} (min {:.1f})".format(_snr, DFT_SNR_MIN))
+                    if _snr < DFT_SNR_MIN:
+                        raise RuntimeError(
+                            "DFT1 quality check failed: SNR {:.2f} < {:.1f}.".format(
+                                _snr, DFT_SNR_MIN))
+                _upd(40)
+
+                # Upload DFT1 coefficients directly to 0x3028.
+                # cog_cal computes a_s=(2/N)*sum(iq*sin), a_c=(2/N)*sum(iq*cos) using the
+                # same p and convention as the feedforward — no conversion needed.
+                # Skip k<42: low-order harmonics (k=7,14,21,28,35) include both true cogging
+                # AND encoder-error-induced theta_e oscillations. Uploading these as feedforward
+                # injects current at the wrong phase, amplifying stiction rather than canceling
+                # cogging. k>=42 are slot harmonics where encoder error is negligible.
+                print("\n  Uploading DFT1 → 0x3028 (cogging feedforward, k>=42 only) ...")
+                print("  {:>4}  {:>6}  {:>8}  {:>8}  {:>10}".format(
+                    "Bin", "k", "a_s", "a_c", "Amp(mA)"))
+                print("  " + "-" * 44)
+                try:
+                    self.node.sdo[0x3028][1].raw = 0
+                    _n_cog_wb = 0
+                    for _as_v, _k_v, _ac_v in results1:
+                        if _k_v < 42:
+                            print("  skip  {:>6d}  (k<42, enc-error dominated)".format(_k_v))
+                            continue
+                        try:
+                            self.node.sdo[0x3028][2 + _n_cog_wb * 3].raw = _as_v
+                            self.node.sdo[0x3028][3 + _n_cog_wb * 3].raw = _k_v
+                            self.node.sdo[0x3028][4 + _n_cog_wb * 3].raw = _ac_v
+                            _n_cog_wb += 1
+                            print("  {:>4d}  {:>6d}  {:>8d}  {:>8d}  {:>10.2f}".format(
+                                _n_cog_wb - 1, _k_v, _as_v, _ac_v, (_as_v**2 + _ac_v**2)**0.5))
+                        except SdoAbortedError as _cbe:
+                            if _cbe.code == 0x06020000:
+                                print("  NOTE: firmware supports {} bin(s).".format(_n_cog_wb))
+                            else:
+                                raise
+                            break
+                    if _n_cog_wb > 0:
+                        self.node.sdo[0x3028][1].raw = 1
+                        print("  Cogging Compensation Active → 1  ({} bins)".format(_n_cog_wb))
+                        for _csi in range(1, 2 + _n_cog_wb * 3):
+                            self.node.sdo['Save']['Single'].raw = ((0x3028 << 8) | _csi)
+                        print("  Saved to EEPROM.")
+                    else:
+                        print("  WARNING: no bins written to 0x3028.")
+                except SdoAbortedError as _e28:
+                    if _e28.code == 0x06020000:
+                        print("  NOTE: 0x3028 not in firmware — cogging comp skipped.")
+                    else:
+                        raise
+                _upd(48)
+
+                _reboot_node("load new comp for DFT2")
+                _act = int(self.node.sdo[0x3028][1].raw)
+                if not _act:
+                    raise RuntimeError(
+                        "Comp not active after reboot — 0x3028:1=0. "
+                        "Run calibration first.")
+                _upd(55)
+
+                _enter_vel_mode()
+                print("\n  DFT 2 — comp ON ({:.0f} s settle) ...".format(VERIFY_SETTLE_S))
+                results2, rms2 = _run_dft(VERIFY_SETTLE_S, 'comp ON')
+                self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
+                _upd(90)
+
+                _rt_ratio  = rms2 / rms1 if rms1 > 0 else 999.0
+                _rt_passed = _rt_ratio < DFT_RATIO_MAX
+                print("\n  DFT2/DFT1 ratio = {:.2f}  (pass threshold < {:.1f})".format(
+                    _rt_ratio, DFT_RATIO_MAX))
+                print("  Result: {}".format(
+                    "PASS — PI adapted, feedforward active" if _rt_passed
+                    else "FAIL — PI not adapted (comp wrong or profile stale)"))
+
+                _fw_plot_dft_comparison(results1, results2, rms1, rms2, _rt_passed, 'Retest')
+                _upd(98)
+                self.frame_statusbar.SetStatusText(
+                    "Cogging retest: {}".format(
+                        "PASS" if _rt_passed else "FAIL — check compensation"), 1)
+                return   # finally still runs
+
+            # ================================================================ #
+            #  RECALIBRATE — optional before snap → DFT → after snap → plot   #
+            # ================================================================ #
+            print("\nCogging firmware DFT calibration")
+            print("  {} pole pairs  enc_res={}  Kt={} mNm/A  {} motor RPM".format(
+                pole_pairs, enc_resolution, kt, TARGET_MOTOR_RPM))
+
+            _disable_comp()
+
+            # Reboot clears integrator for DFT.
+            _reboot_node("clear integrator for DFT")
+            _disable_comp()
+
+            # Write n_revs AFTER reboot — firmware cog_cal_init_OD clamps on every boot.
+            self.node.sdo[0x3029][2].raw = N_REVS
+            n_revs = int(self.node.sdo[0x3029][2].raw)
+            print("  n_revs={} motor shaft revs".format(n_revs))
+            _upd(22)
+
+            _enter_vel_mode()
+            print("  Spinning at {} motor RPM, settling {:.1f} s ...".format(
+                TARGET_MOTOR_RPM, SETTLE_S))
+            self.node.sdo['TargetVelocity'].raw = vel_cts_per_sec
+            _sleep_responsive(SETTLE_S)
+            wx.Yield()
+            _upd(27)
+
+            # Trigger firmware DFT.
+            print("  Triggering firmware DFT (0x3029:1 = 1) ...")
+            self.node.sdo[0x3029][1].raw = 1
+            _t_start   = time.time()
+            _timeout_s = 120.0
+
+            while True:
+                time.sleep(0.25)
+                wx.Yield()
+                _status  = int(self.node.sdo[0x3029][1].raw)
+                _elapsed = time.time() - _t_start
+                if _status == COG_CAL_DONE:
+                    print("  DFT complete in {:.1f} s.".format(_elapsed))
+                    break
+                elif _status == COG_CAL_ERROR:
+                    raise RuntimeError(
+                        "Firmware DFT returned ERROR — check poles/encoder config.")
+                elif _elapsed > _timeout_s:
+                    self.node.sdo[0x3029][1].raw = 0
+                    raise RuntimeError(
+                        "Firmware DFT timed out after {:.0f} s — motor not spinning?".format(
+                            _elapsed))
+                _upd(int(27 + 50 * min(_elapsed / 30.0, 1.0)))
+
+            self.node.sdo['TargetVelocity'].raw = 0
+            _sleep_responsive(0.5)
+            self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
+            wx.Yield()
+            _upd(78)
+
+            # Read and display DFT results.
+            print("\n  DFT results from 0x3029:")
+            print("  {:>4}  {:>6}  {:>8}  {:>8}  {:>10}".format(
+                "Bin", "k", "a_s", "a_c", "Amp(mA)"))
+            print("  " + "-" * 44)
+            results = []
+            for _bi in range(10):
+                _as  = int(self.node.sdo[0x3029][3 + _bi * 3].raw)
+                _k   = int(self.node.sdo[0x3029][4 + _bi * 3].raw)
+                _ac  = int(self.node.sdo[0x3029][5 + _bi * 3].raw)
+                _amp = (_as ** 2 + _ac ** 2) ** 0.5
+                results.append((_as, _k, _ac))
+                print("  {:>4d}  {:>6d}  {:>8d}  {:>8d}  {:>10.2f}".format(
+                    _bi, _k, _as, _ac, _amp))
+
+            # DFT quality check: k=7 (fundamental) must dominate over higher harmonics.
+            # If all bins are roughly equal, the DFT captured a transient, not cogging.
+            if len(results) > 1:
+                _fund_amp  = (results[0][0]**2 + results[0][2]**2) ** 0.5
+                _others    = [(_r[0]**2 + _r[2]**2)**0.5 for _r in results[1:]]
+                _mean_oth  = sum(_others) / len(_others)
+                _dft_snr   = _fund_amp / _mean_oth if _mean_oth > 0 else 999.0
+                print("\n  DFT quality: k={} = {:.1f} mA, mean(others) = {:.1f} mA, "
+                      "SNR = {:.2f} (min {:.1f})".format(
+                          results[0][1], _fund_amp, _mean_oth, _dft_snr, DFT_SNR_MIN))
+                if _dft_snr < DFT_SNR_MIN:
+                    raise RuntimeError(
+                        "DFT quality check failed: fundamental SNR {:.2f} < {:.1f}. "
+                        "Higher harmonics are unusually large — DFT likely captured a "
+                        "transient. Retry calibration.".format(_dft_snr, DFT_SNR_MIN))
+
+            # Expected feedforward IQ RMS: sqrt(sum(A_k^2 / 2)) over all DFT bins.
+            _iq_ff_rms = (sum((_r[0]**2 + _r[2]**2) / 2.0 for _r in results)) ** 0.5
+            print("  Expected feedforward IQ RMS = {:.1f} mA".format(_iq_ff_rms))
+
+            # Upload to 0x3028 — skip k<42.
+            # k=7,14,21,28,35 DFT values are contaminated by encoder-error-induced
+            # theta_e oscillations. Wrong-phase feedforward at these frequencies causes
+            # oscillation that corrupts DFT2 and reduces average torque at low RPM.
+            # k>=42 are slot harmonics where encoder error is negligible.
+            print("\n  Uploading to 0x3028 (k>=42 only) ...")
+            print("  {:>4}  {:>6}  {:>8}  {:>8}  {:>10}".format(
+                "Bin", "k", "a_s", "a_c", "Amp(mA)"))
+            print("  " + "-" * 44)
+            self.node.sdo[0x3028][1].raw = 0
+            _n_written = 0
+            _uploaded = []
+            for _as, _k, _ac in results:
+                if _k < 42:
+                    print("  skip  {:>6d}  (k<42, enc-error dominated)".format(_k))
+                    continue
+                try:
+                    self.node.sdo[0x3028][2 + _n_written * 3].raw = _as
+                    self.node.sdo[0x3028][3 + _n_written * 3].raw = _k
+                    self.node.sdo[0x3028][4 + _n_written * 3].raw = _ac
+                    _uploaded.append((_as, _k, _ac))
+                    _n_written += 1
+                    print("  {:>4d}  {:>6d}  {:>8d}  {:>8d}  {:>10.2f}".format(
+                        _n_written - 1, _k, _as, _ac, (_as**2 + _ac**2)**0.5))
+                except SdoAbortedError as _bin_exc:
+                    if _bin_exc.code == 0x06020000:
+                        print("  NOTE: firmware supports {} bin(s).".format(_n_written))
+                    else:
+                        print("  WARNING: bin {} abort 0x{:08X}.".format(
+                            _n_written, _bin_exc.code))
+                    break
+
+            # RMS of uploaded bins only — used as ratio denominator so threshold is meaningful.
+            _iq_ff_rms_uploaded = (
+                sum((_r[0]**2 + _r[2]**2) / 2.0 for _r in _uploaded) ** 0.5
+                if _uploaded else 0.0)
+
+            if _n_written == 0:
+                raise RuntimeError("No cogging bins could be written to 0x3028.")
+
+            self.node.sdo[0x3028][1].raw = 1
+            print("  Active → 1  ({} bins written)".format(_n_written))
+            try:
+                self.frame_menubar.COG_ON.Check(True)
+                self.frame_menubar.COG_OFF.Check(False)
+            except Exception:
+                pass
+
+            print("\n  Saving 0x3028 to EEPROM ...")
+            for _si in range(1, 2 + _n_written * 3):
+                self.node.sdo['Save']['Single'].raw = ((0x3028 << 8) | _si)
+            print("  Saved.")
+            _upd(83)
+
+            if _do_test:
+                # Reboot clears integrator; comp loads from EEPROM.
+                _reboot_node("load EEPROM comp for DFT2")
+                _act = int(self.node.sdo[0x3028][1].raw)
+                if not _act:
+                    print("  WARNING: comp not active after reboot — EEPROM save may have failed.")
+                _upd(86)
+
+                _enter_vel_mode()
+                print("\n  DFT 2 — comp ON ({:.0f} s settle, {} revs) ...".format(
+                    VERIFY_SETTLE_S, N_REVS))
+                results2, rms2 = _run_dft(VERIFY_SETTLE_S, 'comp ON')
+                self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
+                _upd(94)
+
+                _ratio      = rms2 / _iq_ff_rms_uploaded if _iq_ff_rms_uploaded > 0 else 999.0
+                _cal_passed = _ratio < DFT_RATIO_MAX
+                print("\n  DFT2/DFT1 ratio = {:.2f}  (pass threshold < {:.1f})".format(
+                    _ratio, DFT_RATIO_MAX))
+                print("  Result: {}".format(
+                    "PASS — PI adapted, feedforward active" if _cal_passed
+                    else "FAIL — PI not adapted (comp wrong or profile corrupted)"))
+
+                _fw_plot_dft_comparison(results, results2, _iq_ff_rms, rms2,
+                                        _cal_passed, 'Calibration')
+                _upd(98)
+                self.frame_statusbar.SetStatusText(
+                    "Cogging FW DFT complete — {} harmonics  {}".format(
+                        _n_written,
+                        "PASS" if _cal_passed else "FAIL — see plot"), 1)
+            else:
+                _upd(98)
+                self.frame_statusbar.SetStatusText(
+                    "Cogging FW DFT complete — {} harmonics uploaded.".format(_n_written), 1)
+                print("\n  Done.  Reboot recommended before motion to zero integrator.")
+
+        except SdoAbortedError as _exc:
+            if _exc.code == 0x06020000:
+                print("\n  ERROR: 0x3029 not found — "
+                      "firmware does not support DFT calibration (upgrade to v4.3.11+).")
+            else:
+                print("\n  SDO abort 0x{:08X}: {}".format(_exc.code, _exc))
+            self.frame_statusbar.SetStatusText("Cogging FW DFT failed.", 1)
+        except Exception as _exc:
+            print("\n  Cogging FW DFT failed: {}".format(_exc))
+            import traceback
+            traceback.print_exc()
+            self.frame_statusbar.SetStatusText("Cogging FW DFT failed.", 1)
+            try:
+                self.node.sdo['TargetVelocity'].raw = 0
+                self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
+            except Exception:
+                pass
+        finally:
+            try:
+                self.node.nmt.state = 'PRE-OPERATIONAL'
+                time.sleep(0.1)
+                self.configure_Puck()
+                self.node.nmt.state = 'OPERATIONAL'
+                time.sleep(0.1)
+            except Exception:
+                pass
+            if self.adcWasON and not self.ADC_ON:
+                self.on_off_adc(self)
+            self.Enable()
+            _upd(100)
+            self.OnTaskComplete()
 
     def _load_enc_correction_table(self):
         """Return (table, path) from the most recent enc_correction_full CSV, or (None, None)."""

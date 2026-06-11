@@ -216,6 +216,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         self.settingID = False
         self.NetworkActive = True
         self.Rescanning = False
+        self.node = None
 
         self.outputShaft = True
 
@@ -388,6 +389,13 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         """Runs on the wx main thread when the CAN adapter is unexpectedly lost."""
         if self.Rescanning:
             return
+        # Only auto-reconnect when a node was previously active. Without this
+        # guard, bus-off errors fired by the CAN controller during an empty
+        # scan (no ACK receivers on Ubuntu 26+) loop indefinitely even though
+        # there is nothing to reconnect to.
+        if self.node is None:
+            return
+        self.Rescanning = True
         print('CAN device lost — attempting reconnect…')
         self.frame_statusbar.SetStatusText('CAN device lost — reconnecting…', 1)
         self.frame_statusbar.Refresh()
@@ -760,6 +768,10 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 except Exception:
                     pass
 
+            self.node.tpdo[1].callbacks.clear()
+            self.node.tpdo[2].callbacks.clear()
+            self.node.tpdo[3].callbacks.clear()
+            self.node.emcy.callbacks.clear()
             self.node.tpdo[1].add_callback(self.tpdo1_callback)
             self.node.tpdo[2].add_callback(self.tpdo2_callback)
             self.node.tpdo[3].add_callback(self.tpdo3_callback)
@@ -936,7 +948,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         return False
 
     def can_port(self,event,skipADC=False,silent=False):
-        #print("Event handler 'can_port'")
+        self.Rescanning = False
         if skipADC == True:
             pass
         elif self.ADC_ON == True:
@@ -1022,10 +1034,12 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                     dlg = wx.MessageDialog(None,msg)
                     dlg.ShowModal()
                     dlg.Destroy()
-                # No active puck — clear ID, firmware-version readout, and
-                # the Select ID dropdown so stale data isn't shown. On Windows
-                # the dropdown is an OwnerDrawnComboBox whose displayed text
-                # persists past SetItems([]), so explicitly drop the selection.
+                # No active puck — clear node reference, ID, firmware-version
+                # readout, and the Select ID dropdown so stale data isn't
+                # shown. On Windows the dropdown is an OwnerDrawnComboBox
+                # whose displayed text persists past SetItems([]), so
+                # explicitly drop the selection.
+                self.node = None
                 self.choice_id.SetItems([])
                 self.choice_id.SetSelection(wx.NOT_FOUND)
                 self.text_id.ChangeValue('')
@@ -1385,6 +1399,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
     def browse_fw(self, event, path=False):  # wxGlade: wxp3_frame.<event_handler>
         #print("Event handler 'browse_fw'")
         if self.check_for_node() == False:
+            return
+        if self.choice_id.GetSelection() == wx.NOT_FOUND:
             return
 
         quick_test = self.choice_test.GetSelection()
@@ -2049,7 +2065,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             PVel = self.node.tpdo[2]['VelocityFeedback'].raw
             RPM = PVel * 60 / 4096 / self.gearRatio 
             RPM = round(RPM / 10, 1)
-            RPM = abs(round(RPM *10))
+            RPM = round(RPM *10)
             RPMString = str(RPM)
             self.y = self.y + 1
 
@@ -2266,6 +2282,12 @@ class MyApp(wx.App):
             self.frame.Maximize(True)
         wx.SafeYield()             # let the frame paint while splash is still on top
         self._splash.Destroy()     # now remove splash — frame is pre-rendered underneath
+        # gtk_window_present() — raise window AND send the GNOME startup-
+        # notification completion signal so the dock-launched window gets focus
+        # on Ubuntu 22+.  frame.Show() alone only calls gtk_widget_show_all()
+        # which doesn't fire the startup notification, so the window opens
+        # behind everything with no focus grant from GNOME Shell.
+        self.frame.Raise()
 
         self.Bind(wx.EVT_KEY_DOWN, self.frame.onKeyDown)
         self.Bind(wx.EVT_KEY_UP,   self.frame.onKeyUp)
@@ -2429,6 +2451,7 @@ def _setup_logging():
 from cli_ops import (
     _cli_connect, _cli_flash, _cli_config, _cli_calibrate_all,
     _cli_calibrate_cogging, _cli_make_network, _cli_system_config,
+    _cli_info,
 )
 
 
@@ -2486,6 +2509,10 @@ Examples:
     ops = parser.add_mutually_exclusive_group()
     ops.add_argument('--scan', action='store_true',
                      help='Scan the CAN bus and print all discovered node IDs')
+    ops.add_argument('--info', action='store_true',
+                     help='Print firmware version, model, motor params, and live status '
+                          'for each node. Use with --id or --all to target specific nodes; '
+                          'omit both to show all found nodes.')
     ops.add_argument('--flash', metavar='FIRMWARE',
                      help='Path to firmware file (.bin or .ebin)')
     ops.add_argument('--config', metavar='CSV',
@@ -2495,6 +2522,9 @@ Examples:
     ops.add_argument('--calibrate-cogging', action='store_true',
                      dest='calibrate_cogging',
                      help='Run cogging torque characterisation sweep (data only; SEND_TO_PUCK=False)')
+    parser.add_argument('--fast', action='store_true',
+                        help='Fast calibration mode: 64 bins, 12 steps/bin (~1.5 min vs ~5 min). '
+                             'For debugging iteration; same accuracy for k=7 cogging.')
     ops.add_argument('--system-config', metavar='INI', dest='system_config',
                      help='Path to system configuration INI file')
     ops.add_argument('--flash-canable', metavar='FIRMWARE', nargs='?', const='',
@@ -2509,7 +2539,7 @@ Examples:
 
     # No operation flag → launch GUI. --touchscreen is a GUI-mode flag, so
     # passing it alone (or with nothing else) still falls into this branch.
-    if not (args.scan or args.flash or args.config
+    if not (args.scan or args.info or args.flash or args.config
             or args.calibrate or args.calibrate_cogging
             or args.system_config or args.flash_canable is not None):
         MyApp.touchscreen = args.touchscreen
@@ -2531,6 +2561,12 @@ Examples:
     if args.scan:
         net, found = _cli_connect(args.can)
         net.disconnect()
+        sys.exit(0)
+
+    # --info: read-only; --id/--all optional (omitting both shows all found nodes)
+    if args.info:
+        node_ids = args.id if args.id else None
+        _cli_info(args.can, node_ids)
         sys.exit(0)
 
     # --system-config is self-contained; --id/--all are not used with it
@@ -2578,6 +2614,6 @@ Examples:
             _cli_calibrate_all(cal_node)
         elif args.calibrate_cogging:
             cal_node = cal_net.add_node(node_id, 'puck4.eds')
-            _cli_calibrate_cogging(cal_node)
+            _cli_calibrate_cogging(cal_node, fast=getattr(args, 'fast', False))
     if args.calibrate or args.calibrate_cogging:
         cal_net.disconnect()

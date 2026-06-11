@@ -107,9 +107,9 @@ def _cli_calibrate_enczero(node, network=None):
         None, calAll=True, _upd=lambda v: None)
 
 
-def _cli_calibrate_cogging(node, network=None):
-    return _HeadlessCalibrateAdapter(node, network).cogging_error_compensation(
-        None, calAll=True, _upd=lambda v: None)
+def _cli_calibrate_cogging(node, network=None, fast=False):
+    return _HeadlessCalibrateAdapter(node, network).cogging_calibrate_auto(
+        None, calAll=True, _upd=lambda v: None, fast=fast)
 
 
 def _cli_calibrate_all(node, network=None):
@@ -196,6 +196,77 @@ def _cli_config(can_device, node_id, csv_path):
     save_net.send_message(0x0, [0x81, node_id])
     time.sleep(0.5)
     save_net.disconnect()
+
+
+_PRODUCT_CODE_MODELS = {
+    5707: 'P4-16',
+    1323: 'P4-37',
+    1950: 'P4-37',
+    5755: 'P4-42',
+    5760: 'P4-32',
+}
+
+
+def _cli_info(can_device, node_ids=None):
+    """Print firmware version and hardware info for one or more nodes.
+
+    node_ids: list of ints, or None to print all found nodes.
+    """
+    network = _cli_make_network(can_device)
+    network.scanner.reset()
+    network.scanner.search()
+    time.sleep(0.5)
+    found = list(network.scanner.nodes)
+
+    if not found:
+        print("No nodes found on bus.")
+        network.disconnect()
+        return
+
+    targets = node_ids if node_ids else found
+    missing = [n for n in targets if n not in found]
+    for n in missing:
+        print(f"Node {n} not found on bus.")
+    targets = [n for n in targets if n in found]
+
+    for node_id in targets:
+        node = network.add_node(node_id, 'puck4.eds')
+
+        def _sdo(name, sub=None, default=None):
+            try:
+                if sub is not None:
+                    return node.sdo[name][sub].raw
+                return node.sdo[name].raw
+            except Exception:
+                return default
+
+        fw_raw   = _sdo('MfgSoftwareVersion')
+        fw_str   = get_version(fw_raw) if fw_raw is not None else 'unknown'
+
+        pc       = _sdo(0x1018, 2)
+        model    = _PRODUCT_CODE_MODELS.get(pc, 'unknown') if pc is not None else 'unknown'
+
+        settling = _sdo('Amp', 'MaxSettlingTime')
+        enc_on   = _sdo(0x3027, 1)
+        cog_on   = _sdo(0x3028, 1)
+
+        bus_v    = _sdo('Amplifier', 'BusVoltage')
+        temp     = _sdo('Amplifier', 'Temperature')
+
+        def _yn(v):
+            if v is None: return 'unknown'
+            return 'ON' if v else 'OFF'
+
+        print('--- Node {} ---'.format(node_id))
+        print('  Firmware:      {}'.format(fw_str))
+        print('  Model:         {}  (product code {})'.format(model, pc if pc is not None else '?'))
+        print('  ADC settling:  {}'.format('{} ns'.format(settling) if settling is not None else 'unknown'))
+        print('  Enc comp:      {}'.format(_yn(enc_on)))
+        print('  Cogging comp:  {}'.format(_yn(cog_on)))
+        print('  Bus voltage:   {}'.format('unknown' if bus_v is None else '{:.1f} V'.format(bus_v / 10.0)))
+        print('  Temperature:   {}'.format('unknown' if temp is None else '{} °C'.format(temp)))
+
+    network.disconnect()
 
 
 def _cli_system_config(can_device, ini_path):
