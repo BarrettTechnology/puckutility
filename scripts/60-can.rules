@@ -1,1 +1,4 @@
-ACTION=="add", ATTR{idVendor}=="0c72", RUN+="/usr/bin/reset_can.sh"
+# Peak PCAN USB adapter — grant access to plugdev group so puckutilityapp
+# can open the CAN device without sudo.
+# Interface bring-up is handled by 61-can-up.rules when can0 appears.
+SUBSYSTEM=="usb", ACTION=="add", ATTRS{idVendor}=="0c72", MODE="0660", GROUP="plugdev", TAG+="uaccess"

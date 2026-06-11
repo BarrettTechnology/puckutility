@@ -113,6 +113,47 @@ python3 puckutilityapp.py --can can0 --system-config system.ini
 python3 puckutilityapp.py --flash-canable
 ```
 
+## Building a release
+
+### Linux .deb package (recommended)
+
+Requires Docker. First-time setup builds the builder image — this compiles
+wxPython from source and takes 30–60 minutes but only happens once:
+
+```
+./scripts/build-linux-installer.sh --rebuild-docker --deb
+```
+
+Subsequent builds reuse the cached image and are fast:
+
+```
+./scripts/build-linux-installer.sh --docker --deb
+```
+
+Re-run with `--rebuild-docker` any time `requirements.txt` changes.
+Re-run with `--clean-pyinstaller` if the binary seems stale after adding new imports.
+
+Output: `build/deb/puckutilityapp_X.Y.Z_amd64.deb`
+
+Install on the target machine:
+```
+sudo apt install ./puckutilityapp_X.Y.Z_amd64.deb
+```
+
+### Linux PyInstaller zip (legacy)
+
+```
+./scripts/build-linux-installer.sh --pyinstaller
+```
+
+Output: `build/PuckUtilityApp-lin-vX.Y.Z.zip`
+
+### Windows
+
+```
+scripts\build-win32-installer.sh
+```
+
 ## Puck Firmware
 Download the latest Puck Firmware at [barrett.com/puck-firmware](https://barrett.com/puck-firmware)  
 Place the .ebin files in puckutility/firmware 

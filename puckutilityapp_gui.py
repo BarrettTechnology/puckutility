@@ -44,7 +44,7 @@ class puckutilityapp_frame(wx.Frame):
         item = wxglade_tmp_menu.Append(wx.ID_ANY, "Encoder Error Compensation", "")
         self.Bind(wx.EVT_MENU, self.generate_enc_correction_table, item)
         item = wxglade_tmp_menu.Append(wx.ID_ANY, "Cogging Error Compensation", "")
-        self.Bind(wx.EVT_MENU, self.cogging_error_compensation, item)
+        self.Bind(wx.EVT_MENU, self.cogging_calibrate_auto, item)
         item = wxglade_tmp_menu.Append(wx.ID_ANY, "Current Sense Bias", "")
         self.Bind(wx.EVT_MENU, self.calibrate_ibias, item)
         item = wxglade_tmp_menu.Append(wx.ID_ANY, "Current Sense Gainfactor", "")
@@ -300,8 +300,8 @@ class puckutilityapp_frame(wx.Frame):
         print("Event handler 'generate_enc_correction_table' not implemented!")
         event.Skip()
 
-    def cogging_error_compensation(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
-        print("Event handler 'cogging_error_compensation' not implemented!")
+    def cogging_position_sweep(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
+        print("Event handler 'cogging_position_sweep' not implemented!")
         event.Skip()
 
     def calibrate_ibias(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
