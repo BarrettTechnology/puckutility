@@ -10,6 +10,35 @@
 # https://github.com/wxGlade/wxGlade/commit/e866729f91363a9c16cc6595e3424a0df817e048
 
 
+# --- Linux display-environment defaults (set BEFORE GTK initializes) ---------
+# Make the fixed-pixel wxGlade layout render correctly on modern GNOME/Wayland.
+# Each is overridable from the real environment (setdefault).
+#   GDK_BACKEND=x11 : use the X11/XWayland backend, which scales by INTEGER
+#       factors and lets the compositor upscale to the desktop's (possibly
+#       fractional) scale. The native Wayland backend instead hands GTK
+#       *fractional* widget allocations, which squeeze widgets to a few px (the
+#       "Negative content height" warnings) and break the fixed-pixel layout.
+#       No-op on an X11 session (e.g. Ubuntu 20.04). We deliberately do NOT set
+#       GDK_SCALE — forcing an integer scale makes the app the wrong size on
+#       fractional-scaled desktops; letting the compositor scale matches better.
+#   GTK_THEME=Adwaita:light : force a light theme. The app's labels are plain
+#       wx.StaticText with NO explicit colour, so they inherit the theme's text
+#       colour; under a dark desktop theme (Yaru-*-dark) that is light text on
+#       the app's white panels = invisible/faint. GTK_THEME overrides both
+#       gsettings AND the XSETTINGS daemon (which still delivers the dark theme
+#       under XWayland even with GSETTINGS_BACKEND=memory), so it is the
+#       deterministic fix. Override with your own GTK_THEME if you prefer.
+#   GSETTINGS_BACKEND=memory : avoids a fatal GLib-GIO xsettings-schema error on
+#       Ubuntu 26 (GNOME removed the 'antialiasing' key the old binary reads).
+#   GTK_IM_MODULE / NO_AT_BRIDGE : silence ibus/at-spi noise on Ubuntu 26.
+import os, sys
+if sys.platform.startswith('linux'):
+    os.environ.setdefault('GDK_BACKEND', 'x11')
+    os.environ.setdefault('GTK_THEME', 'Adwaita:light')
+    os.environ.setdefault('GSETTINGS_BACKEND', 'memory')
+    os.environ.setdefault('GTK_IM_MODULE', 'gtk-im-context-simple')
+    os.environ.setdefault('NO_AT_BRIDGE', '1')
+
 import wx
 import wx.adv
 from puckutilityapp_gui import puckutilityapp_frame
@@ -1764,6 +1793,17 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.node.sdo["ControlWord"].raw = SHUTDOWN
             self.node.sdo["ControlWord"].raw = OP_ENABLED
         except SdoAbortedError as _e:
+            from can_backend import sdo_contention_message
+            _contention = sdo_contention_message(_e)
+            if _contention:
+                # Protocol-level abort from competing bus traffic, not a drive
+                # fault — reading StatusWord would just collide again, so report
+                # the contention directly.
+                print("Enable failed — CAN bus contention.")
+                print("  " + _contention.replace("\n\n", "\n  ").replace("\n", "\n  "))
+                self.button_6.SetBackgroundColour(self.gray)
+                self.choice_test.SetSelection(0)
+                return
             # Drive refused the ControlWord sequence — most commonly because an
             # active fault (e.g. undervoltage) prevents the state transition.
             # Read StatusWord so we can report which fault is blocking enable.
@@ -2237,6 +2277,11 @@ class MyApp(wx.App):
         wx.App.ActiveID = []
         wx.App.Nodes = []
 
+        # X11/XWayland fallback for the dock-icon association (the Wayland
+        # app_id is pinned via g_set_prgname in _setup_linux_desktop_integration).
+        self.SetAppName('PuckUtilityApp')
+        self.SetClassName('PuckUtilityApp')
+
         splash_bmp = self._make_splash_bitmap()
         self._splash = wx.adv.SplashScreen(
             splash_bmp,
@@ -2267,21 +2312,38 @@ class MyApp(wx.App):
 
     def _finish_init(self):
         self.frame = MyFrame(None, wx.ID_ANY, "")
-        self.frame.Centre()
         # Show the frame first so it gets its initial paint while the
         # STAY_ON_TOP splash still covers it.  Then destroy the splash —
         # the compositor reveals an already-rendered frame with no gap.
         # (Previous order was Destroy→Show, which left a brief instant with
         # no window on screen between the two operations.)
         self.frame.Show()
+        wx.SafeYield()             # let GTK map the window and allocate its REAL size
         if MyApp.touchscreen:
             # Maximize so the window fills the work area on the 7" Pi screen
             # while keeping the menu bar, status bar, and frame border all
             # intact (ShowFullScreen strips that chrome, which isn't what we
             # want here).
             self.frame.Maximize(True)
-        wx.SafeYield()             # let the frame paint while splash is still on top
-        self._splash.Destroy()     # now remove splash — frame is pre-rendered underneath
+        else:
+            # Center AFTER Show(): on wxGTK the frame's real on-screen size is
+            # only known once GTK has mapped the window, so positioning before
+            # Show() mis-centers on the FIRST launch — the window manager only
+            # "fixes" it on later launches by restoring the previous geometry,
+            # which is exactly why a second open looked centred but the first
+            # didn't. The splash (STAY_ON_TOP) still covers the frame here, so
+            # the move is not visible. Center on the display under the mouse
+            # cursor (the monitor in use); plain Centre() can land on the wrong
+            # display or the seam between monitors on a multi-monitor desktop.
+            try:
+                _d = wx.Display.GetFromPoint(wx.GetMousePosition())
+                _area = wx.Display(_d if _d != wx.NOT_FOUND else 0).GetClientArea()
+                _w, _h = self.frame.GetSize()
+                self.frame.SetPosition((_area.x + max(0, _area.width - _w) // 2,
+                                        _area.y + max(0, _area.height - _h) // 2))
+            except Exception:
+                self.frame.CentreOnScreen()
+        self._splash.Destroy()     # now remove splash — frame is positioned + rendered underneath
         # gtk_window_present() — raise window AND send the GNOME startup-
         # notification completion signal so the dock-launched window gets focus
         # on Ubuntu 22+.  frame.Show() alone only calls gtk_widget_show_all()
@@ -2457,6 +2519,61 @@ from cli_ops import (
 
 # ---- Entry point ------------------------------------------------------------
 
+def _setup_linux_desktop_integration(app_id, display_name):
+    """Make the GNOME/Wayland dock show our window's icon when run from source.
+
+    Under Wayland the compositor matches a window to a .desktop file via its
+    app_id and shows that file's Icon=; wx's SetIcon()/_NET_WM_ICON is ignored.
+    GTK3 derives the app_id from GLib's program name, so we (1) pin it via
+    g_set_prgname() through ctypes (no PyGObject dependency) before the first
+    window is mapped, and (2) when running from source — where no installed
+    .desktop exists (frozen builds get one from install-ubuntu.sh) — drop a
+    matching <app_id>.desktop into the per-user applications dir pointing Icon=
+    at the in-tree PNG. Both steps are best-effort; failures are non-fatal.
+    """
+    if not sys.platform.startswith('linux'):
+        return
+    try:
+        import ctypes
+        ctypes.CDLL('libglib-2.0.so.0').g_set_prgname(app_id.encode())
+    except Exception:
+        pass
+    if getattr(sys, 'frozen', False):
+        return
+    try:
+        src_dir = os.path.dirname(os.path.abspath(__file__))
+        entry = (
+            "[Desktop Entry]\n"
+            "Version=1.0\n"
+            "Type=Application\n"
+            "Terminal=false\n"
+            f"Name={display_name}\n"
+            # sys.executable is the venv interpreter when run from source, so
+            # launching from the dock entry picks up the right dependencies.
+            f"Exec={sys.executable} {os.path.join(src_dir, os.path.basename(__file__))}\n"
+            f"Path={src_dir}\n"
+            f"Icon={os.path.join(src_dir, 'images', 'BarrettIcon.png')}\n"
+            f"StartupWMClass={app_id}\n"
+            "Categories=Utility;\n"
+        )
+        apps_dir = os.path.join(
+            os.environ.get('XDG_DATA_HOME', os.path.expanduser('~/.local/share')),
+            'applications')
+        dest = os.path.join(apps_dir, f'{app_id}.desktop')
+        # Only (re)write when missing or stale (e.g. the source tree moved) so
+        # we don't churn the file or needlessly clobber an installed entry.
+        current = None
+        if os.path.isfile(dest):
+            with open(dest, encoding='utf-8') as f:
+                current = f.read()
+        if current != entry:
+            os.makedirs(apps_dir, exist_ok=True)
+            with open(dest, 'w', encoding='utf-8') as f:
+                f.write(entry)
+    except Exception:
+        pass
+
+
 if __name__ == "__main__":
     # When frozen, ensure cwd is the app directory so bare relative paths
     # (puck4.eds, images/, config/, etc.) resolve correctly regardless of
@@ -2543,6 +2660,9 @@ Examples:
             or args.calibrate or args.calibrate_cogging
             or args.system_config or args.flash_canable is not None):
         MyApp.touchscreen = args.touchscreen
+        # Must run before MyApp() creates the first window so the Wayland
+        # app_id is set when the toplevel is mapped.
+        _setup_linux_desktop_integration('PuckUtilityApp', 'Puck Utility App')
         app = MyApp(0)
         app.MainLoop()
         sys.exit(0)

@@ -21,11 +21,19 @@ import canopen
 CANDLELIGHT_VID = 0x1D50
 CANDLELIGHT_PID = 0x606F
 
+try:
+    from sandbox.candlelight_bus import CandlelightBus
+    _HAS_CANDLELIGHT = True
+except ImportError:
+    _HAS_CANDLELIGHT = False
+
 
 def _candlelight_present():
     """Return True if a CandleLight CANable is enumerated on USB. Returns
     False (rather than raising) for any error so callers can fall back to
     PCAN whenever detection is inconclusive."""
+    if not _HAS_CANDLELIGHT:
+        return False
     try:
         import usb.core
         try:
@@ -56,6 +64,42 @@ def pcan_channel(can_device):
             f"(e.g. 0 for PCAN_USBBUS1) or a PCAN_USBBUSn name")
 
 
+# SDO abort codes whose appearance almost always means another CANopen master
+# is active on the same bus at the same time — a second copy of PuckUtility or
+# PuckTuner left open, both apps connected at once, or a tool flooding the bus
+# with SYNC/PDO traffic.  When two clients transmit at once their CAN frames
+# interleave and corrupt each other's multi-frame SDO sequence, so the puck
+# rejects the malformed request with one of these protocol-level aborts.
+#
+# These are distinct from object-level aborts (e.g. 0x06020000 "object does not
+# exist", 0x06010002 "write to a read-only object") which point at the request
+# itself, not at bus contention — those are deliberately excluded here.
+SDO_CONTENTION_CODES = {
+    0x05040001: "client/server command specifier not valid or unknown",
+    0x05030000: "toggle bit not alternated",
+    0x05040000: "SDO protocol timed out",
+    0x05040002: "invalid block size",
+    0x05040003: "invalid sequence number",
+}
+
+
+def sdo_contention_message(exc):
+    """If `exc` is an SDO abort whose code indicates competing SDO/PDO traffic
+    on the bus, return a clear, user-facing explanation; otherwise return None.
+
+    Accepts a canopen SdoAbortedError (anything with an integer ``.code``) or a
+    bare integer abort code.  Returning None lets callers fall through to their
+    normal generic error message for ordinary, non-contention aborts.
+    """
+    code = getattr(exc, "code", exc)
+    if not isinstance(code, int) or code not in SDO_CONTENTION_CODES:
+        return None
+    return (
+        "SDO abort 0x{:08X} — likely CAN bus contention.\n"
+        "Close any other PuckUtility/PuckTuner window using this bus and retry."
+    ).format(code)
+
+
 def make_network(can_device, bitrate=1_000_000):
     """Create and connect a canopen.Network. The adapter is auto-selected:
     CandleLight if present on USB, otherwise PCAN (Windows/macOS) or
@@ -68,7 +112,6 @@ def make_network(can_device, bitrate=1_000_000):
     system = platform.system()
 
     if system == "Windows" and _candlelight_present():
-        from sandbox.candlelight_bus import CandlelightBus
         try:
             usb_index = int(str(can_device).strip())
         except (TypeError, ValueError):

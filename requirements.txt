@@ -1,15 +1,20 @@
+# wxPython is installed from the wxPython extras index (no PyPI Linux wheel
+# exists); scripts/setup-pip.sh injects the --find-links matching the host
+# Ubuntu. Requires Python 3.13 (no cp314 wheel exists anywhere).
 altgraph==0.17.4
 canopen==2.3.0
-msgpack==1.1.0
+msgpack==1.1.2
 packaging==24.2
-pyinstaller==6.11.1
-pyinstaller-hooks-contrib==2024.11
-pyusb==1.0.2
-libusb-package==1.0.26.3
+pyinstaller==6.20.0
+pyinstaller-hooks-contrib==2026.6
+pyusb==1.3.1
+libusb-package==1.0.26.1
+matplotlib==3.11.0
+numpy==2.4.6
 python-can==4.5.0
 python-config==0.1.2
 semver==3.0.2
-setuptools==75.3.0
+setuptools==80.9.0
 six==1.17.0
 typing_extensions==4.12.2
 wrapt==1.17.2
