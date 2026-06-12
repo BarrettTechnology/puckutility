@@ -13,6 +13,7 @@ from canopen_runner import (
     MODE_IDLE, MODE_PHASE_VOLTAGE_ANGLE, MODE_PROFILE_TRQ, MODE_PROFILE_VEL,
 )
 from canopen.sdo import SdoAbortedError
+from can_backend import sdo_contention_message
 from paths import _resolve_path, FIRMWARE_DIR, CONFIG_DIR
 
 # TODO - No active issues
@@ -365,7 +366,13 @@ class _PVCATorqueDialog(wx.Dialog):
 class calibrate():
     def _cal_fault(self, exc):
         """Shared cleanup called when an SDO or other exception aborts calibration."""
-        print("Calibration fault: {}".format(exc))
+        _contention = sdo_contention_message(exc)
+        if _contention:
+            print("Calibration fault: {}".format(exc))
+            print("  >> Possible CAN bus contention — another app may be "
+                  "connected to this bus.")
+        else:
+            print("Calibration fault: {}".format(exc))
         try:
             self.node.sdo['Motor']['ud'].raw = 0
         except Exception:
@@ -382,25 +389,33 @@ class calibrate():
         _bus_v = None
         _min_v = None
         _max_v = None
-        try:
-            _sw = self.node.sdo["StatusWord"].raw
-        except Exception:
-            pass
-        try:
-            _temp = self.node.sdo['Amplifier']['Temperature'].raw
-        except Exception:
-            pass
-        try:
-            _bus_v = self.node.sdo['Amplifier']['BusVoltage'].raw
-        except Exception:
-            pass
-        try:
-            _min_v = self.node.sdo['Object2384']['AmplifierMinVoltage'].raw
-            _max_v = self.node.sdo['Object2384']['AmplifierMaxVoltage'].raw
-        except Exception:
-            pass
+        # Skip the drive diagnostics under bus contention: those SDO reads would
+        # just collide on the same congested bus and add more failed traffic.
+        if not _contention:
+            try:
+                _sw = self.node.sdo["StatusWord"].raw
+            except Exception:
+                pass
+            try:
+                _temp = self.node.sdo['Amplifier']['Temperature'].raw
+            except Exception:
+                pass
+            try:
+                _bus_v = self.node.sdo['Amplifier']['BusVoltage'].raw
+            except Exception:
+                pass
+            try:
+                _min_v = self.node.sdo['Object2384']['AmplifierMinVoltage'].raw
+                _max_v = self.node.sdo['Object2384']['AmplifierMaxVoltage'].raw
+            except Exception:
+                pass
 
-        if _sw is not None:
+        if _contention:
+            # Bus contention is a protocol-level abort, not a drive fault — the
+            # StatusWord/voltage diagnostics below would be misleading, so lead
+            # with the contention explanation instead.
+            _msg = _contention
+        elif _sw is not None:
             _temp_str = "{}°C".format(_temp) if _temp is not None else "N/A"
             _volt_str = ""
             if _bus_v is not None:

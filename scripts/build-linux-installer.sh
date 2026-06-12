@@ -55,8 +55,8 @@ if [ "$USE_DOCKER" = true ]; then
 fi
 
 # VENV_ROOT is overridden to /opt/puckbuild when invoked from --docker above.
-# Defaults to the repo root where the dev venv lives.
-VENV_ROOT="${VENV_ROOT:-.}"
+# Defaults to the repo-root .venv created by scripts/setup-venv.sh.
+VENV_ROOT="${VENV_ROOT:-.venv}"
 
 if [ -x "${VENV_ROOT}/bin/python" ]; then
     PY="${VENV_ROOT}/bin/python"
@@ -229,32 +229,18 @@ elif [ "$FORMAT" = "deb" ]; then
     chmod 755 "${DEB_ROOT}/usr/bin/reset_can.sh"
 
     # Wrapper launched by both the desktop entry and the terminal.
-    # - tee writes to both the terminal (stdout) and a per-user log file.
-    # - GDK_BACKEND=wayland,x11: try Wayland first so GNOME Shell's
-    #   xdg-activation protocol is used and the window gets focus when
-    #   launched from the dock on Ubuntu 22+.  Falls back to X11/XWayland
-    #   on pure X11 sessions or when Wayland is unavailable.
+    # tee writes to both the terminal (stdout) and a per-user log file.
+    # The display environment (GDK_BACKEND=x11, GSETTINGS_BACKEND=memory,
+    # GTK_IM_MODULE, NO_AT_BRIDGE) is set by the app ITSELF at startup -- see the
+    # top of puckutilityapp.py -- so it applies identically whether launched from
+    # the dock, the terminal, or `./puckutilityapp.py` in dev. Nothing to export
+    # here (and exporting GDK_BACKEND=wayland here would override the app's x11
+    # default and re-break the layout on Wayland).
     cat > "${DEB_ROOT}/usr/bin/PuckUtilityApp" << 'WRAPPER'
 #!/bin/bash
-# Prefer the Wayland GTK backend so GNOME Shell can activate the window via
-# the xdg-activation protocol when the app is launched from the dock.
-# Falls back to X11 automatically on X11-only sessions.
-export GDK_BACKEND=wayland,x11
-
-# Use an in-memory GSettings backend so GTK doesn't read the system dconf
-# schemas. On Ubuntu 26 the GNOME Settings Daemon changed the xsettings
-# schema (removed the 'antialiasing' key) which causes a fatal GLib-GIO-ERROR
-# when the binary built on Ubuntu 20.04 tries to read it from the dock.
-export GSETTINGS_BACKEND=memory
-
-# Prevent GTK from loading the ibus IM module; the system ibus library on
-# Ubuntu 26 is built against a newer GLib and emits dozens of
-# 'undefined symbol: g_task_set_static_name' warnings on every keypress.
-export GTK_IM_MODULE=gtk-im-context-simple
-
-# Suppress the accessibility bridge warning (atk-bridge / at-spi2).
-export NO_AT_BRIDGE=1
-
+# Display env (GDK_BACKEND=x11, GSETTINGS_BACKEND=memory, GTK_IM_MODULE,
+# NO_AT_BRIDGE) is set by the app at startup -- see the top of puckutilityapp.py.
+# Keep this wrapper minimal so dev and packaged runs behave identically.
 cd /usr/share/puckutilityapp
 LOG="/tmp/puckutilityapp-$(id -un).log"
 echo "=== launch $(date --iso-8601=seconds) ===" >> "$LOG"
@@ -275,8 +261,28 @@ StartupNotify=true
 StartupWMClass=PuckUtilityApp
 DESKTOP
 
-    # Install icon into the hicolor theme (reliable GNOME lookup) and pixmaps (fallback)
-    cp images/BarrettIcon.png "${DEB_ROOT}/usr/share/icons/hicolor/48x48/apps/PuckUtilityApp.png"
+    # Install the icon into the hicolor theme at multiple sizes. GNOME Software /
+    # App Center won't render an app icon below 64x64 and uses 128x128 for the
+    # listing header, so a lone 48x48 shows the generic placeholder. The source
+    # BarrettIcon.png is only 48px, so the larger sizes are upscaled here —
+    # drop in a crisp 256x256 (or SVG) master for sharp results. pixmaps/ is the
+    # legacy fallback path.
+    HICOLOR="${DEB_ROOT}/usr/share/icons/hicolor"
+    if ! "${PY:-python3}" - images/BarrettIcon.png "$HICOLOR" PuckUtilityApp <<'PYICON'
+import os, sys
+from PIL import Image
+src, hicolor, name = sys.argv[1], sys.argv[2], sys.argv[3]
+im = Image.open(src).convert("RGBA")
+for sz in (48, 64, 128, 256):
+    d = os.path.join(hicolor, f"{sz}x{sz}", "apps")
+    os.makedirs(d, exist_ok=True)
+    im.resize((sz, sz), Image.LANCZOS).save(os.path.join(d, f"{name}.png"))
+PYICON
+    then
+        echo "WARNING: Pillow unavailable; installing single 48x48 icon only" >&2
+        mkdir -p "${HICOLOR}/48x48/apps"
+        cp images/BarrettIcon.png "${HICOLOR}/48x48/apps/PuckUtilityApp.png"
+    fi
     cp images/BarrettIcon.png "${DEB_ROOT}/usr/share/pixmaps/PuckUtilityApp.png"
 
     # --- AppStream metadata -------------------------------------------------
@@ -286,13 +292,21 @@ DESKTOP
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
   <id>com.barrett.PuckUtilityApp</id>
+  <!-- metadata_license is MANDATORY: without it the whole component fails
+       AppStream validation and GNOME Software/App Center silently drops it,
+       leaving "Unknown publisher" / "License unknown" / no icon. -->
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>BSD-2-Clause</project_license>
   <name>Puck Utility</name>
   <summary>Configure and calibrate Barrett Technology Puck motors</summary>
   <description>
     <p>
-      GUI utility for configuring and calibrating Barrett Technology P4 series
-      motor controllers over CAN bus. Supports firmware flashing, CANopen object
-      dictionary configuration, encoder calibration, and CAN adapter setup.
+      Puck Utility is a desktop tool for configuring and calibrating Barrett
+      Technology P4 series motor controllers (Pucks) over a CAN bus.
+    </p>
+    <p>
+      It supports firmware flashing, CANopen object dictionary configuration,
+      encoder and cogging calibration, and CAN adapter setup.
     </p>
   </description>
   <icon type="stock">PuckUtilityApp</icon>
@@ -300,8 +314,17 @@ DESKTOP
     <category>Utility</category>
   </categories>
   <url type="homepage">https://barrett.com</url>
+  <!-- developer: new AppStream 1.0 form (Ubuntu 24.04+/26.04 App Center reads
+       this for the publisher). developer_name is the deprecated form, kept for
+       older AppStream on Ubuntu 20.04. -->
+  <developer id="com.barrett">
+    <name>Barrett Technology</name>
+  </developer>
   <developer_name>Barrett Technology</developer_name>
   <launchable type="desktop-id">PuckUtilityApp.desktop</launchable>
+  <!-- Links this component to the dpkg package so AppStream/App Center
+       associate the package's install with this app's icon and publisher. -->
+  <pkgname>${PKG_NAME}</pkgname>
   <releases>
     <release version="${DEB_VERSION}" date="${RELEASE_DATE}"/>
   </releases>
@@ -322,11 +345,16 @@ METAINFO
 Package: ${PKG_NAME}
 Version: ${DEB_VERSION}
 Architecture: amd64
+Section: utils
+Priority: optional
 Installed-Size: ${INSTALLED_SIZE}
 Maintainer: Barrett Technology <bn@barrett.com>
+Homepage: https://barrett.com
 Depends: can-utils
 Description: Barrett Technology Puck Utility
- GUI utility for configuring and calibrating Barrett Technology Puck motors.
+ GUI utility for configuring and calibrating Barrett Technology P4 series Puck
+ motor controllers over CAN bus. Supports firmware flashing, CANopen object
+ dictionary configuration, encoder calibration, and CAN adapter setup.
 CONTROL
 
     # --- DEBIAN/postinst ----------------------------------------------------
@@ -339,7 +367,7 @@ set -e
 # Tell NetworkManager to leave SocketCAN interfaces alone so it doesn't
 # race against can-up@.service or bring can0 back down after we bring it up.
 mkdir -p /etc/NetworkManager/conf.d
-cat > /etc/NetworkManager/conf.d/99-puckutility-can.conf << 'EOF'
+cat > /etc/NetworkManager/conf.d/99-puck-can.conf << 'EOF'
 [keyfile]
 unmanaged-devices=type:can
 EOF
@@ -360,48 +388,50 @@ if command -v appstreamcli >/dev/null 2>&1; then
     appstreamcli refresh --force || true
 fi
 
-DESKTOP_USER="${SUDO_USER:-$USER}"
-DESKTOP_HOME=$(getent passwd "$DESKTOP_USER" 2>/dev/null | cut -d: -f6)
-DESKTOP_UID=$(id -u "$DESKTOP_USER" 2>/dev/null || true)
+# --- Per-user desktop integration ---------------------------------------
+# apt and PackageKit (GNOME Software) run maintainer scripts with a sanitized
+# environment, so SUDO_USER is NOT available here: under the documented
+# `apt install ./foo.deb` path it is empty and ${SUDO_USER:-$USER} resolves to
+# "root", which silently skipped BOTH the Desktop shortcut (no /root/Desktop)
+# and the dock pin (gated on != root). Detect every live graphical session
+# directly via its D-Bus socket at /run/user/<uid>/bus and integrate for each
+# real (uid >= 1000) user instead of trusting SUDO_USER.
+integrate_for_user() {
+    _uid="$1"
+    _bus="/run/user/${_uid}/bus"
+    [ -S "$_bus" ] || return 0
+    _user=$(getent passwd "$_uid" | cut -d: -f1)
+    _home=$(getent passwd "$_uid" | cut -d: -f6)
+    [ -n "$_user" ] && [ -n "$_home" ] || return 0
 
-# Deploy a Desktop shortcut for the installing user.
-if [ -n "$DESKTOP_HOME" ] && [ -d "${DESKTOP_HOME}/Desktop" ]; then
-    DESKTOP_FILE="${DESKTOP_HOME}/Desktop/PuckUtilityApp.desktop"
-    cp /usr/share/applications/PuckUtilityApp.desktop "$DESKTOP_FILE"
-    chmod 755 "$DESKTOP_FILE"
-    chown "$DESKTOP_USER": "$DESKTOP_FILE"
-    # Mark as trusted so Nautilus shows "Puck Utility" and allows launching.
-    # Ubuntu 22+ Nautilus requires both the executable bit (done above) AND
-    # the metadata::trusted xattr set to "true".
-    # Set the xattr directly as root — no GVFS daemon or D-Bus needed.
-    python3 -c "
+    # File ops run as root (the postinst user); only the GUI D-Bus calls are
+    # dropped to the session user via runuser. XDG_RUNTIME_DIR is passed
+    # alongside the bus address so gio/gsettings resolve the user's session.
+    _runas="runuser -u ${_user} -- env DBUS_SESSION_BUS_ADDRESS=unix:path=${_bus} XDG_RUNTIME_DIR=/run/user/${_uid}"
+
+    # Deploy a trusted Desktop shortcut.
+    if [ -d "${_home}/Desktop" ]; then
+        _df="${_home}/Desktop/PuckUtilityApp.desktop"
+        cp /usr/share/applications/PuckUtilityApp.desktop "$_df"
+        chmod 755 "$_df"
+        chown "${_user}:" "$_df"
+        # Ubuntu 22+ Nautilus needs the executable bit (above) AND the
+        # metadata::trusted xattr. Set it directly as root; fall back to gio
+        # over the session bus on older GVFS-only systems.
+        python3 -c "
 import os, sys
 try:
     os.setxattr(sys.argv[1], 'user.metadata::trusted', b'true')
 except Exception as e:
     print('Warning: xattr trust failed:', e, file=sys.stderr)
     sys.exit(1)
-" "$DESKTOP_FILE" 2>/dev/null || {
-        # Fallback: gio via user's session bus (Ubuntu 20.04 / GVFS daemon path)
-        _BUS="/run/user/${DESKTOP_UID}/bus"
-        if [ -n "$DESKTOP_UID" ] && [ -S "$_BUS" ]; then
-            runuser -u "$DESKTOP_USER" -- env "DBUS_SESSION_BUS_ADDRESS=unix:path=${_BUS}" \
-                gio set "$DESKTOP_FILE" metadata::trusted true 2>/dev/null || true
-        fi
-    }
-fi
+" "$_df" 2>/dev/null || \
+            $_runas gio set "$_df" metadata::trusted true 2>/dev/null || true
+    fi
 
-# Refresh the GNOME Shell dock/dash entry so the updated .desktop file is
-# picked up immediately without requiring a manual unpin/re-pin.
-# Strategy: remove the old entry then re-append it so GNOME Shell sees a
-# GSettings change and re-reads the file from /usr/share/applications/.
-# Requires the user's D-Bus session bus to be reachable (i.e. they are
-# logged in with a live GNOME session at install time).
-if [ -n "$DESKTOP_UID" ] && [ "$DESKTOP_USER" != "root" ]; then
-    _BUS="/run/user/${DESKTOP_UID}/bus"
-    if [ -S "$_BUS" ]; then
-        runuser -u "$DESKTOP_USER" -- env "DBUS_SESSION_BUS_ADDRESS=unix:path=${_BUS}" \
-            python3 -c '
+    # Pin to the GNOME / Ubuntu dock (org.gnome.shell favorite-apps). Ubuntu's
+    # dock (ubuntu-dock / dash-to-dock) reads this same key.
+    $_runas python3 -c '
 import subprocess, ast, os, sys
 app_id = "PuckUtilityApp.desktop"
 env = os.environ.copy()
@@ -415,12 +445,18 @@ try:
     assert isinstance(apps, list)
 except Exception:
     sys.exit(0)
-apps = [a for a in apps if a != app_id]
-apps.append(app_id)
-gs("set", "org.gnome.shell", "favorite-apps", str(apps))
+if app_id not in apps:
+    apps.append(app_id)
+    gs("set", "org.gnome.shell", "favorite-apps", str(apps))
 ' 2>/dev/null || true
-    fi
-fi
+}
+
+for _b in /run/user/[0-9]*/bus; do
+    [ -S "$_b" ] || continue
+    _u=$(basename "$(dirname "$_b")")
+    [ "$_u" -ge 1000 ] 2>/dev/null || continue
+    integrate_for_user "$_u" || true
+done
 
 exit 0
 POSTINST
@@ -430,11 +466,40 @@ POSTINST
     cat > "${DEB_ROOT}/DEBIAN/postrm" << 'POSTRM'
 #!/bin/bash
 set -e
-rm -f /etc/NetworkManager/conf.d/99-puckutility-can.conf
+rm -f /etc/NetworkManager/conf.d/99-puck-can.conf
 # Remove Desktop shortcut for all users who have one
 for home in /home/*; do
     rm -f "${home}/Desktop/PuckUtilityApp.desktop"
 done
+# Unpin from the dock for every live session so no dead icon lingers (only on
+# remove/purge, not upgrade -- "$1" is "upgrade" when dpkg is replacing us).
+if [ "$1" != "upgrade" ]; then
+    for _b in /run/user/[0-9]*/bus; do
+        [ -S "$_b" ] || continue
+        _u=$(basename "$(dirname "$_b")")
+        [ "$_u" -ge 1000 ] 2>/dev/null || continue
+        _user=$(getent passwd "$_u" | cut -d: -f1)
+        [ -n "$_user" ] || continue
+        runuser -u "$_user" -- env "DBUS_SESSION_BUS_ADDRESS=unix:path=${_b}" \
+            "XDG_RUNTIME_DIR=/run/user/${_u}" python3 -c '
+import subprocess, ast, os, sys
+app_id = "PuckUtilityApp.desktop"
+env = os.environ.copy()
+def gs(*a):
+    return subprocess.run(["gsettings", *a], capture_output=True, text=True, env=env)
+r = gs("get", "org.gnome.shell", "favorite-apps")
+if r.returncode != 0:
+    sys.exit(0)
+try:
+    apps = ast.literal_eval(r.stdout.strip())
+    assert isinstance(apps, list)
+except Exception:
+    sys.exit(0)
+if app_id in apps:
+    gs("set", "org.gnome.shell", "favorite-apps", str([a for a in apps if a != app_id]))
+' 2>/dev/null || true
+    done
+fi
 systemctl daemon-reload || true
 if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database -q /usr/share/applications || true

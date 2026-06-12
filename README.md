@@ -19,9 +19,9 @@ Set up the Python virtual environment and install dependencies.
 
 ### Linux
 ```
-scripts/setup-venv.sh
+./scripts/setup-venv.sh
 source scripts/activate
-scripts/setup-pip.sh
+./scripts/setup-pip.sh
 ```
 
 ### Windows
@@ -117,8 +117,17 @@ python3 puckutilityapp.py --flash-canable
 
 ### Linux .deb package (recommended)
 
-Requires Docker. First-time setup builds the builder image — this compiles
-wxPython from source and takes 30–60 minutes but only happens once:
+Requires Docker. Your user must be in the `docker` group:
+```
+sudo usermod -aG docker $USER
+```
+then log out and back in (or prefix the build commands below with
+`sg docker -c '…'` to apply the group without re-logging in).
+
+The build runs inside a pinned Ubuntu 20.04 container so the resulting binary
+runs on Ubuntu 20.04 → 26.04+ regardless of your host OS. The first build also
+builds the `puckutility-builder` image — this downloads the prebuilt wxPython
+wheel (no compilation) and takes a few minutes:
 
 ```
 ./scripts/build-linux-installer.sh --rebuild-docker --deb
@@ -153,6 +162,35 @@ Output: `build/PuckUtilityApp-lin-vX.Y.Z.zip`
 ```
 scripts\build-win32-installer.sh
 ```
+
+## Testing across Ubuntu versions
+
+`scripts/test-cross-ubuntu.sh` validates the dev/build environment on every
+supported Ubuntu release. For each version it spins up a clean container, runs
+this repo's own `scripts/setup-venv.sh`, then verifies the GUI stack actually
+initialises (`import wx` + `wx.App()` under a headless X server) and that every
+declared dependency imports. It exercises the *real* scripts, so run it whenever
+you touch `setup-venv.sh` / `requirements.txt`, or when a new Ubuntu ships.
+
+Requires Docker, with your user in the `docker` group:
+```
+sudo usermod -aG docker $USER
+```
+then log out and back in (or prefix the commands below with `sg docker -c '…'`
+to apply the group without re-logging in).
+
+```
+scripts/test-cross-ubuntu.sh                 # 20.04 22.04 24.04 26.04
+scripts/test-cross-ubuntu.sh 24.04 26.04     # a subset / a new release
+```
+
+Nothing is installed on your host and nothing pops up on screen — it all runs
+headless inside the containers, independent of your local `.venv`. The first run
+pulls the base images and downloads the standalone Python 3.13 + wxPython /
+scientific wheels (cached under `/tmp` afterward, shared between puckutility and
+pucktuner), so it takes a few minutes; later runs are fast. It prints a
+per-release `PASS`/`FAIL` summary and exits non-zero if any release fails — on a
+failure, scroll up to that release's banner for the Python traceback.
 
 ## Puck Firmware
 Download the latest Puck Firmware at [barrett.com/puck-firmware](https://barrett.com/puck-firmware)  

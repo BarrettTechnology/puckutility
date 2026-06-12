@@ -553,6 +553,10 @@ def execute_canopen_runner(csvfile, replace_id, start_id, progress=None, rowcoun
             except SdoAbortedError as e:
                 printout("ERROR: SDO Aborted Error on line " + str(linenum) +
                          ". Error code " + str(e.code), True)
+                from can_backend import sdo_contention_message
+                _contention = sdo_contention_message(e)
+                if _contention:
+                    printout(_contention, True)
                 errors = errors + 1
     #click.secho("Done", fg="green")
     print("Done")
