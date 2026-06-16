@@ -614,17 +614,17 @@ class calibrate():
                     _sum[_ch] += self.node.sdo[_ch]['Filtered'].raw
                 wx.Yield()
 
-            _q12_4 = self._fw_at_least(4, 3, 3)
+            _q12_4 = self._fw_at_least(4, 4, 0)
 
             if _q12_4:
-                # fw >= 4.3.3: Bias register holds Q12.4 (ADC_count × 16).
+                # fw >= 4.4.0: Bias register holds Q12.4 (ADC_count × 16).
                 # Firmware applies: (bias_Q12_4 - raw<<4) * gainfactor >> 16.
                 self._alpha_bias_f = _sum['Alpha'] / _N_AVG   # Q12.4, no /16
                 self._beta_bias_f  = _sum['Beta']  / _N_AVG   # Q12.4, no /16
                 _midpoint = 2048 * 16  # = 32768 in Q12.4
                 _bias_scale = 16.0     # raw → counts for display
             else:
-                # fw < 4.3.3: Bias register holds plain integer ADC counts (Q12.0).
+                # fw < 4.4.0: Bias register holds plain integer ADC counts (Q12.0).
                 self._alpha_bias_f = _sum['Alpha'] / _N_AVG / 16.0
                 self._beta_bias_f  = _sum['Beta']  / _N_AVG / 16.0
                 _midpoint = 2048      # counts
@@ -806,7 +806,7 @@ class calibrate():
                 _sum_a    += self.node.sdo['Alpha']['Filtered'].raw
                 _sum_id_a += self.node.sdo['Motor']['id'].raw
                 wx.Yield()
-            _q12_4 = self._fw_at_least(4, 3, 3)
+            _q12_4 = self._fw_at_least(4, 4, 0)
             a_filt_f = _sum_a / _N_IGAIN_AVG if _q12_4 else _sum_a / _N_IGAIN_AVG / 16.0
             _id_at_a = (_sum_id_a / _N_IGAIN_AVG) / 1000.0 * i_peak
             print("Peak Alpha = {0:.3f}  id={1:.1f} mA  theta_e={2:.2f} rad  ({3}-sample avg)".format(
@@ -942,9 +942,9 @@ class calibrate():
         if calAll == False:
             if self.check_for_node() == False:
                 return False
-            if not self._fw_at_least(4, 3, 3):
+            if not self._fw_at_least(4, 4, 0):
                 self._prompt_ok("Firmware Too Old",
-                    "ADC settling-time calibration requires firmware v4.3.3 or later.\n"
+                    "ADC settling-time calibration requires firmware v4.4.0 or later.\n"
                     "Please update the firmware and try again.")
                 return False
             self.Disable()
@@ -1674,6 +1674,18 @@ class calibrate():
                 self.OnTaskComplete()
                 self.Enable()
             return continue_cal
+          else:
+            # SUCCESS path. The ADC-monitor restore + task cleanup above lived
+            # only in the failure branch, so a successful calibration (and thus a
+            # successful calibrate_all, where enczero runs last) left the ADC
+            # monitor turned off. Restore it here too.
+            _upd(100)
+            if self.ADC_ON == False and self.adcWasON == True:
+                self.on_off_adc(self)
+            if calAll == False:
+                self.OnTaskComplete()
+                self.Enable()
+            return True
 
         except Exception as _exc:
             if calAll:
@@ -2141,9 +2153,9 @@ class calibrate():
         """
         if not self.check_for_node():
             return
-        if not self._fw_at_least(4, 3, 3):
+        if not self._fw_at_least(4, 4, 0):
             self._prompt_ok("Firmware Too Old",
-                "Magnetic encoder compensation requires firmware v4.3.3 or later.\n"
+                "Magnetic encoder compensation requires firmware v4.4.0 or later.\n"
                 "Please update the firmware and try again.")
             return
 
@@ -3533,9 +3545,9 @@ class calibrate():
 
         if not self.check_for_node():
             return
-        if not self._fw_at_least(4, 3, 3):
+        if not self._fw_at_least(4, 4, 0):
             self._prompt_ok("Firmware Too Old",
-                "Cogging compensation calibration requires firmware v4.3.3 or later.\n"
+                "Cogging compensation calibration requires firmware v4.4.0 or later.\n"
                 "Please update the firmware and try again.")
             return
 
@@ -4552,9 +4564,9 @@ class calibrate():
         """
         if not self.check_for_node():
             return
-        if not self._fw_at_least(4, 3, 3):
+        if not self._fw_at_least(4, 4, 0):
             self._prompt_ok("Firmware Too Old",
-                "Cogging compensation calibration requires firmware v4.3.3 or later.\n"
+                "Cogging compensation calibration requires firmware v4.4.0 or later.\n"
                 "Please update the firmware and try again.")
             return
 

@@ -350,7 +350,8 @@ Priority: optional
 Installed-Size: ${INSTALLED_SIZE}
 Maintainer: Barrett Technology <bn@barrett.com>
 Homepage: https://barrett.com
-Depends: can-utils
+Depends: can-utils, libgtk-3-0 | libgtk-3-0t64, libsdl2-2.0-0 | libsdl2-2.0-0t64, libnotify4 | libnotify4t64, libsm6 | libsm6t64, libxxf86vm1 | libxxf86vm1t64, libpcre2-32-0 | libpcre2-32-0t64, libsecret-1-0 | libsecret-1-0t64
+Replaces: pucktunerapp, p4checkoutapp
 Description: Barrett Technology Puck Utility
  GUI utility for configuring and calibrating Barrett Technology P4 series Puck
  motor controllers over CAN bus. Supports firmware flashing, CANopen object
@@ -372,16 +373,20 @@ cat > /etc/NetworkManager/conf.d/99-puck-can.conf << 'EOF'
 unmanaged-devices=type:can
 EOF
 
-udevadm control --reload-rules
-udevadm trigger
-systemctl daemon-reload
+# Best-effort refresh: these no-op-fail in a chroot / container / image build
+# where udev or systemd aren't running. The postinst must NOT abort on them
+# (it runs under `set -e`), so tolerate failure -- the udev rules + service are
+# already installed by dpkg itself; this just refreshes a live system.
+udevadm control --reload-rules || true
+udevadm trigger || true
+systemctl daemon-reload || true
 
 if command -v update-desktop-database >/dev/null 2>&1; then
-    update-desktop-database -q /usr/share/applications
+    update-desktop-database -q /usr/share/applications || true
 fi
 
 if command -v gtk-update-icon-cache >/dev/null 2>&1; then
-    gtk-update-icon-cache -f -t /usr/share/icons/hicolor
+    gtk-update-icon-cache -f -t /usr/share/icons/hicolor || true
 fi
 
 if command -v appstreamcli >/dev/null 2>&1; then
