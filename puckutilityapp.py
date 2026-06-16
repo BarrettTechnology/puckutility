@@ -275,7 +275,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self._set_windows_icon(resource_path(os.path.join('images', 'BarrettIcon.ico')))
         else:
             self.SetIcon(wx.Icon(resource_path(os.path.join('images', 'BarrettIcon.png'))))
-        self.SetTitle("Puck Utility App - v1.3.0 - DEV")
+        self.SetTitle("Puck Utility - v1.3.0 - DEV")
         self.button_6.SetBackgroundColour(self.gray) # Initialize with gray button in idle
         self.Bind(wx.EVT_CHAR_HOOK, self.onKeyDown)  # EVT_CHAR_HOOK fires before focused child consumes the key
         self.Bind(wx.EVT_KEY_UP, self.onKeyUp)
@@ -2540,6 +2540,24 @@ def _setup_linux_desktop_integration(app_id, display_name):
         pass
     if getattr(sys, 'frozen', False):
         return
+    # Defer to a system-installed (.deb) entry of the same id. Writing a
+    # per-user entry would shadow it (XDG precedence) and make the dock launch
+    # the source tree instead of the installed app. Clean up any stale per-user
+    # entry a previous source run left, so the installed one wins.
+    try:
+        if os.path.exists(os.path.join(
+                '/usr/share/applications', f'{app_id}.desktop')):
+            user_entry = os.path.join(
+                os.environ.get('XDG_DATA_HOME',
+                               os.path.expanduser('~/.local/share')),
+                'applications', f'{app_id}.desktop')
+            try:
+                os.remove(user_entry)
+            except OSError:
+                pass
+            return
+    except Exception:
+        pass
     try:
         src_dir = os.path.dirname(os.path.abspath(__file__))
         entry = (
@@ -2627,9 +2645,11 @@ Examples:
     ops.add_argument('--scan', action='store_true',
                      help='Scan the CAN bus and print all discovered node IDs')
     ops.add_argument('--info', action='store_true',
-                     help='Print firmware version, model, motor params, and live status '
-                          'for each node. Use with --id or --all to target specific nodes; '
-                          'omit both to show all found nodes.')
+                     help='Print firmware version, flashloader version, model, motor '
+                          'params, and live status for each node. Reading the flashloader '
+                          'version briefly reboots each puck into the bootloader and back. '
+                          'Use with --id or --all to target specific nodes; omit both to '
+                          'show all found nodes.')
     ops.add_argument('--flash', metavar='FIRMWARE',
                      help='Path to firmware file (.bin or .ebin)')
     ops.add_argument('--config', metavar='CSV',
@@ -2662,7 +2682,7 @@ Examples:
         MyApp.touchscreen = args.touchscreen
         # Must run before MyApp() creates the first window so the Wayland
         # app_id is set when the toplevel is mapped.
-        _setup_linux_desktop_integration('PuckUtilityApp', 'Puck Utility App')
+        _setup_linux_desktop_integration('PuckUtilityApp', 'Puck Utility')
         app = MyApp(0)
         app.MainLoop()
         sys.exit(0)
@@ -2683,7 +2703,8 @@ Examples:
         net.disconnect()
         sys.exit(0)
 
-    # --info: read-only; --id/--all optional (omitting both shows all found nodes)
+    # --info: reads versions/status; the flashloader read reboots each puck into
+    # the bootloader and relaunches it. --id/--all optional (omit both for all).
     if args.info:
         node_ids = args.id if args.id else None
         _cli_info(args.can, node_ids)

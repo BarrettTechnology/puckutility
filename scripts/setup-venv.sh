@@ -33,9 +33,28 @@ if [ -r /etc/os-release ]; then
         20.*|21.*|22.*|23.*) LIBTIFF=libtiff5 ;;
     esac
 fi
-$SUDO apt install -y libgtk-3-0 libsdl2-2.0-0 \
-    libnotify4 libsm6 libxxf86vm1 libpcre2-32-0 \
-    libsecret-1-0 libjpeg-turbo8 "$LIBTIFF"
+# The 64-bit time_t transition (Ubuntu 24.04) renamed several of these runtime
+# libs with a `t64` suffix (e.g. libgtk-3-0 -> libgtk-3-0t64 on 24.04/26.04) and
+# the OLD name is not provided -- so a literal `apt install libgtk-3-0` fails on
+# 24.04+ and, because apt aborts the whole call, NONE of the libs install and
+# `import wx` then dies. Resolve each package to whichever of <pkg>/<pkg>t64 the
+# release actually ships before installing.
+_apt_candidate() {  # echo $1 or ${1}t64 (whichever has a real candidate), else nothing
+    if apt-cache policy "$1" 2>/dev/null | grep -q 'Candidate: [^(]'; then
+        echo "$1"
+    elif apt-cache policy "${1}t64" 2>/dev/null | grep -q 'Candidate: [^(]'; then
+        echo "${1}t64"
+    else
+        echo "WARNING: neither $1 nor ${1}t64 is available on this release" >&2
+    fi
+}
+RUNTIME_LIBS=()
+for _p in libgtk-3-0 libsdl2-2.0-0 libnotify4 libsm6 libxxf86vm1 \
+          libpcre2-32-0 libsecret-1-0 libjpeg-turbo8 "$LIBTIFF"; do
+    _r=$(_apt_candidate "$_p")
+    [ -n "$_r" ] && RUNTIME_LIBS+=("$_r")
+done
+$SUDO apt install -y "${RUNTIME_LIBS[@]}"
 
 # --- uv: portable Python + venv manager (installs to ~/.local/bin, no sudo) ---
 if ! command -v uv >/dev/null 2>&1; then

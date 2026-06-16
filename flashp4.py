@@ -151,6 +151,69 @@ def flash(can_device, can_id, file_name, progress=None):
     network.disconnect()
     return flash_result.SUCCESS
 
+def read_flashloader_version(can_device, can_id):
+    """Read the flashloader's reported version WITHOUT erasing or programming.
+
+    The flashloader version is only readable from inside the bootloader -- while
+    the application is running, 0x100A reports the *application* version. So this
+    performs the same bootloader-entry handshake as flash() (NMT reset + hold
+    AutoLaunch to win the auto-launch race), reads MfgSoftwareVersion, then
+    relaunches the application so the puck returns to normal operation.
+
+    Returns the version string (e.g. "3.0.6"), or None if the bootloader could
+    not be entered / read. Mirrors flash()'s network handling: the caller should
+    disconnect its own CANopen network first and rescan afterwards.
+    """
+    try:
+        import can_backend
+        network = can_backend.make_network(can_device, bitrate=1000000)
+    except Exception:
+        print("Could not open {} to read flashloader version".format(can_device))
+        return None
+
+    node = network.add_node(can_id, 'flashloader.eds')
+    try:
+        node.nmt.state = 'RESET'                   # reboot into flashloader
+        node.nmt.wait_for_heartbeat(timeout=1)     # CANopen boot-up message
+        # Win the race against the flashloader's StartTimeoutMs auto-launch by
+        # writing AutoLaunch=0 immediately and retrying while the SDO server
+        # warms up (same approach as flash()).
+        deadline = time.time() + 0.5
+        last_err = None
+        while time.time() < deadline:
+            try:
+                node.sdo["ProgramInfo"]["AutoLaunch"].raw = 0  # stay in flashloader
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+                time.sleep(0.005)
+        if last_err is not None:
+            raise last_err
+
+        version = get_version(node.sdo['MfgSoftwareVersion'].raw)
+        print("Node: {0}, Flashloader version: {1}".format(can_id, version))
+        return version
+    except Exception as e:
+        print("Could not read flashloader version: {}".format(e))
+        return None
+    finally:
+        # Always hand the puck back to its application. Restore AutoLaunch=1 so a
+        # power cycle self-heals even if the explicit LAUNCH below doesn't take,
+        # then issue LAUNCH to boot the (already-valid) application now.
+        try:
+            node.sdo["ProgramInfo"]["AutoLaunch"].raw = 1
+        except Exception:
+            pass
+        try:
+            node.sdo['ProgramCommand']['Command'].raw = flash_command.LAUNCH
+        except Exception:
+            pass
+        try:
+            network.disconnect()
+        except Exception:
+            pass
+
 def start(can_device, can_id, firmfile, progress=None):
 
     global node
