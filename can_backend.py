@@ -51,17 +51,20 @@ def _candlelight_present():
 
 def pcan_channel(can_device):
     """Map a CAN port selector to a PCAN channel name. Accepts a bare bus
-    index (e.g. '0' -> PCAN_USBBUS1) or a full 'PCAN_USBBUSn' string passed
-    verbatim."""
+    index (e.g. '0' -> PCAN_USBBUS1), a SocketCAN-style 'canN' name
+    (e.g. 'can0' -> PCAN_USBBUS1, as produced by the GUI port dropdown), or
+    a full 'PCAN_USBBUSn' string passed verbatim."""
     text = str(can_device).strip()
     if text.upper().startswith('PCAN_'):
         return text.upper()
+    if text.lower().startswith('can') and text[3:].isdigit():
+        return 'PCAN_USBBUS' + str(int(text[3:]) + 1)
     try:
         return 'PCAN_USBBUS' + str(int(text) + 1)
     except ValueError:
         raise ValueError(
             f"invalid PCAN device {can_device!r}: expected a bus index "
-            f"(e.g. 0 for PCAN_USBBUS1) or a PCAN_USBBUSn name")
+            f"(e.g. 0 for PCAN_USBBUS1), a 'canN' name, or a PCAN_USBBUSn name")
 
 
 # SDO abort codes whose appearance almost always means another CANopen master
@@ -98,6 +101,59 @@ def sdo_contention_message(exc):
         "SDO abort 0x{:08X} — likely CAN bus contention.\n"
         "Close any other PuckUtility/PuckTuner window using this bus and retry."
     ).format(code)
+
+
+# CANopen 0x1018:2 (Product Code) -> Puck model name.
+#
+# Two encodings exist in the field:
+#   * Legacy firmware reports a small numeric code (e.g. 5707 -> 'P4-16').
+#   * Newer firmware packs the 4-character model tag into the UNSIGNED32 as
+#     ASCII, most-significant byte first: 0x50343332 == b'P432' -> 'P4-32'.
+# `_ProductCodeModels` resolves both: numeric codes are looked up in the table,
+# anything else is decoded as a 4-byte ASCII tag on the fly, so a new variant
+# only needs an entry in _ASCII_MODEL_TAGS (or none, if the table below already
+# covers it).
+_ASCII_MODEL_TAGS = {
+    b'P416': 'P4-16',
+    b'P432': 'P4-32',
+    b'P437': 'P4-37',
+    b'P442': 'P4-42',
+}
+
+
+def _model_from_ascii(code):
+    """Return the model name if `code` is an ASCII-packed model tag (e.g. the
+    int 0x50343332 / 1345598258 -> 'P4-32'), else None."""
+    try:
+        raw = int(code).to_bytes(4, 'big')
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return _ASCII_MODEL_TAGS.get(raw)
+
+
+class _ProductCodeModels(dict):
+    """Maps a product code to a Puck model name, accepting both legacy numeric
+    codes (stored as ordinary dict items) and newer ASCII-packed tags (decoded
+    on the fly). Drop-in for the plain dict the call sites used before: `.get`
+    and `in` both transparently handle the ASCII form."""
+
+    def get(self, code, default=None):
+        if dict.__contains__(self, code):
+            return dict.__getitem__(self, code)
+        model = _model_from_ascii(code)
+        return model if model is not None else default
+
+    def __contains__(self, code):
+        return dict.__contains__(self, code) or _model_from_ascii(code) is not None
+
+
+PRODUCT_CODE_MODELS = _ProductCodeModels({
+    5707: 'P4-16',
+    1323: 'P4-37',
+    1950: 'P4-37',
+    5755: 'P4-42',
+    5760: 'P4-32',
+})
 
 
 def make_network(can_device, bitrate=1_000_000):
