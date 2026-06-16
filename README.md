@@ -159,9 +159,30 @@ Output: `build/PuckUtilityApp-lin-vX.Y.Z.zip`
 
 ### Windows
 
+The build is a Bash script (it runs PyInstaller twice, copies in the data files,
+downloads the PCAN driver, and zips the result). PowerShell cannot execute a
+`.sh` file directly, and a bare `bash` resolves to WSL — which is usually not
+installed. Run it through **Git Bash** instead (bundled with
+[Git for Windows](https://gitforwindows.org/)).
+
+From a PowerShell prompt:
 ```
-scripts\build-win32-installer.sh
+& "C:\Program Files\Git\bin\bash.exe" ./scripts/build-win32-installer.sh
 ```
+
+Or open a **Git Bash** terminal and run it directly:
+```
+./scripts/build-win32-installer.sh
+```
+
+Notes:
+- You do **not** need to activate the venv first — the script locates
+  `Scripts/python.exe` itself.
+- An internet connection is required (the PCAN driver is downloaded fresh each
+  build).
+
+Output: `build/win/PuckUtilityApp-win32-vX.Y.Z.zip`, containing
+`PuckUtilityApp.exe` (windowed GUI) and `PuckUtilityAppCLI.exe` (console).
 
 ## Testing across Ubuntu versions
 

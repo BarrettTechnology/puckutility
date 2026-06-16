@@ -49,6 +49,7 @@ import widgets
 
 import os
 import canopen
+import can_backend
 from canopen.sdo import SdoAbortedError
 import platform
 import time
@@ -1543,13 +1544,10 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.on_off_adc(self)
 
     # Mapping of CANopen 0x1018 sub-2 product codes to Puck model names.
-    _PRODUCT_CODE_MODELS = {
-        5707: 'P4-16',
-        1323: 'P4-37',
-        1950: 'P4-37',
-        5755: 'P4-42',
-        5760: 'P4-32',
-    }
+    # Shared resolver handles both legacy numeric codes and the newer
+    # ASCII-packed model tags (e.g. 1345598258 -> 'P4-32'). calibrate_menu
+    # reads this same attribute via getattr(self, '_PRODUCT_CODE_MODELS').
+    _PRODUCT_CODE_MODELS = can_backend.PRODUCT_CODE_MODELS
 
     def _format_product_code(self, code):
         """Format a product code as e.g. '5707 (P4-16)', or '<unknown>' if code is None."""

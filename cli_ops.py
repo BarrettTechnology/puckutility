@@ -198,13 +198,10 @@ def _cli_config(can_device, node_id, csv_path):
     save_net.disconnect()
 
 
-_PRODUCT_CODE_MODELS = {
-    5707: 'P4-16',
-    1323: 'P4-37',
-    1950: 'P4-37',
-    5755: 'P4-42',
-    5760: 'P4-32',
-}
+import can_backend
+# Shared resolver: handles both legacy numeric product codes and the newer
+# ASCII-packed model tags (e.g. 1345598258 -> 'P4-32'). See can_backend.
+_PRODUCT_CODE_MODELS = can_backend.PRODUCT_CODE_MODELS
 
 
 def _cli_info(can_device, node_ids=None):
