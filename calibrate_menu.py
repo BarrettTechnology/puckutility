@@ -5195,6 +5195,15 @@ class calibrate():
         """
         if not self.check_for_node():
             return
+        # Firmware gate FIRST -- before toggling the ADC monitor, starting the
+        # task gauge, or popping the "Cogging Compensation Active" dialog -- so an
+        # old-firmware puck shows only the "Firmware Too Old" notice and nothing
+        # else.
+        if not self._fw_at_least(4, 4, 0):
+            self._prompt_ok("Firmware Too Old",
+                "Cogging compensation calibration requires firmware v4.4.0 or later.\n"
+                "Please update the firmware and try again.")
+            return
         if self.ADC_ON:
             self.adcWasON = True
             self.on_off_adc(self)
@@ -5884,6 +5893,15 @@ class calibrate():
     def error_compensation_state(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
         if self.check_for_node() == False:
             return
+        if not self._fw_at_least(4, 4, 0):
+            self._prompt_ok("Firmware Too Old",
+                "Encoder error compensation requires firmware v4.4.0 or later.\n"
+                "Please update the firmware and try again.")
+            # Revert the radio selection -- the feature is unavailable on this
+            # firmware, so it cannot be turned ON.
+            self.frame_menubar.ON.Check(False)
+            self.frame_menubar.OFF.Check(True)
+            return
         enable = event.GetId() == self.frame_menubar.ON.GetId()
         try:
             self.node.sdo[0x3027][1].raw = 1 if enable else 0
@@ -5897,6 +5915,15 @@ class calibrate():
 
     def cogging_compensation_state(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
         if self.check_for_node() == False:
+            return
+        if not self._fw_at_least(4, 4, 0):
+            self._prompt_ok("Firmware Too Old",
+                "Cogging compensation requires firmware v4.4.0 or later.\n"
+                "Please update the firmware and try again.")
+            # Revert the radio selection -- the feature is unavailable on this
+            # firmware, so it cannot be turned ON.
+            self.frame_menubar.COG_ON.Check(False)
+            self.frame_menubar.COG_OFF.Check(True)
             return
         enable = event.GetId() == self.frame_menubar.COG_ON.GetId()
         try:
