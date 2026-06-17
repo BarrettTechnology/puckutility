@@ -156,7 +156,18 @@ PRODUCT_CODE_MODELS = _ProductCodeModels({
 })
 
 
-def make_network(can_device, bitrate=1_000_000):
+def model_from_product_code(code):
+    """Resolve a CANopen product code (0x1018:2) to a Puck model name, or None.
+
+    Single converged entry point shared by puckutility, pucktuner, and
+    P4-checkout. Accepts BOTH encodings: legacy small-integer codes (e.g.
+    5760 -> 'P4-32') and newer ASCII-packed codes (e.g. 0x50343332 = b'P432'
+    -> 'P4-32'). Thin wrapper over PRODUCT_CODE_MODELS so callers can use a
+    plain function instead of the dict-with-.get() form."""
+    return PRODUCT_CODE_MODELS.get(code)
+
+
+def make_network(can_device, bitrate=1_000_000, fd=False, data_bitrate=None):
     """Create and connect a canopen.Network. The adapter is auto-selected:
     CandleLight if present on USB, otherwise PCAN (Windows/macOS) or
     SocketCAN (Linux).
@@ -164,6 +175,12 @@ def make_network(can_device, bitrate=1_000_000):
     `can_device` is the channel selector for the PCAN/SocketCAN paths. For
     CandleLight, integer values select which USB instance to open when
     multiple adapters are connected (0 = first found).
+
+    `fd` enables CAN-FD frame transmission; `data_bitrate` is the FD data-phase
+    rate (e.g. 5_000_000). For SocketCAN the data bitrate is set on the LINK
+    (`ip link ... dbitrate`), so only `fd` is passed to python-can there; the
+    CandleLight/PCAN drivers take the data_bitrate directly. Both default off so
+    callers that don't opt in stay on classic CAN.
     """
     system = platform.system()
 
@@ -172,20 +189,52 @@ def make_network(can_device, bitrate=1_000_000):
             usb_index = int(str(can_device).strip())
         except (TypeError, ValueError):
             usb_index = 0
-        bus = CandlelightBus(channel=usb_index, bitrate=bitrate)
+        bus = CandlelightBus(channel=usb_index, bitrate=bitrate,
+                             fd=fd, data_bitrate=data_bitrate)
         network = canopen.Network(bus=bus)
         network.connect()
         return network
+
+    # PCAN/CandleLight configure the FD data phase in software; SocketCAN reads
+    # it from the link, so it only wants fd=True (passing data_bitrate would be
+    # an unexpected kwarg). Build the FD kwargs per backend accordingly.
+    pcan_fd_kwargs = {'fd': True, 'data_bitrate': data_bitrate} if fd else {}
 
     network = canopen.Network()
     if system == "Windows":
         network.connect(bustype='pcan',
                         channel=pcan_channel(can_device),
-                        bitrate=bitrate)
+                        bitrate=bitrate, **pcan_fd_kwargs)
     elif system == "Linux":
-        network.connect(bustype='socketcan', channel=can_device, bitrate=bitrate)
+        network.connect(bustype='socketcan', channel=can_device,
+                        bitrate=bitrate, **({'fd': True} if fd else {}))
     elif system == "Darwin":
-        network.connect(bustype='pcan', channel='PCAN_USBBUS1', bitrate=bitrate)
+        network.connect(bustype='pcan', channel='PCAN_USBBUS1',
+                        bitrate=bitrate, **pcan_fd_kwargs)
     else:
         raise RuntimeError(f"unsupported platform for CAN access: {system}")
+
+    if fd:
+        _enable_fd_frames(network)
     return network
+
+
+def _enable_fd_frames(network):
+    """Make outgoing canopen frames actual CAN-FD frames.
+
+    python-can transmits a Message as a CLASSIC frame unless ``msg.is_fd`` is
+    set -- and canopen builds plain (classic) Messages, so on an FD-enabled
+    SocketCAN/PCAN socket the frames still go out 8-byte at the 1 Mbit nominal
+    rate. Wrap the bus ``send`` to flag every outgoing message FD + BRS so the
+    data phase actually uses the link's FD data bitrate. (The CandleLight driver
+    does this inside its own send, so it is not wrapped here.)
+    """
+    bus = network.bus
+    _orig_send = bus.send
+
+    def _send_fd(msg, *args, **kwargs):
+        msg.is_fd = True
+        msg.bitrate_switch = True
+        return _orig_send(msg, *args, **kwargs)
+
+    bus.send = _send_fd

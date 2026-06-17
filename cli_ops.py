@@ -950,8 +950,10 @@ def flash_canable(firmware_path=None, verbose=False):
         return True
 
     # ---- bring up the SocketCAN interface -----------------------------------
-    # The fresh enumeration triggers a udev net ADD event that runs the RUN+=
-    # rule (as root) to configure and bring up can0.  Poll until IFF_UP is set.
+    # The fresh enumeration triggers a udev net ADD event whose SYSTEMD_WANTS
+    # starts can-up@<iface>.service (scripts/61-can-up.rules) to configure and
+    # bring the interface up.  (Older installs used a udev RUN+= rule; the poll
+    # below is agnostic to which mechanism brought it up.)  Wait until IFF_UP.
     phase[0] = 'starting can0'
 
     def _iface_is_up(name):
@@ -971,30 +973,58 @@ def flash_canable(firmware_path=None, verbose=False):
         _vprint('.', end='', flush=True)
 
     if iface is None:
-        # Interface appeared but udev hasn't brought it up yet — try explicitly.
+        # The interface re-enumerated but the automatic bring-up hasn't set it
+        # up within the window.  Nudge it explicitly: prefer the same systemd
+        # service the udev rule uses on Ubuntu 22.04+/26, then fall back to a
+        # direct `ip link` for older/manual setups.  Both need root; without it
+        # the automatic udev->systemd path is the only route, so we re-poll/warn.
         iface = _find_can_iface()
         if iface:
-            subprocess.run(
-                ['/sbin/ip', 'link', 'set', iface,
-                 'type', 'can', 'bitrate', '1000000', 'txqueuelen', '1000', 'fd', 'on'],
-                capture_output=True,
-            )
-            subprocess.run(['/sbin/ip', 'link', 'set', iface, 'up'],
-                           capture_output=True)
+            # Use the systemd service only if systemctl exists (it won't on a
+            # non-systemd host); subprocess would otherwise raise FileNotFoundError.
+            nudged = None
+            if shutil.which('systemctl'):
+                nudged = subprocess.run(
+                    ['systemctl', 'start', f'can-up@{iface}.service'],
+                    capture_output=True,
+                )
+            if nudged is None or nudged.returncode != 0:
+                subprocess.run(
+                    ['/sbin/ip', 'link', 'set', iface,
+                     'type', 'can', 'bitrate', '1000000', 'txqueuelen', '1000', 'fd', 'on'],
+                    capture_output=True,
+                )
+                subprocess.run(['/sbin/ip', 'link', 'set', iface, 'up'],
+                               capture_output=True)
+            for _ in range(30):  # give the bring-up up to 3 s to take effect
+                if _iface_is_up(iface):
+                    break
+                time.sleep(0.1)
 
     if not verbose:
         _stop_spinner()
 
     if not iface:
-        print("Error: SocketCAN interface not found.")
-        print("  Run:  sudo ./scripts/setup-socketcan.sh")
+        # The flash itself succeeded (firmware written, device re-enumerated as
+        # CandleLight) -- there's just no SocketCAN netdev yet. Writing the Boot0
+        # option bytes (above) resets the STM32 to apply them, so it re-enumerates
+        # a few times before settling; a clean power cycle finishes that.
+        if _usb_find(idVendor=CANDLELIGHT_VID, idProduct=CANDLELIGHT_PID):
+            print("Flash complete -- now unplug the adapter, wait ~5 s, then replug it.")
+            print("  The Boot0 option-byte change needs a power cycle to settle;")
+            print("  can0 then comes up automatically (udev -> can-up@ service).")
+            return True
+        print("Error: no CAN interface and no CandleLight device found after flash.")
+        print("  Unplug/replug the adapter; if it stays in DFU mode, re-run --flash-canable.")
         return False
 
     if _iface_is_up(iface):
         print(f"CandleLight is ready on {iface}.")
         return True
     else:
-        print(f"Warning: {iface} is not up (udev rule may not have run).")
-        print(f"  Run:  sudo ip link set {iface} type can bitrate 1000000 txqueuelen 1000 fd on")
-        print(f"        sudo ip link set {iface} up")
+        print(f"Warning: {iface} re-enumerated but did not come up.")
+        print( "  The udev rule / can-up@ service may not be installed. Re-install with:")
+        print( "    sudo ./scripts/setup-socketcan.sh")
+        print(f"  or bring it up manually:")
+        print(f"    sudo systemctl start can-up@{iface}.service")
         return False
