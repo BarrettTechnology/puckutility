@@ -11,6 +11,7 @@ import platform
 from canopen_runner import (
     CLEAR_FAULT, SHUTDOWN, OP_ENABLED,
     MODE_IDLE, MODE_PHASE_VOLTAGE_ANGLE, MODE_PROFILE_TRQ, MODE_PROFILE_VEL,
+    MODE_PROFILE_POS,
 )
 from canopen.sdo import SdoAbortedError
 from can_backend import sdo_contention_message
@@ -2547,6 +2548,15 @@ class calibrate():
             corr_seq = [s[2] for s in sweep]
             X_full   = _dft(corr_seq, N_HARMONICS)
             table_full = _reconstruct(X_full, enc_resolution)
+            # _reconstruct yields the table in sweep-phase order (index 0 = sweep start,
+            # i.e. enc_start), but every consumer (CSV "enc_pos_cts", the fit overlay at
+            # table_full[abs_pos], the plot x-axis, and firmware table[raw_pos]) treats the
+            # index as a TRUE absolute encoder count. Re-index to absolute so they agree and
+            # tables are comparable across runs. Forward sweep step j sits at absolute
+            # position (enc_start + e_polarity*j) mod res. RMS/max are roll-invariant; the
+            # uploaded harmonics use the _psi path, not this table, so comp is unaffected.
+            table_full = [table_full[(e_polarity * (_p - enc_start)) % enc_resolution]
+                          for _p in range(enc_resolution)]
 
             # ---- Per-electrical-cycle table ----
             # Normalize each cycle to its own start so mechanical drift doesn't
@@ -2794,12 +2804,60 @@ class calibrate():
                     _json.dump(fft_data, _jf, indent=2)
                 print("  FFT JSON → {}".format(fft_path))
 
-                # ── Upload top-10 harmonic bins to Puck (0x3027) ─────────────
+                # ── Upload significant harmonic bins to Puck (0x3027) ────────
                 N_BINS = 10
-                # Top 10 AC harmonics by amplitude (k≥1). DC offset is not uploaded
-                # to the puck; it is subtracted from the retest plots for display only.
-                _top_bins = sorted_ks[:N_BINS]  # top 10 by amplitude, most impactful first
-                n_upload  = len(_top_bins)
+                # AC harmonics by amplitude (k≥1). DC offset is not uploaded to the puck;
+                # it is subtracted from the retest plots for display only.
+                #
+                # Trim insignificant harmonics. Two independent reasons to drop a bin:
+                #  (1) amplitude in the spectral noise floor — adds only noise to the
+                #      correction and costs a GFLIB_SinCos per ISR (firmware now uses the
+                #      direct-calc model: O(1) per bin, so cost scales with bin COUNT);
+                #  (2) harmonic order above K_MAX_ENC — the stepped open-loop sweep can't
+                #      resolve high-k phase reliably (phase error ≈ 2π·k·Δenc_start/N, so a
+                #      ~2 ct anchor uncertainty is ~9° at k=42 but ~116° at k=126), and a
+                #      wrong-phase high-k bin injects ×k-amplified ripple into theta_e when
+                #      applied (observed: a 1.3 ct k=126 bin injected ~29 mA at 420 Hz and
+                #      corrupted the cogging DFT). Keep bins above the noise floor and within
+                #      the order cap, never fewer than needed for <1 ct RMS (best_n).
+                #
+                # FUTURE — phase-reproducibility gate (not implemented; would ~double cal time):
+                #   Run two sweeps from different start positions, convert each bin's phase to
+                #   ABSOLUTE frame (φ_abs = φ_fft − 2π·k·enc_start/N), and keep only bins whose
+                #   φ_abs agrees between runs (e.g. <~30°). This cuts the unreliable bins from
+                #   DATA per-bin, regardless of order, instead of the fixed K_MAX_ENC heuristic
+                #   — it would keep a genuinely-stable high-k bin and drop a noisy low-k one.
+                #   Deferred for now because it costs a second full sweep.
+                #
+                # CAVEAT — k = n×pole_pairs are electrical/cogging harmonics (e.g. k=42 = 2×21
+                # on a 21-pole-pair motor). In the open-loop sweep, content there is ambiguous
+                # (encoder error vs cogging feedthrough); an enc-comp bin there injects onto a
+                # cogging-DFT bin and overlaps cogging comp's domain. Prefer letting cogging
+                # comp own pole-pair-multiple content, and always calibrate cogging enc-comp-OFF.
+                K_MAX_ENC    = 42   # order cap: above this the stepped sweep can't pin phase
+                _amp_all     = sorted(float(amps[_k]) for _k in range(1, len(amps)))
+                _noise_floor = _amp_all[len(_amp_all) // 2] if _amp_all else 0.0  # median ≈ noise
+                _sig_thresh  = max(4.0 * _noise_floor, 0.5)  # cts: 4× noise floor, ≥0.5 ct
+                _cap_ks      = [_k for _k in sorted_ks if _k <= K_MAX_ENC]   # in-band (phase-reliable)
+                _capped      = [_k for _k in sorted_ks if _k >  K_MAX_ENC]   # over order cap
+                _n_sig       = sum(1 for _k in _cap_ks if float(amps[_k]) >= _sig_thresh)
+                _keep_n      = min(N_BINS, max(best_n, _n_sig))
+                _top_bins    = _cap_ks[:_keep_n]    # significant, in-band bins, amplitude-descending
+                _dropped     = _cap_ks[_keep_n:]    # in-band but below noise floor — not uploaded
+                n_upload     = len(_top_bins)
+
+                print("\n  Harmonic trim: noise floor ≈ {:.3f} ct, threshold {:.3f} ct, "
+                      "k≤{}, best_n(<1ct)={} → keeping {} of {} bins.".format(
+                          _noise_floor, _sig_thresh, K_MAX_ENC, best_n, n_upload, len(sorted_ks)))
+                _capped_sig = [_k for _k in _capped if float(amps[_k]) >= _sig_thresh]
+                if _capped_sig:
+                    print("    Dropped (k>{}, phase unreliable — leave to cogging comp): ".format(
+                        K_MAX_ENC) + ", ".join(
+                        "k={}({:.2f}ct)".format(_k, float(amps[_k])) for _k in _capped_sig[:10]))
+                if _dropped:
+                    print("    Dropped (sub-noise, not uploaded): " + ", ".join(
+                        "k={}({:.2f}ct)".format(_dk, float(amps[_dk]))
+                        for _dk in _dropped[:10]) + (" …" if len(_dropped) > 10 else ""))
 
                 print("\n  Top {} harmonics by amplitude (most impactful first):".format(n_upload))
                 print("  Rank  {:>4}  {:>10}".format("k", "Amplitude"))
@@ -3040,19 +3098,23 @@ class calibrate():
                 _impr_rms = (1.0 - _rt_rms / _lin_rms_err) * 100.0 if _lin_rms_err else 0.0
                 print("  RMS improvement: {:.1f}%".format(_impr_rms))
 
-                # DC bias: mean of bidirectional-averaged retest errors. Friction is
-                # canceled by averaging so this is the true encoder geometric mean
-                # offset (reads consistently ahead/behind ideal over a full revolution).
-                # Not stored to the puck — subtracted from plots only so the AC
-                # residual is visible centred on zero.
-                _rt_dc_bias = sum(_rt_errs) / len(_rt_errs) if _rt_errs else 0.0
-                _rt_errs_ac = [e - _rt_dc_bias for e in _rt_errs]
-                _rt_rms_ac  = (sum(e*e for e in _rt_errs_ac) / len(_rt_errs_ac)) ** 0.5
-                _impr_ac    = (1.0 - _rt_rms_ac / _lin_rms_err) * 100.0 if _lin_rms_err else 0.0
-                print("  DC bias (not stored to puck): {:+.3f}°".format(_rt_dc_bias))
-                print("  AC-only RMS: {:.3f}°  ({:.1f}% improvement)".format(
-                    _rt_rms_ac, _impr_ac))
-                _rt_passed_stat = _rt_rms_ac < _lin_rms_err
+                # DC bias: mean of bidirectional-averaged errors. Friction is canceled by
+                # averaging, so this is the encoder geometric mean offset — a sweep-anchor
+                # artifact (it tracks where the sweep started), NOT stored to the puck.
+                # Remove it from BOTH before and after so the AC-only metric compares like
+                # with like; stripping it from only the "after" side overstated improvement.
+                _rt_dc_bias  = sum(_rt_errs) / len(_rt_errs) if _rt_errs else 0.0
+                _rt_errs_ac  = [e - _rt_dc_bias for e in _rt_errs]
+                _rt_rms_ac   = (sum(e*e for e in _rt_errs_ac) / len(_rt_errs_ac)) ** 0.5
+                _lin_dc_bias = sum(_lin_errs) / len(_lin_errs) if _lin_errs else 0.0
+                _lin_rms_ac  = (sum((e - _lin_dc_bias) ** 2 for e in _lin_errs)
+                                / len(_lin_errs)) ** 0.5 if _lin_errs else 0.0
+                _impr_ac     = (1.0 - _rt_rms_ac / _lin_rms_ac) * 100.0 if _lin_rms_ac else 0.0
+                print("  DC bias (not stored to puck): before {:+.3f}°  after {:+.3f}°".format(
+                    _lin_dc_bias, _rt_dc_bias))
+                print("  AC-only RMS: {:.3f}° → {:.3f}°  ({:.1f}% improvement)".format(
+                    _lin_rms_ac, _rt_rms_ac, _impr_ac))
+                _rt_passed_stat = _rt_rms_ac < _lin_rms_ac
                 print("  Retest result: {}".format(
                     "PASS — AC RMS improved" if _rt_passed_stat else "FAIL — no improvement"))
 
@@ -3065,7 +3127,7 @@ class calibrate():
                     _rt_mech   = [r[0] for r in _rt_results]
                     _rt_edeg   = [r[3] - _rt_dc_bias for r in _rt_results]
                     _orig_mech = [r[0] for r in lin_results]
-                    _orig_edeg = [r[3] for r in lin_results]
+                    _orig_edeg = [r[3] - _lin_dc_bias for r in lin_results]
                     _yr2 = max(max(abs(e) for e in _orig_edeg),
                                max(abs(e) for e in _rt_edeg)) * 1.15 or 1.0
 
@@ -3077,7 +3139,7 @@ class calibrate():
                         '(RMS: {:.3f}° → {:.3f}° AC  {:.1f}% improvement'
                         '  |  DC bias {:+.1f}° subtracted from plot)'.format(
                             node_id, model_str, ts,
-                            _lin_rms_err, _rt_rms_ac, _impr_ac, _rt_dc_bias),
+                            _lin_rms_ac, _rt_rms_ac, _impr_ac, _rt_dc_bias),
                         fontsize=11)
 
                     _cax1.plot(_orig_mech, _orig_edeg, 'b-', linewidth=0.8)
@@ -3090,8 +3152,8 @@ class calibrate():
                     _cax1.set_ylim(-_yr2, _yr2)
                     _cax1.set_xlabel('Mechanical angle (°)')
                     _cax1.set_ylabel('Error (° electrical)')
-                    _cax1.set_title('Before compensation  (RMS={:.3f}°)'.format(
-                        _lin_rms_err))
+                    _cax1.set_title('Before compensation  (AC RMS={:.3f}°)'.format(
+                        _lin_rms_ac))
                     _cax1.legend(fontsize=8)
                     _cax1.grid(True, alpha=0.3)
 
@@ -3130,7 +3192,7 @@ class calibrate():
                     _rt_mech_all2 = [r[0] for r in _rt_results]
                     _rt_err_all2  = [r[3] - _rt_dc_bias for r in _rt_results]
                     _rt_maxerr_ac = max(_rt_errs_ac, key=abs)
-                    _rt_passed    = _rt_rms_ac < _lin_rms_err
+                    _rt_passed    = _rt_rms_ac < _lin_rms_ac
 
                     _rtfig = _rtplt.figure(figsize=(15, 8))
                     _rtfig.suptitle(
@@ -3139,7 +3201,7 @@ class calibrate():
                         'AC RMS {:.3f}° → {:.3f}°  ({:.1f}% improvement)'
                         '  |  DC bias {:+.1f}° subtracted'.format(
                             node_id, model_str, ts, pole_pairs, RETEST_N_PER_CYCLE,
-                            _lin_rms_err, _rt_rms_ac, _impr_ac, _rt_dc_bias),
+                            _lin_rms_ac, _rt_rms_ac, _impr_ac, _rt_dc_bias),
                         fontsize=13)
                     _rtgs_obj = _rtgs.GridSpec(2, 2, figure=_rtfig,
                                                width_ratios=[1.2, 1])
@@ -3624,12 +3686,43 @@ class calibrate():
                 return p
 
             N_BINS       = 128    # angle bins per revolution (k_max=64; resolves k=21,42,63)
-            TARGET_RPM   = 15.0  # mechanical RPM — must be high enough that velocity ripple << mean
+
+            # ── Quasi-static stepped measurement (PROFILE_POSITION) ──────────────────
+            # The continuous spin contaminated the profile (velocity surge → variable
+            # inertial term → non-repeatable, k=21 swung ±20% even at 16 revs). Instead,
+            # step to discrete positions, hold (closed-loop position), and measure the
+            # holding iq = cogging torque / Kt at zero velocity. Current-controlled → no
+            # d-to-q leakage; settled → no surge / no J·α. Same step→settle→measure pattern
+            # that made enc comp repeatable, but with current (not position) feedback in a
+            # current-controlled mode. FLAG OFF restores the original continuous-spin path.
+            # NOTE: first hardware draft — verify settle behaviour and holding-iq sign.
+            STEPPED_MEASURE = True
+            N_STEP          = N_BINS   # positions/rev (Nyquist 64 > k=42)
+            STEP_SETTLE_S   = 0.30     # settle after each PP move before measuring
+            N_AVG_STEP      = 8        # holding-iq reads averaged per held position
+            PP_PROFILE_VEL  = 130000   # cts/s move speed between steps (per run_test)
+
+            # Cal speed: hold the cogging fundamental near a fixed, velocity-loop-trackable
+            # frequency regardless of pole count, so measured Iq ≈ the true cogging torque
+            # (in-phase) rather than the loop's attenuated/lagged response above its bandwidth.
+            # cogging fundamental = pole_pairs × RPM/60 [Hz]  →  RPM = f_target × 60 / pole_pairs.
+            # f_target ~5 Hz is safely inside any reasonable velocity-loop bandwidth. When the
+            # velocity-loop BW is exposed (newer FW), raise f_target toward BW/margin to cal
+            # faster on high-bandwidth motors. Stall-retry below still raises RPM if friction
+            # stalls the motor at the computed speed (floor); this just sets the start point.
+            COG_CAL_FUND_HZ = 5.0
+            TARGET_RPM   = max(5.0, COG_CAL_FUND_HZ * 60.0 / max(pole_pairs, 1))  # mech RPM, pole-adaptive
             SETTLE_S     = 1.5   # velocity PI settles in <1s; 1.5s is conservative
-            # Scale N_REVS with TARGET_RPM to maintain ~4 samples/bin.
-            # Halved from the original 2×RPM/5 formula — acceptable quality, ~2× faster sweep.
-            N_REVS       = max(2, int(math.ceil(TARGET_RPM / 5.0)))
             SAMPLE_S     = 0.025 # sampling interval (s)
+            # N_REVS from a target samples-per-bin. Raised from ~4 to ~20: the cogging
+            # profile was non-repeatable (k=21 swung ~50% run-to-run at 3 revs). More revs
+            # → more samples averaged per angle bin → tighter profile. DIAGNOSTIC: if this
+            # makes the profile repeatable, the variability was random noise (fixed); if it
+            # still swings, the contamination is systematic (position-locked inertial surge)
+            # and needs the quasi-static method instead. Costs sweep time (~1 min/pass here).
+            SAMPLES_PER_BIN = 20
+            N_REVS       = max(2, int(math.ceil(
+                SAMPLES_PER_BIN * N_BINS * SAMPLE_S * TARGET_RPM / 60.0)))
             N_HARMONICS  = 16    # Fourier harmonics to fit
 
             vel_cts_per_sec = int(round(TARGET_RPM / 60.0 * enc_resolution))
@@ -3694,11 +3787,26 @@ class calibrate():
                     "Could not disable cogging compensation after reboot — "
                     "check CAN connection and retry.")
 
-            # ---- Enable in profile-velocity mode ----
-            self.node.sdo["ControlWord"].raw = CLEAR_FAULT
-            self.node.sdo["ControlWord"].raw = SHUTDOWN
-            self.node.sdo["ControlWord"].raw = OP_ENABLED
-            self.node.sdo["SetModeOfOperation"].raw = MODE_PROFILE_VEL
+            if STEPPED_MEASURE:
+                # ---- Enable in profile-position mode (quasi-static stepping) ----
+                self.node.sdo["ControlWord"].raw = CLEAR_FAULT
+                self.node.sdo["ControlWord"].raw = SHUTDOWN
+                self.node.sdo["ControlWord"].raw = OP_ENABLED
+                self.node.sdo["SetModeOfOperation"].raw = MODE_PROFILE_POS
+                self.node.rpdo[1]["SetModeOfOperation"].raw = MODE_PROFILE_POS
+                self.node.sdo["ProfileVelocity"].raw = PP_PROFILE_VEL
+                # Seed RPDO ControlWord = OP_ENABLED | change-set-immediately (bit5=0x20)
+                # so the bit-4 new-setpoint handshake toggles from a valid base (0x2F↔0x3F).
+                self.node.rpdo[1]["ControlWord"].raw = 0x2F
+                self.node.rpdo[1].transmit()
+                self.node.network.sync.transmit()
+                time.sleep(0.2)
+            else:
+                # ---- Enable in profile-velocity mode ----
+                self.node.sdo["ControlWord"].raw = CLEAR_FAULT
+                self.node.sdo["ControlWord"].raw = SHUTDOWN
+                self.node.sdo["ControlWord"].raw = OP_ENABLED
+                self.node.sdo["SetModeOfOperation"].raw = MODE_PROFILE_VEL
             time.sleep(0.2)
             wx.Yield()
 
@@ -3795,7 +3903,67 @@ class calibrate():
             # so the profile plots are clean; the guard skips the upload separately.
             import re as _re_rpm
             MAX_SWEEP_RPM = 500.0
-            for _rpm_attempt in range(6):
+            def _pp_step_to(target_cts):
+                """Profile-Position set-point handshake (mirrors run_test): load the new
+                absolute target into RPDO2, raise ControlWord bit4 + one SYNC to latch it,
+                wait for set-point ACK (StatusWord bit12=1), then drop the request line.
+                ~1 s timeouts on each rendezvous."""
+                for _ in range(100):
+                    if not (self.node.sdo["StatusWord"].raw & 0x1000): break
+                    time.sleep(0.01)
+                self.node.rpdo[2]["TargetPosition"].raw = int(target_cts)
+                self.node.rpdo[2].transmit()
+                self.node.rpdo[1]["ControlWord"].raw = 0x3F   # bit4 ↑ : latch + start move
+                self.node.rpdo[1].transmit()
+                self.node.network.sync.transmit()
+                for _ in range(100):
+                    if self.node.sdo["StatusWord"].raw & 0x1000: break
+                    time.sleep(0.01)
+                self.node.rpdo[1]["ControlWord"].raw = 0x2F   # bit4 ↓ : re-arm
+                self.node.rpdo[1].transmit()
+                self.node.network.sync.transmit()
+                for _ in range(100):
+                    if not (self.node.sdo["StatusWord"].raw & 0x1000): break
+                    time.sleep(0.01)
+
+            def _sample_stepped(direction, label, upd_start, upd_end):
+                """Step one mechanical rev in relative PP moves; at each settled position
+                measure the holding iq = cogging torque / Kt (zero velocity → no inertial
+                term, current-controlled → no d-to-q leakage). Returns the same
+                (angle_deg, iq_mA) list the continuous pass produces."""
+                print("  {} stepped pass ({} positions) ...".format(label, N_STEP))
+                step_cts  = direction * max(1, int(round(enc_resolution / N_STEP)))
+                start_pos = int(self.node.sdo["PositionFeedback"].raw)
+                _samps = []
+                for _si in range(N_STEP):
+                    _pp_step_to(start_pos + (_si + 1) * step_cts)
+                    _sleep_responsive(STEP_SETTLE_S)   # let velocity settle to ~0
+                    _iqs = []; _angs = []
+                    for _ in range(N_AVG_STEP):
+                        _af = self.node.sdo[0x3014][1].raw   # Q12.4 alpha (triggers freeze)
+                        _bf = self.node.sdo[0x3014][2].raw   # Q12.4 beta (same snapshot)
+                        _en = self.node.sdo[0x3014][3].raw   # 0..4095 (same snapshot)
+                        _amA = (_alpha_bias - _af / 16.0) * (_alpha_gf / 4096.0) * _ma_per_ct
+                        _bmA = (_beta_bias  - _bf / 16.0) * (_beta_gf  / 4096.0) * _ma_per_ct
+                        _tm  = _e_polarity * (_en - _e_zero)
+                        _tec = (enc_resolution + _tm) % _cts_per_elec
+                        if _tec >= _cts_per_elec // 2: _tec -= _cts_per_elec
+                        _te  = _tec / _cts_per_elec * 2.0 * math.pi
+                        _iqs.append(-_amA * math.sin(_te) + _bmA * math.cos(_te))
+                        _angs.append((_en % enc_resolution) / enc_resolution * 360.0)
+                        time.sleep(0.004)
+                    _samps.append((sum(_angs) / len(_angs), sum(_iqs) / len(_iqs)))
+                    if callable(_upd):
+                        _upd(upd_start + _si * (upd_end - upd_start) // N_STEP)
+                    wx.Yield()
+                return _samps
+
+            if STEPPED_MEASURE:
+                samples_fwd = _sample_stepped(+1, 'forward', 5, 44)
+                _sleep_responsive(0.5)
+                samples_rev = _sample_stepped(-1, 'reverse', 47, 86)
+
+            for _rpm_attempt in ([] if STEPPED_MEASURE else range(6)):
                 print("Cogging sweep:")
                 try:
                     samples_fwd = _sample_pass(+vel_cts_per_sec, 'forward', 5, 44)
@@ -3823,7 +3991,8 @@ class calibrate():
                     # Cap increment to 2× current RPM per step.
                     _capped = min(_min_rpm * 1.3, TARGET_RPM * 2.0, MAX_SWEEP_RPM)
                     TARGET_RPM      = math.ceil(_capped / 5) * 5.0
-                    N_REVS          = max(2, int(math.ceil(2 * TARGET_RPM / 5.0)))
+                    N_REVS          = max(2, int(math.ceil(
+                        SAMPLES_PER_BIN * N_BINS * SAMPLE_S * TARGET_RPM / 60.0)))
                     vel_cts_per_sec = int(round(TARGET_RPM / 60.0 * enc_resolution))
                     n_samples       = int(N_REVS * 60.0 / TARGET_RPM / SAMPLE_S)
                     print("  Retrying at {:.0f} RPM  ({} revs/pass) ...".format(
@@ -4212,6 +4381,16 @@ class calibrate():
                 print("  Physical cogging harmonics above 2× noise floor "
                       "(k = n×{}): {}".format(
                     pole_pairs, [k for k in _top_cog]))
+                _cog_drop = [k for k in sorted_ks
+                             if k > 0 and k % pole_pairs == 0 and k <= N_BINS // 2
+                             and float(amps[k]) < 2.0 * _noise_floor_ma]
+                if _cog_drop:
+                    print("    Dropped (sub-noise, not uploaded): " + ", ".join(
+                        "k={}({:.1f}mA)".format(_dk, float(amps[_dk]))
+                        for _dk in _cog_drop[:8]) + (" …" if len(_cog_drop) > 8 else ""))
+                if len(_cog_ks) > N_COG_BINS:
+                    print("    Dropped ({}-bin cap, not uploaded): {}".format(
+                        N_COG_BINS, list(_cog_ks[N_COG_BINS:])))
 
                 print("\n  Uploading cogging compensation (0x3028) to node {} ...".format(node_id))
                 print("  {:>4}  {:>6}  {:>10}  {:>8}  {:>8}".format(
@@ -4320,6 +4499,157 @@ class calibrate():
             except Exception as _cog_exc:
                 print("\n  WARNING: Cogging upload failed: {}".format(_cog_exc))
 
+            if STEPPED_MEASURE:
+                print("\n  Stepped (quasi-static) measurement complete — comp uploaded"
+                      + (" + saved." if _upload_ok else " (upload may have failed)."))
+
+                # ── VALIDATION (A): harmonic-resolved velocity ripple, comp OFF vs ON ──
+                # Spin at the cal speed and FFT the enc-comp-CORRECTED velocity vs angle.
+                # Cogging-induced velocity ripple lives at k=pole_pairs and 2× — broadband
+                # RMS was swamped by surge+noise, so we read ONLY those harmonics. A drop
+                # ON-vs-OFF = cogging comp is reducing the cogging-frequency ripple.
+                # Reboot before each spin so the velocity integrator starts from zero
+                # (stale windup would let the OFF run "pre-cancel" and bias the comparison).
+                try:
+                    import numpy as _np_va
+                    _va_lut = [0.0] * enc_resolution
+                    try:
+                        if int(self.node.sdo[0x3027][1].raw) == 1:
+                            _vb_list = []
+                            for _vbi in range(10):
+                                _vas = int(self.node.sdo[0x3027][2 + _vbi * 3].raw)
+                                _vk  = int(self.node.sdo[0x3027][3 + _vbi * 3].raw)
+                                _vac = int(self.node.sdo[0x3027][4 + _vbi * 3].raw)
+                                if (_vas | _vac) == 0: break
+                                _vb_list.append((_vas, _vk, _vac))
+                            for _p in range(enc_resolution):
+                                _th = 2.0 * math.pi * _p / enc_resolution
+                                _va_lut[_p] = -sum(
+                                    _a * math.sin(_k * _th) + _c * math.cos(_k * _th)
+                                    for _a, _k, _c in _vb_list) / 256.0
+                    except Exception:
+                        pass
+
+                    # Base FF bins as uploaded. Shifting the applied position by Δ rotates
+                    # harmonic k by k·2πΔ/N — so a SINGLE Δ realigns ALL harmonics if the
+                    # error is a constant position offset (the k=21-helps / k=42-hurts
+                    # signature, since k=42's phase error is 2× k=21's). The sweep finds it.
+                    _base_bins = []
+                    for _bi in range(10):
+                        _ba = int(self.node.sdo[0x3028][2 + _bi * 3].raw)
+                        _bk = int(self.node.sdo[0x3028][3 + _bi * 3].raw)
+                        _bc = int(self.node.sdo[0x3028][4 + _bi * 3].raw)
+                        if (_ba | _bc) == 0: break
+                        _base_bins.append((_ba, _bk, _bc))
+
+                    def _shifted_bins(shift):
+                        _out = []
+                        for (_ba, _bk, _bc) in _base_bins:
+                            _kd = 2.0 * math.pi * _bk * shift / enc_resolution
+                            _cs, _sn = math.cos(_kd), math.sin(_kd)
+                            _na = max(-32768, min(32767, int(round( _ba * _cs + _bc * _sn))))
+                            _nc = max(-32768, min(32767, int(round(-_ba * _sn + _bc * _cs))))
+                            _out.append((_na, _bk, _nc))
+                        return _out
+
+                    def _write_bins(bins):
+                        for _i in range(10):
+                            _na, _bk, _nc = bins[_i] if _i < len(bins) else (0, 0, 0)
+                            self.node.sdo[0x3028][2 + _i * 3].raw = _na
+                            self.node.sdo[0x3028][3 + _i * 3].raw = _bk
+                            self.node.sdo[0x3028][4 + _i * 3].raw = _nc
+
+                    def _vel_cog_harmonics(comp_on, label, shift_cts=None):
+                        # Reboot → reset velocity integrator; optionally load a position-
+                        # shifted FF; set comp state; spin; FFT corrected velocity → (k1,k2).
+                        self.network.send_message(0x0, [0x81, int(node_id)])
+                        _sleep_responsive(1.5)
+                        self.configure_Puck(configure_pdos=False)
+                        if comp_on and shift_cts is not None:
+                            try: _write_bins(_shifted_bins(shift_cts))
+                            except Exception: pass
+                        for _ in range(3):
+                            try:
+                                self.node.sdo[0x3028][1].raw = 1 if comp_on else 0
+                                if int(self.node.sdo[0x3028][1].raw) == (1 if comp_on else 0):
+                                    break
+                            except Exception:
+                                pass
+                            time.sleep(0.1)
+                        self.node.sdo["ControlWord"].raw = CLEAR_FAULT
+                        self.node.sdo["ControlWord"].raw = SHUTDOWN
+                        self.node.sdo["ControlWord"].raw = OP_ENABLED
+                        self.node.sdo["SetModeOfOperation"].raw = MODE_PROFILE_VEL
+                        print("  validation spin [{}] ...".format(label))
+                        _s = _sample_pass(+vel_cts_per_sec, label, 5, 95)
+                        self.node.sdo['TargetVelocity'].raw = 0
+                        _sleep_responsive(1.0)
+                        self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
+                        _acc = [0.0] * N_BINS; _cnt = [0] * N_BINS; _prev = None
+                        for (_deg, _iq) in _s:
+                            _raw  = int(round(_deg / 360.0 * enc_resolution)) % enc_resolution
+                            _cdeg = _deg + _va_lut[_raw] / enc_resolution * 360.0
+                            if _prev is not None:
+                                _dd = _cdeg - _prev
+                                if _dd < -180.0: _dd += 360.0
+                                elif _dd > 180.0: _dd -= 360.0
+                                _b = (_raw * N_BINS) // enc_resolution
+                                _acc[_b] += _dd / SAMPLE_S; _cnt[_b] += 1
+                            _prev = _cdeg
+                        _vbin = [(_acc[b] / _cnt[b] if _cnt[b] else 0.0) for b in range(N_BINS)]
+                        _av = 2.0 * _np_va.abs(_np_va.fft.rfft(_np_va.array(_vbin))) / N_BINS
+                        _k1, _k2 = pole_pairs, 2 * pole_pairs
+                        return (float(_av[_k1]) if _k1 < len(_av) else 0.0,
+                                float(_av[_k2]) if _k2 < len(_av) else 0.0)
+
+                    # Shorten the spin for the sweep (k=21/42 resolve in a few revs).
+                    n_samples = max(256, int(round(6 * 60.0 / TARGET_RPM / SAMPLE_S)))
+
+                    if not _base_bins:
+                        print("\n  No FF bins uploaded — skipping offset sweep.")
+                    else:
+                        _off = _vel_cog_harmonics(False, 'comp OFF')
+                        _off_mag = (_off[0] ** 2 + _off[1] ** 2) ** 0.5
+                        _sweep = [-24, -16, -8, 0, 8, 16, 24]   # cts; widen if best is at an edge
+                        _rows = []; _best = None
+                        for _sh in _sweep:
+                            _r = _vel_cog_harmonics(True, 'shift {:+d} cts'.format(_sh), shift_cts=_sh)
+                            _mag = (_r[0] ** 2 + _r[1] ** 2) ** 0.5
+                            _rows.append((_sh, _r[0], _r[1], _mag))
+                            if _best is None or _mag < _best[3]:
+                                _best = (_sh, _r[0], _r[1], _mag)
+                        try:   # upload the best-shift FF (active + saved)
+                            _write_bins(_shifted_bins(_best[0]))
+                            self.node.sdo[0x3028][1].raw = 1
+                            for _si in range(1, 2 + len(_base_bins) * 3):
+                                self.node.sdo['Save']['Single'].raw = ((0x3028 << 8) | _si)
+                        except Exception:
+                            pass
+                        print("\n  FF POSITION-OFFSET SWEEP (corrected velocity ripple at cogging harmonics):")
+                        print("    comp OFF baseline:  k={}={:.2f}  k={}={:.2f} deg/s  (mag {:.2f})".format(
+                            pole_pairs, _off[0], 2 * pole_pairs, _off[1], _off_mag))
+                        print("    {:>7}  {:>8}  {:>8}  {:>8}  {}".format(
+                            "shift", "k=" + str(pole_pairs), "k=" + str(2 * pole_pairs), "mag", "vs OFF"))
+                        for (_sh, _r1, _r2, _mag) in _rows:
+                            _pc  = (_mag - _off_mag) / _off_mag * 100.0 if _off_mag else 0.0
+                            _tag = "  <-- BEST" if _best and _sh == _best[0] else ""
+                            print("    {:>+7d}  {:>8.2f}  {:>8.2f}  {:>8.2f}  {:>+5.0f}%{}".format(
+                                _sh, _r1, _r2, _mag, _pc, _tag))
+                        if _best:
+                            _bpc = (_best[3] - _off_mag) / _off_mag * 100.0 if _off_mag else 0.0
+                            print("    BEST shift = {:+d} cts → {:+.0f}% vs comp-OFF (negative = improvement)."
+                                  "  Uploaded + saved.".format(_best[0], _bpc))
+                            print("    If BEST is at a sweep edge (±24), widen the range and rerun.")
+                except Exception as _va_exc:
+                    print("\n  Validation skipped (error): {}".format(_va_exc))
+
+                try:
+                    self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
+                except Exception:
+                    pass
+                print("\nCogging characterisation + validation complete (stepped).")
+                return   # `finally` below still restores ADC / re-enables the GUI
+
             # ── Retest sweep with compensation active ────────────────────────
             if _upload_ok:
                 print("\n  Retest sweep (compensation active) ...")
@@ -4396,11 +4726,62 @@ class calibrate():
                         _mv = sum(vels) / len(vels)
                         return [_v - _mv for _v in vels]
 
+                    # ── PRIMARY metric: velocity ripple from enc-comp-CORRECTED position ──
+                    # Raw-encoder velocity ripple is dominated by encoder non-uniformity and
+                    # can't see cogging. Apply the active 0x3027 correction (same math as
+                    # firmware correct_pos: corr(raw) = -Σ[a_s·sin(kθ)+a_c·cos(kθ)]/256,
+                    # θ=2π·raw/N) to every sample so the ripple reflects TRUE rotor velocity.
+                    # The identical correction is applied to before AND after, so the delta
+                    # isolates cogging comp.
+                    _enc_corr_lut = [0.0] * enc_resolution
+                    try:
+                        if int(self.node.sdo[0x3027][1].raw) == 1:   # enc comp active
+                            _ec_bins = []
+                            for _eb in range(10):
+                                _eas = int(self.node.sdo[0x3027][2 + _eb * 3].raw)
+                                _ek  = int(self.node.sdo[0x3027][3 + _eb * 3].raw)
+                                _eac = int(self.node.sdo[0x3027][4 + _eb * 3].raw)
+                                if (_eas | _eac) == 0:
+                                    break
+                                _ec_bins.append((_eas, _ek, _eac))
+                            for _p in range(enc_resolution):
+                                _th = 2.0 * math.pi * _p / enc_resolution
+                                _cc = 0.0
+                                for _eas, _ek, _eac in _ec_bins:
+                                    _cc += _eas * math.sin(_ek * _th) + _eac * math.cos(_ek * _th)
+                                _enc_corr_lut[_p] = -_cc / 256.0
+                    except Exception:
+                        pass  # no/failed enc-comp read → LUT stays zero → falls back to raw
+                    _enc_comp_on = any(_v != 0.0 for _v in _enc_corr_lut)
+
+                    def _vel_ac_corr(samps, is_fwd):
+                        """AC velocity (deg/s) from enc-comp-corrected position."""
+                        _cd = []
+                        for _s in samps:
+                            _raw = int(round(_s[0] / 360.0 * enc_resolution)) % enc_resolution
+                            _cd.append(_s[0] + _enc_corr_lut[_raw] / enc_resolution * 360.0)
+                        _vs = []
+                        for _vi in range(1, len(_cd)):
+                            _d = _cd[_vi] - _cd[_vi - 1]
+                            if is_fwd and _d < -180.0: _d += 360.0
+                            elif not is_fwd and _d > 180.0: _d -= 360.0
+                            _vs.append(_d / SAMPLE_S)
+                        if not _vs:
+                            return []
+                        _mv = sum(_vs) / len(_vs)
+                        return [_v - _mv for _v in _vs]
+
                     _vac_b = _vel_ac(samples_fwd,    is_fwd=True)
                     _vac_a = _vel_ac(samples_fwd_rt, is_fwd=True)
                     vel_rms_b = (sum(_v*_v for _v in _vac_b) / len(_vac_b)) ** 0.5 if _vac_b else 0.0
                     vel_rms_a = (sum(_v*_v for _v in _vac_a) / len(_vac_a)) ** 0.5 if _vac_a else 0.0
                     vel_diff  = (vel_rms_a - vel_rms_b) / vel_rms_b * 100.0 if vel_rms_b > 0 else 0.0
+
+                    _vac_b_c = _vel_ac_corr(samples_fwd,    is_fwd=True)
+                    _vac_a_c = _vel_ac_corr(samples_fwd_rt, is_fwd=True)
+                    vel_rms_b_c = (sum(_v*_v for _v in _vac_b_c) / len(_vac_b_c)) ** 0.5 if _vac_b_c else 0.0
+                    vel_rms_a_c = (sum(_v*_v for _v in _vac_a_c) / len(_vac_a_c)) ** 0.5 if _vac_a_c else 0.0
+                    vel_diff_c  = (vel_rms_a_c - vel_rms_b_c) / vel_rms_b_c * 100.0 if vel_rms_b_c > 0 else 0.0
 
                     # Harmonic comparison: compare dominant cogging harmonics before vs after.
                     # This is the real effectiveness metric — compensation reduces the
@@ -4430,10 +4811,20 @@ class calibrate():
                         rms_iq_ma, rms_rt, rms_diff))
                     print("  NOTE: Iq AC RMS increases when comp is active (feedforward injects")
                     print("        current at cogging frequencies — this is expected, not a failure).")
-                    print("  Velocity ripple: before={:.2f} deg/s  after={:.2f} deg/s  ({:+.1f}%)".format(
-                        vel_rms_b, vel_rms_a, vel_diff))
-                    print("  NOTE: velocity ripple from raw encoder is dominated by encoder")
-                    print("        non-uniformity and is not reliable here.")
+                    if _enc_comp_on:
+                        print("  Velocity ripple [enc-comp CORRECTED — PRIMARY metric]:")
+                        print("        before={:.2f} deg/s  after={:.2f} deg/s  ({:+.1f}%)".format(
+                            vel_rms_b_c, vel_rms_a_c, vel_diff_c))
+                        print("        (encoder non-uniformity removed via active 0x3027; a real")
+                        print("         drop here = cogging comp working. Negative % = improvement.)")
+                        print("  Velocity ripple [raw encoder, reference only]:")
+                        print("        before={:.2f} deg/s  after={:.2f} deg/s  ({:+.1f}%)".format(
+                            vel_rms_b, vel_rms_a, vel_diff))
+                    else:
+                        print("  Velocity ripple: before={:.2f} deg/s  after={:.2f} deg/s  ({:+.1f}%)".format(
+                            vel_rms_b, vel_rms_a, vel_diff))
+                        print("  NOTE: enc comp not active — raw-encoder velocity ripple is dominated")
+                        print("        by encoder non-uniformity and is NOT a reliable cogging metric.")
                     if _harm_cmp:
                         print("  Cogging harmonic amplitudes (primary metric):")
                         _harm_pass = True
@@ -4930,6 +5321,16 @@ class calibrate():
                 _n_cog   = len(_top_cog)
                 print("  Physical cogging harmonics above 2× noise floor (k = n×{}): {}".format(
                     pole_pairs, [k for k in _top_cog]))
+                _cog_drop = [k for k in sorted_ks
+                             if k > 0 and k % pole_pairs == 0 and k <= N_BINS // 2
+                             and float(amps[k]) < 2.0 * _noise_floor_ma]
+                if _cog_drop:
+                    print("    Dropped (sub-noise, not uploaded): " + ", ".join(
+                        "k={}({:.1f}mA)".format(_dk, float(amps[_dk]))
+                        for _dk in _cog_drop[:8]) + (" …" if len(_cog_drop) > 8 else ""))
+                if len(_cog_ks) > N_COG_BINS:
+                    print("    Dropped ({}-bin cap, not uploaded): {}".format(
+                        N_COG_BINS, list(_cog_ks[N_COG_BINS:])))
 
                 def _clamp_i16_cog(v):
                     return max(-32768, min(32767, int(round(v))))
@@ -5176,8 +5577,13 @@ class calibrate():
             self.Enable()
 
     def cogging_calibrate_auto(self, event, calAll=False, _upd=None, fast=False):
-        """Entry point for cogging calibration menu item — delegates to FW DFT."""
-        self.cogging_fw_calibrate(event, calAll=calAll, _upd=_upd)
+        """Entry point for cogging calibration menu item — runs the low-speed host sweep
+        (cogging_error_compensation): measures Iq vs angle at a velocity-loop-trackable speed
+        and validates on velocity ripple + per-harmonic before/after. The firmware DFT path
+        (cogging_fw_calibrate) spins at 200 RPM where the higher cogging harmonics sit above
+        the velocity-loop bandwidth, so its Iq is attenuated/lagged and its iq-ratio gate
+        can't see efficacy — kept callable but no longer the default."""
+        self.cogging_error_compensation(event, calAll=calAll, _upd=_upd)
 
     def cogging_fw_calibrate(self, event, calAll=False, _upd=None):
         """
@@ -5767,11 +6173,21 @@ class calibrate():
 
         except SdoAbortedError as _exc:
             if _exc.code == 0x06020000:
+                _emsg = ("This puck firmware does not support DFT cogging "
+                         "calibration (object 0x3029 not found). Update the "
+                         "firmware and try again.")
                 print("\n  ERROR: 0x3029 not found — "
                       "firmware does not support DFT calibration (upgrade to v4.3.11+).")
             else:
+                _emsg = "CAN/SDO error during cogging calibration (abort 0x{:08X}).".format(
+                    _exc.code)
                 print("\n  SDO abort 0x{:08X}: {}".format(_exc.code, _exc))
             self.frame_statusbar.SetStatusText("Cogging FW DFT failed.", 1)
+            # Surface it in a dialog -- the packaged build has no console, so the
+            # status bar alone wouldn't explain the failure. Deferred via
+            # CallAfter so the finally below restores the bus first.
+            wx.CallAfter(wx.MessageBox, _emsg, "Cogging Calibration Failed",
+                         wx.OK | wx.ICON_ERROR)
         except Exception as _exc:
             print("\n  Cogging FW DFT failed: {}".format(_exc))
             import traceback
@@ -5782,6 +6198,11 @@ class calibrate():
                 self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
             except Exception:
                 pass
+            # Surface the reason in a dialog (str(_exc) carries the detail, e.g.
+            # the SNR/"retry calibration" hint) -- essential in the packaged
+            # build with no live log. Deferred so the finally restores first.
+            wx.CallAfter(wx.MessageBox, "Cogging calibration failed:\n\n{}".format(_exc),
+                         "Cogging Calibration Failed", wx.OK | wx.ICON_ERROR)
         finally:
             try:
                 self.node.nmt.state = 'PRE-OPERATIONAL'

@@ -41,6 +41,7 @@ if sys.platform.startswith('linux'):
 
 import wx
 import wx.adv
+import log_viewer
 from puckutilityapp_gui import puckutilityapp_frame
 from calibrate_menu import calibrate
 from factory_menu import factory
@@ -246,6 +247,14 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         self.settingID = False
         self.NetworkActive = True
         self.Rescanning = False
+        # CAN auto-reconnect (after a mid-session adapter loss) is BOUNDED so a
+        # port that keeps erroring -- e.g. a CANable on an empty/unterminated bus
+        # that goes bus-off -- can't loop reconnects + USB resets + popups
+        # forever and lock the user out of the port dropdown.
+        self._reconnect_timer = None
+        self._reconnect_attempts = 0
+        self._reconnect_gave_up = False
+        self._MAX_RECONNECT = 3
         self.node = None
 
         self.outputShaft = True
@@ -331,6 +340,9 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         # Hide the "Factory" menu if JLink is not detected
         # if not is_jlink_detected():
         self.frame_menubar.Remove(self.frame_menubar.FindMenu("Factory"))
+
+        # Add a "Log" menu (Open Log...) that opens the in-app live log viewer.
+        log_viewer.add_log_menu(self)
 
         self.progress = PG.PyGauge(self.frame_statusbar, range=100, style=wx.ALIGN_CENTER_VERTICAL | wx.ALL)
         self.progress.SetBarGradient(('#FFFFFF',self.orange))
@@ -425,14 +437,33 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         # there is nothing to reconnect to.
         if self.node is None:
             return
+        # Don't stack reconnects: if one is already pending, ignore further
+        # notifier errors until it fires.
+        if self._reconnect_timer is not None and self._reconnect_timer.IsRunning():
+            return
+        # BOUNDED: after a few failed attempts, give up quietly (status text only,
+        # no modal) instead of looping resets/popups. The user re-selecting the
+        # port resets this counter (see can_port).
+        if self._reconnect_attempts >= self._MAX_RECONNECT:
+            if not self._reconnect_gave_up:        # surface the message once
+                self._reconnect_gave_up = True
+                self.frame_statusbar.SetStatusText(
+                    'CAN adapter lost — reconnect failed; re-select the port to retry', 1)
+                self.frame_statusbar.Refresh()
+                self.frame_statusbar.Update()
+            return
         self.Rescanning = True
-        print('CAN device lost — attempting reconnect…')
+        self._reconnect_attempts += 1
+        print('CAN device lost — reconnect attempt {}/{}…'.format(
+            self._reconnect_attempts, self._MAX_RECONNECT))
         self.frame_statusbar.SetStatusText('CAN device lost — reconnecting…', 1)
         self.frame_statusbar.Refresh()
         self.frame_statusbar.Update()
-        # Wait 2 s to allow USB re-enumeration if the cable was replugged,
-        # then attempt a full can_port cycle (which already includes the USB reset retry).
-        wx.CallLater(2000, self.can_port, None)
+        # Wait 2 s to allow USB re-enumeration if the cable was replugged, then
+        # retry. auto_reconnect=True keeps it quiet (no modal dialog, no USB
+        # reset) so a still-failing port can't spam the user.
+        self._reconnect_timer = wx.CallLater(
+            2000, self.can_port, None, auto_reconnect=True)
 
     def _paint_onoffpanel(self, event):
         panel = self.onoffpanel
@@ -735,7 +766,31 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
     def getID(self):
         return self.ID
-    
+
+    def _wait_for_node(self, node_id, timeout=4.0, interval=0.15):
+        """Poll a single CAN node until it answers an SDO read, or until timeout.
+        Used after a node-ID change so the UI re-scans only once the puck has
+        actually rebooted onto the new ID. Cheap on the bus -- one small SDO
+        request per try -- unlike a full scanner.search() over all 127 IDs."""
+        try:
+            node = (self.network[node_id] if node_id in self.network
+                    else self.network.add_node(node_id, 'puck4.eds'))
+        except Exception:
+            return False
+        _timeout = canopen.sdo.SdoClient.RESPONSE_TIMEOUT
+        canopen.sdo.SdoClient.RESPONSE_TIMEOUT = interval
+        try:
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                try:
+                    node.sdo['MfgSoftwareVersion'].raw
+                    return True
+                except Exception:
+                    time.sleep(0.03)
+            return False
+        finally:
+            canopen.sdo.SdoClient.RESPONSE_TIMEOUT = _timeout
+
     def configure_Puck(self, configure_pdos=True):
 
         # Read and set gear ratio from object dictionary
@@ -977,8 +1032,20 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             pass
         return False
 
-    def can_port(self,event,skipADC=False,silent=False):
+    def can_port(self,event,skipADC=False,silent=False,auto_reconnect=False):
         self.Rescanning = False
+        # Cancel any pending auto-reconnect: this connect attempt supersedes it.
+        if self._reconnect_timer is not None:
+            try:
+                self._reconnect_timer.Stop()
+            except Exception:
+                pass
+        # A user-initiated connect (selecting a port, pressing Scan) is a fresh
+        # start -- reset the bounded auto-reconnect counter so re-selecting a
+        # port always retries.
+        if not auto_reconnect:
+            self._reconnect_attempts = 0
+            self._reconnect_gave_up = False
         if skipADC == True:
             pass
         elif self.ADC_ON == True:
@@ -1013,7 +1080,10 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 self.network.disconnect()
             except Exception:
                 pass
-            _did_reset = self._reset_can_usb(can_device)
+            # Skip the USB reset during an auto-reconnect: resetting the adapter
+            # on every quiet retry is what produced the "continuously loops
+            # resets" symptom. A genuine replug re-enumerates on its own.
+            _did_reset = False if auto_reconnect else self._reset_can_usb(can_device)
             if _did_reset:
                 self.frame_statusbar.SetStatusText('Resetting CAN adapter…', 1)
                 self.frame_statusbar.Refresh()
@@ -1056,11 +1126,12 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 self.frame_statusbar.SetStatusText(status_msg, 1)
                 self.frame_statusbar.Refresh()
                 self.frame_statusbar.Update()
-                # silent=True (used at startup) skips the modal dialog so the
-                # app can finish coming up without an interaction wall when no
-                # CAN device is plugged in. The status text still surfaces the
-                # error.
-                if not silent:
+                # silent=True (startup) and auto_reconnect=True (background
+                # retry) both skip the modal dialog so the app isn't walled off
+                # by an interaction prompt -- repeated modals during a reconnect
+                # loop are what made the port dropdown unusable. The status text
+                # still surfaces the error.
+                if not silent and not auto_reconnect:
                     dlg = wx.MessageDialog(None,msg)
                     dlg.ShowModal()
                     dlg.Destroy()
@@ -1075,6 +1146,10 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 self.text_id.ChangeValue('')
                 self.text_version.ChangeValue('')
                 return False
+        # Connected OK -- clear the bounded auto-reconnect state so a future
+        # genuine adapter loss gets a fresh set of retries.
+        self._reconnect_attempts = 0
+        self._reconnect_gave_up = False
         # We may need to wait a short while here to allow all nodes to respond
         time.sleep(0.05)
         if skipADC == True:
@@ -1142,8 +1217,15 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 if self.getID() == 0:
                     self.choice_id.SetSelection(self.getID()) # This is actually what sets the initial
                 else:
-                    # do some rescan if not in self scanner (THIS IS WHERE THE NOT IN LIST BUG OCCURS)
-                    indexID = self.network.scanner.nodes.index(self.getID())
+                    # Select the current puck's ID in the dropdown. If it isn't
+                    # in the freshly-scanned list (e.g. a transient miss right
+                    # after a node-ID change), fall back to the first node found
+                    # instead of raising "x not in list".
+                    if self.getID() in self.network.scanner.nodes:
+                        indexID = self.network.scanner.nodes.index(self.getID())
+                    else:
+                        indexID = 0
+                        self.setID(self.network.scanner.nodes[0])
                     self.choice_id.SetSelection(indexID)
                 self.select_id(None)
             else:
@@ -1390,25 +1472,42 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             dlg.Destroy()
             return
         self.settingID = True
+        old_id = self.getID()
         node_id = int(self.text_id.GetValue())
-        
+
         try:
-            MyApp.removePuck(self, self.getID())
-        except:
+            MyApp.removePuck(self, old_id)
+        except Exception:
             pass
-        
-        self.network.scanner.nodes.remove(self.getID())
-        self.setID(node_id) # update node
+
+        # Change the puck's CAN ID. A node-ID change only takes effect after the
+        # puck reboots, so write NetCfg then NMT-reset it. (Verified on-bench:
+        # NetCfg self-persists and the puck comes up on the new ID after the
+        # reset -- an explicit Save is neither needed nor supported here.)
+        print('Setting new node ID {} -> {}...'.format(old_id, node_id))
+        try:
+            self.node.sdo['NetCfg'].raw = node_id
+        except Exception as e:
+            print('Failed to write new node ID: {}'.format(e))
+        try:
+            self.network.send_message(0x0, [0x81, old_id])  # NMT reset node
+        except Exception as e:
+            print('Failed to reboot puck: {}'.format(e))
+
+        # The app now expects the puck on the new ID.
+        self.setID(node_id)
         MyApp.addPucks(self, self.getID())
-        self.network.scanner.nodes.append(self.getID())
-        # Set the new ID
-        print('Setting new node...')
-        self.node.sdo['NetCfg'].raw = node_id
-        time.sleep(0.05)
-        
-        # Re-scan
+
+        # Wait for the puck to actually come up on the new ID before re-scanning,
+        # rather than guessing a fixed delay (too short -> the old "not in list"
+        # crash) or hammering the bus with repeated full scans. _wait_for_node
+        # polls only the new node -- one small SDO read per try.
+        if not self._wait_for_node(node_id):
+            print('Warning: node {} did not respond after the ID change.'.format(node_id))
+
+        # One re-scan to refresh the dropdown / node list.
         self.scan_pucks(None)
-        
+
         self.settingID = False
 
         if self.adcWasON == True:
@@ -1618,32 +1717,37 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         except Exception as e:
             node_product_code = None
             print(f"Failed to read active node product code: {e}")
-        if (csv_product_code is not None
-                and node_product_code is not None
-                and csv_product_code != node_product_code):
+        # Compare by resolved MODEL, not the raw code. A legacy CSV stores the
+        # small integer code (e.g. 5760 = P4-32) while newer firmware reports the
+        # ASCII-packed code (0x50343332 = "P432" = P4-32) for the SAME model, so a
+        # raw-value compare would falsely flag a mismatch and block a valid upload.
+        # _PRODUCT_CODE_MODELS.get() resolves both encodings to a model name.
+        csv_model = (self._PRODUCT_CODE_MODELS.get(csv_product_code)
+                     if csv_product_code is not None else None)
+        node_model = (self._PRODUCT_CODE_MODELS.get(node_product_code)
+                      if node_product_code is not None else None)
+        if csv_model is not None and node_model is not None and csv_model != node_model:
             csv_str = self._format_product_code(csv_product_code)
             node_str = self._format_product_code(node_product_code)
-            # If the puck's product code doesn't map to any known model the
-            # value is effectively garbage — we can't reliably identify the
-            # variant, so blocking the upload would just trap the user. Allow
-            # it through and log the bypass instead.
-            if node_product_code not in self._PRODUCT_CODE_MODELS:
-                print(f"Product code {node_str} not recognized; "
-                      f"allowing upload of {csv_str} anyway.")
-            else:
-                print(f"Product Code Mismatch: CSV={csv_str}, node={node_str}")
-                msg = ("Product Code Mismatch — configuration NOT uploaded.\n\n"
-                       f"CSV File product code: {csv_str}\n"
-                       f"Active Puck product code: {node_str}\n\n"
-                       "Select a configuration file that matches this Puck "
-                       "variant and try again.")
-                dlg = wx.MessageDialog(None, msg, "Product Code Mismatch",
-                                       wx.OK | wx.ICON_ERROR)
-                dlg.ShowModal()
-                dlg.Destroy()
-                if self.adcWasON == True:
-                    self.on_off_adc(self)
-                return
+            print(f"Product Code Mismatch: CSV={csv_str}, node={node_str}")
+            msg = ("Product Code Mismatch — configuration NOT uploaded.\n\n"
+                   f"CSV File product code: {csv_str}\n"
+                   f"Active Puck product code: {node_str}\n\n"
+                   "Select a configuration file that matches this Puck "
+                   "variant and try again.")
+            dlg = wx.MessageDialog(None, msg, "Product Code Mismatch",
+                                   wx.OK | wx.ICON_ERROR)
+            dlg.ShowModal()
+            dlg.Destroy()
+            if self.adcWasON == True:
+                self.on_off_adc(self)
+            return
+        elif node_product_code is not None and node_model is None:
+            # Puck's product code doesn't map to any known model — we can't
+            # reliably identify the variant, so allow the upload (blocking would
+            # just trap the user) and log the bypass.
+            print(f"Product code {self._format_product_code(node_product_code)} "
+                  f"not recognized; allowing upload anyway.")
 
         self.frame_statusbar.SetStatusText("Updating Config...", 1)
         self.frame_statusbar.Update()
@@ -2460,6 +2564,8 @@ def _setup_logging():
     _paths.SESSION_LOG_DIR = session_dir
 
     log_path = os.path.join(session_dir, f'puck_{timestamp}.log')
+    # Expose the path to the in-app Log viewer (Log menu -> Open Log...).
+    log_viewer.set_log_path(log_path)
     try:
         log_file = open(log_path, 'w', buffering=1)
     except OSError as e:
