@@ -212,6 +212,28 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         except Exception:
             pass
 
+        # ── Cogging compensation greyed out in the menu (2026-06-17) ─────────────
+        # Cogging comp is blocked on the noisy velocity-feedback estimate (the FF
+        # measured against that loop validates net neutral-to-harmful — see the
+        # cogging-comp investigation). DISABLE both menu-0 "Cogging Error Compensation"
+        # entries — (a) the ON/OFF submenu (dropdown) and (b) the bare calibration
+        # item — so they're greyed and inert until the velocity feedback is fixed.
+        #
+        # We DISABLE rather than Remove(): the submenu's ON/OFF radio items are cached
+        # (frame_menubar.COG_ON/COG_OFF) and referenced in ~10 places. Remove() detaches
+        # then GC-destroys them, leaving those refs dangling → use-after-free segfault on
+        # the next menu interaction. Enable(False) keeps the items alive (no dangling),
+        # greys them, and prevents the submenu from opening. Fully reversible: comment
+        # out this block and relaunch to re-enable. (Underlying calibrate_menu.py
+        # cogging_* functions are untouched.)
+        try:
+            _cog_menu0 = self.frame_menubar.GetMenu(0)
+            for _cog_it in list(_cog_menu0.GetMenuItems()):
+                if _cog_it.GetItemLabel() == "Cogging Error Compensation":
+                    _cog_it.Enable(False)
+        except Exception:
+            pass
+
         # Frame-level Tab/Shift-Tab interception. EVT_CHAR_HOOK on the focused
         # window bubbles up to the frame; binding here gives us a single hook
         # that fires for keystrokes from ANY control (buttons, choices, the
