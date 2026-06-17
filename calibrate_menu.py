@@ -4530,10 +4530,22 @@ class calibrate():
                     except Exception:
                         pass
 
-                    # Base FF bins as uploaded. Shifting the applied position by Δ rotates
-                    # harmonic k by k·2πΔ/N — so a SINGLE Δ realigns ALL harmonics if the
-                    # error is a constant position offset (the k=21-helps / k=42-hurts
-                    # signature, since k=42's phase error is 2× k=21's). The sweep finds it.
+                    # Metric: SAMPLE-DWELL ripple (no differentiation → no finite-difference
+                    # quantization noise). samples-per-angle-bin ∝ time-in-bin ∝ 1/velocity,
+                    # so the dwell histogram's cogging-harmonic content IS the velocity ripple
+                    # (×mean velocity → deg/s). Derived from OUR position samples, so it is
+                    # INDEPENDENT of the puck's (known-noisy) velocity-feedback estimate.
+                    #
+                    # TEST A: comp-ON at FF position shifts {0, ±24 cts}. A constant offset Δ
+                    # between FF measurement and application rotates harmonic k by k·2πΔ/N, so
+                    # k=42's error is 2× k=21's — matching "k=42 consistently worse". If a
+                    # shift turns the increase into a reduction → offset is real and found. If
+                    # NO shift helps → the FF source itself is noise-limited (velocity-feedback
+                    # bug corrupting the measured profile) and phase-shifting can't save it.
+                    SAMPLE_S  = 0.0125    # ~80 Hz (#2)
+                    n_samples = 4000      # ~16 revs coherent averaging (#1), 4 spins
+                    _mean_v   = vel_cts_per_sec / enc_resolution * 360.0   # deg/s, motor mech
+
                     _base_bins = []
                     for _bi in range(10):
                         _ba = int(self.node.sdo[0x3028][2 + _bi * 3].raw)
@@ -4547,9 +4559,9 @@ class calibrate():
                         for (_ba, _bk, _bc) in _base_bins:
                             _kd = 2.0 * math.pi * _bk * shift / enc_resolution
                             _cs, _sn = math.cos(_kd), math.sin(_kd)
-                            _na = max(-32768, min(32767, int(round( _ba * _cs + _bc * _sn))))
-                            _nc = max(-32768, min(32767, int(round(-_ba * _sn + _bc * _cs))))
-                            _out.append((_na, _bk, _nc))
+                            _out.append((max(-32768, min(32767, int(round( _ba*_cs + _bc*_sn)))),
+                                         _bk,
+                                         max(-32768, min(32767, int(round(-_ba*_sn + _bc*_cs))))))
                         return _out
 
                     def _write_bins(bins):
@@ -4559,13 +4571,11 @@ class calibrate():
                             self.node.sdo[0x3028][3 + _i * 3].raw = _bk
                             self.node.sdo[0x3028][4 + _i * 3].raw = _nc
 
-                    def _vel_cog_harmonics(comp_on, label, shift_cts=None):
-                        # Reboot → reset velocity integrator; optionally load a position-
-                        # shifted FF; set comp state; spin; FFT corrected velocity → (k1,k2).
+                    def _cog_dwell(comp_on, label, shift_cts=None):
                         self.network.send_message(0x0, [0x81, int(node_id)])
                         _sleep_responsive(1.5)
                         self.configure_Puck(configure_pdos=False)
-                        if comp_on and shift_cts is not None:
+                        if comp_on and shift_cts:
                             try: _write_bins(_shifted_bins(shift_cts))
                             except Exception: pass
                         for _ in range(3):
@@ -4585,61 +4595,48 @@ class calibrate():
                         self.node.sdo['TargetVelocity'].raw = 0
                         _sleep_responsive(1.0)
                         self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
-                        _acc = [0.0] * N_BINS; _cnt = [0] * N_BINS; _prev = None
+                        _cnt = [0] * N_BINS
                         for (_deg, _iq) in _s:
                             _raw  = int(round(_deg / 360.0 * enc_resolution)) % enc_resolution
-                            _cdeg = _deg + _va_lut[_raw] / enc_resolution * 360.0
-                            if _prev is not None:
-                                _dd = _cdeg - _prev
-                                if _dd < -180.0: _dd += 360.0
-                                elif _dd > 180.0: _dd -= 360.0
-                                _b = (_raw * N_BINS) // enc_resolution
-                                _acc[_b] += _dd / SAMPLE_S; _cnt[_b] += 1
-                            _prev = _cdeg
-                        _vbin = [(_acc[b] / _cnt[b] if _cnt[b] else 0.0) for b in range(N_BINS)]
-                        _av = 2.0 * _np_va.abs(_np_va.fft.rfft(_np_va.array(_vbin))) / N_BINS
+                            _cpos = (_raw + _va_lut[_raw]) % enc_resolution
+                            _cnt[int(_cpos) * N_BINS // enc_resolution] += 1
+                        _m = sum(_cnt) / N_BINS
+                        if _m <= 0:
+                            return (0.0, 0.0)
+                        _frac = [(_c - _m) / _m for _c in _cnt]
+                        _av = 2.0 * _np_va.abs(_np_va.fft.rfft(_np_va.array(_frac))) / N_BINS
                         _k1, _k2 = pole_pairs, 2 * pole_pairs
-                        return (float(_av[_k1]) if _k1 < len(_av) else 0.0,
-                                float(_av[_k2]) if _k2 < len(_av) else 0.0)
+                        return (float(_av[_k1]) * _mean_v if _k1 < len(_av) else 0.0,
+                                float(_av[_k2]) * _mean_v if _k2 < len(_av) else 0.0)
 
-                    # Shorten the spin for the sweep (k=21/42 resolve in a few revs).
-                    n_samples = max(256, int(round(6 * 60.0 / TARGET_RPM / SAMPLE_S)))
-
-                    if not _base_bins:
-                        print("\n  No FF bins uploaded — skipping offset sweep.")
-                    else:
-                        _off = _vel_cog_harmonics(False, 'comp OFF')
-                        _off_mag = (_off[0] ** 2 + _off[1] ** 2) ** 0.5
-                        _sweep = [-24, -16, -8, 0, 8, 16, 24]   # cts; widen if best is at an edge
-                        _rows = []; _best = None
-                        for _sh in _sweep:
-                            _r = _vel_cog_harmonics(True, 'shift {:+d} cts'.format(_sh), shift_cts=_sh)
-                            _mag = (_r[0] ** 2 + _r[1] ** 2) ** 0.5
-                            _rows.append((_sh, _r[0], _r[1], _mag))
-                            if _best is None or _mag < _best[3]:
-                                _best = (_sh, _r[0], _r[1], _mag)
-                        try:   # upload the best-shift FF (active + saved)
-                            _write_bins(_shifted_bins(_best[0]))
-                            self.node.sdo[0x3028][1].raw = 1
-                            for _si in range(1, 2 + len(_base_bins) * 3):
-                                self.node.sdo['Save']['Single'].raw = ((0x3028 << 8) | _si)
-                        except Exception:
-                            pass
-                        print("\n  FF POSITION-OFFSET SWEEP (corrected velocity ripple at cogging harmonics):")
-                        print("    comp OFF baseline:  k={}={:.2f}  k={}={:.2f} deg/s  (mag {:.2f})".format(
-                            pole_pairs, _off[0], 2 * pole_pairs, _off[1], _off_mag))
-                        print("    {:>7}  {:>8}  {:>8}  {:>8}  {}".format(
-                            "shift", "k=" + str(pole_pairs), "k=" + str(2 * pole_pairs), "mag", "vs OFF"))
-                        for (_sh, _r1, _r2, _mag) in _rows:
-                            _pc  = (_mag - _off_mag) / _off_mag * 100.0 if _off_mag else 0.0
-                            _tag = "  <-- BEST" if _best and _sh == _best[0] else ""
-                            print("    {:>+7d}  {:>8.2f}  {:>8.2f}  {:>8.2f}  {:>+5.0f}%{}".format(
-                                _sh, _r1, _r2, _mag, _pc, _tag))
-                        if _best:
-                            _bpc = (_best[3] - _off_mag) / _off_mag * 100.0 if _off_mag else 0.0
-                            print("    BEST shift = {:+d} cts → {:+.0f}% vs comp-OFF (negative = improvement)."
-                                  "  Uploaded + saved.".format(_best[0], _bpc))
-                            print("    If BEST is at a sweep edge (±24), widen the range and rerun.")
+                    _off = _cog_dwell(False, 'comp OFF')
+                    _off_mag = (_off[0] ** 2 + _off[1] ** 2) ** 0.5
+                    _rows = []; _best = None
+                    for _sh in [0, -24, 24]:
+                        _r = _cog_dwell(True, 'comp ON shift {:+d}'.format(_sh), shift_cts=_sh)
+                        _mag = (_r[0] ** 2 + _r[1] ** 2) ** 0.5
+                        _rows.append((_sh, _r[0], _r[1], _mag))
+                        if _best is None or _mag < _best[3]:
+                            _best = (_sh, _r[0], _r[1], _mag)
+                    try:   # leave the best FF active + saved
+                        _write_bins(_shifted_bins(_best[0]))
+                        self.node.sdo[0x3028][1].raw = 1
+                        for _si in range(1, 2 + max(1, len(_base_bins)) * 3):
+                            self.node.sdo['Save']['Single'].raw = ((0x3028 << 8) | _si)
+                    except Exception:
+                        pass
+                    print("\n  TEST A — FF position-shift validation (dwell metric, deg/s):")
+                    print("    comp OFF baseline:  k={}={:.2f}  k={}={:.2f}  (mag {:.2f})".format(
+                        pole_pairs, _off[0], 2 * pole_pairs, _off[1], _off_mag))
+                    for (_sh, _r1, _r2, _mag) in _rows:
+                        _pc  = (_mag - _off_mag) / _off_mag * 100.0 if _off_mag else 0.0
+                        _tag = "  <-- best" if _best and _sh == _best[0] else ""
+                        print("    shift {:>+4d}:  k={}={:6.2f}  k={}={:6.2f}  mag={:6.2f}  ({:+.0f}% vs OFF){}".format(
+                            _sh, pole_pairs, _r1, 2 * pole_pairs, _r2, _mag, _pc, _tag))
+                    if _best:
+                        _bpc = (_best[3] - _off_mag) / _off_mag * 100.0 if _off_mag else 0.0
+                        print("    BEST shift {:+d} → {:+.0f}% vs comp-OFF (negative = improvement). Saved.".format(
+                            _best[0], _bpc))
                 except Exception as _va_exc:
                     print("\n  Validation skipped (error): {}".format(_va_exc))
 
