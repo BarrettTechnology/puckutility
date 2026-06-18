@@ -47,18 +47,30 @@ def get_version(vers): # Convert uint32_t to semantic version: Major.Minor.Patch
         (vers >> 24) & 0xFF, (vers >> 8) & 0xFFFF, (vers & 0xFF))
 
 def write(node, progress, data=[]):
+    # Only draw the live \r progress bar for a STANDALONE terminal run with no
+    # other progress sink. When a `progress` sink is present (the GUI gauge queue,
+    # or a CLI text sink) the bar is redundant AND harmful: stdout is usually the
+    # logging _Tee, whose isatty() returns True because a real terminal is attached,
+    # so the \r bar gets teed into the session log and floods it with hundreds of
+    # lines. progressbar() drives the real indicator; the log gets one clean line.
+    show_bar = (progress is None
+                and bool(getattr(sys.stdout, 'isatty', lambda: False)()))
     node.sdo['ProgramCommand']['Command'].raw = flash_command.START
     for i, word in enumerate(data):
         node.sdo['ProgramCommand']['Word'].raw = word # Exception on FLASH_FAIL
-        if i % 100: # Update 50-step progress bar after every 100 frames
+        if i % 100 == 0: # update every 100 words (was `i % 100` -- true ~99% of
+                         # iterations, which spammed the gauge queue and the log)
             pct = 100 * i // len(data)
-            # I think this is where we will get percent completion
-            progressbar(progress,pct)
-            print("[{0:50}] ({1:3}%)\r".format(pct // 2 * "=", pct), end="")
-        
+            progressbar(progress, pct)
+            if show_bar:
+                print("[{0:50}] ({1:3}%)\r".format(pct // 2 * "=", pct), end="")
+
     # flash_command.END: flashloader generates CRC; SDO exception on AUTH_FAIL
     node.sdo['ProgramCommand']['Command'].raw = flash_command.END
-    print("[" + "=" * 50 + "] (100%) \n") # Show finished progress bar
+    if show_bar:
+        print("[" + "=" * 50 + "] (100%) \n") # finish the interactive bar
+    else:
+        print("Firmware image programmed (100%).")  # one clean line for logs
 
 def flash(can_device, can_id, file_name, progress=None):
     if not os.path.isfile(file_name): # Check that the given file exists

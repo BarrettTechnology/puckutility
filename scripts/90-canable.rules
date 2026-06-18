@@ -1,0 +1,10 @@
+# CandleLight / CANable USB CAN adapter — grant access to plugdev group
+# so the app can send DFU_DETACH without sudo.
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1d50", ATTRS{idProduct}=="606f", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+# STM32G431 DFU bootloader (entered after DFU_DETACH)
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="df11",  MODE="0660", GROUP="plugdev", TAG+="uaccess"
+
+# Interface bring-up — including CandleLight hot-plug / post-flash re-enumeration
+# — is handled uniformly by 61-can-up.rules -> can-up@.service, which runs the
+# ip link commands in a full environment (udev RUN+= is too restricted on
+# Ubuntu 22.04+) and applies the same CAN-FD-with-classic-fallback config.

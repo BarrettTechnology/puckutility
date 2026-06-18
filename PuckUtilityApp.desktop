@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Terminal=false
+Name=Puck Utility App
+Exec=/usr/local/bin/PuckUtilityApp/PuckUtilityApp
+Path=/usr/local/bin/PuckUtilityApp
+Icon=PuckUtilityApp
+StartupWMClass=PuckUtilityApp
+Categories=Utility;

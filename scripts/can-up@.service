@@ -1,0 +1,18 @@
+[Unit]
+Description=Bring up SocketCAN interface %i
+BindsTo=sys-subsystem-net-devices-%i.device
+After=sys-subsystem-net-devices-%i.device
+
+[Service]
+Type=oneshot
+# Set the bitrate: try CAN-FD (1 Mbit nominal / 5 Mbit data phase), fall back to
+# classic 1 Mbit so adapters without FD still come up.
+ExecStart=/bin/sh -c '/sbin/ip link set %i type can bitrate 1000000 fd on dbitrate 5000000 || /sbin/ip link set %i type can bitrate 1000000'
+# Auto-restart from bus-off — BEST-EFFORT and applied separately: the gs_usb /
+# CANable adapter does not support restart-ms and rejects it ("Device doesn't
+# support restart from Bus Off"), which must not fail the whole bring-up.
+ExecStart=/bin/sh -c '/sbin/ip link set %i type can restart-ms 100 2>/dev/null || true'
+ExecStart=/sbin/ip link set %i txqueuelen 1000
+ExecStart=/sbin/ip link set %i up
+ExecStop=/sbin/ip link set %i down
+RemainAfterExit=yes

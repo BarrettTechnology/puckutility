@@ -829,6 +829,7 @@ def flash_canable(firmware_path=None, verbose=False):
 
     flash_ok = False
     dfu_errors = []
+    dfu_output = []            # full programmer output, kept for failure diagnostics
     if platform.system() == "Windows":
         # Windows: shell out to STM32CubeProgrammer's CLI. It talks through
         # STM's WHQL-signed DFU driver, so no driver swap or UAC is needed.
@@ -860,6 +861,7 @@ def flash_canable(firmware_path=None, verbose=False):
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
         )
         for line in proc.stdout:
+            dfu_output.append(line.rstrip())
             # Suppress benign get_status error: ':leave' causes the device to jump
             # to the application before dfu-util can poll status -- expected behavior.
             if 'Error during download get_status' in line:
@@ -876,8 +878,24 @@ def flash_canable(firmware_path=None, verbose=False):
 
     if not flash_ok:
         _fail("Error: firmware flash failed.")
-        for e in dfu_errors:
+        # The "Invalid DFU suffix" line is a benign warning; the real cause is
+        # usually further down (often a USB permission error opening the DFU
+        # bootloader). Show the actual programmer output ALWAYS, not just in -v.
+        _diag = [l for l in dfu_output if l
+                 and 'Invalid DFU suffix' not in l
+                 and 'A valid DFU suffix will be required' not in l]
+        for e in (_diag[-15:] or dfu_errors):
             print(f"  {e}")
+        _joined = "\n".join(dfu_output)
+        if any(s in _joined for s in (
+                'LIBUSB_ERROR_ACCESS', 'Cannot open DFU device',
+                'Cannot claim interface', 'No DFU capable USB device',
+                'Permission denied', 'permission')):
+            print("\n  This is a USB permission problem reaching the DFU bootloader"
+                  " (0483:df11) --")
+            print("  the udev rule that grants access isn't installed. Fix it once:")
+            print("    sudo ./scripts/setup-socketcan.sh    (installs 90-canable.rules)")
+            print("  then unplug/replug the adapter and retry.  (Or run this with sudo.)")
         return False
 
     _vprint("Firmware flashed successfully!")
