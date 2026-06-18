@@ -1,0 +1,5 @@
+# Automatically configure and bring up any SocketCAN interface when it appears.
+# Works with Peak PCAN, CandleLight, and all other socketcan adapters.
+# Uses a systemd service rather than RUN+= to ensure ip link commands execute
+# in a full environment (udev's RUN+= is too restricted on Ubuntu 22.04+).
+SUBSYSTEM=="net", ACTION=="add", KERNEL=="can[0-9]*", TAG+="systemd", ENV{SYSTEMD_WANTS}="can-up@%k.service"
