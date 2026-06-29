@@ -32,3 +32,16 @@ echo "Using wxPython prebuilt wheels for: ${WX_BASE}"
 uv pip install --python "$REPO_ROOT/.venv" \
     --find-links "$WX_FIND_LINKS" \
     -r "$REPO_ROOT/requirements.txt"
+
+# --- Dev-only tools (optional) ------------------------------------------------
+# wxGlade (and any future dev tooling) for editing the GUI: it regenerates
+# *_gui.py from configure-*.wxg. Installed into the SOURCE venv only — never
+# bundled into the .deb (the app never imports it, and the Docker build installs
+# requirements.txt, not this file). wxGlade is a git install, so it needs `git`
+# on PATH. Skip entirely with NO_DEV_TOOLS=1 (e.g. in a minimal/CI environment).
+if [ "${NO_DEV_TOOLS:-}" != "1" ] && [ -f "$REPO_ROOT/requirements-dev.txt" ]; then
+    echo "Installing dev tools (requirements-dev.txt)..."
+    uv pip install --python "$REPO_ROOT/.venv" \
+        --find-links "$WX_FIND_LINKS" \
+        -r "$REPO_ROOT/requirements-dev.txt"
+fi

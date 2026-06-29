@@ -15,6 +15,7 @@ without a restart.
 """
 
 import platform
+import os
 import canopen
 
 
@@ -47,6 +48,68 @@ def _candlelight_present():
         return dev is not None
     except Exception:
         return False
+
+
+def iface_is_candlelight(can_device):
+    """True if the SocketCAN interface `can_device` is backed by a CandleLight /
+    CANable adapter (the gs_usb kernel driver).
+
+    On Linux this is read straight from sysfs, so it is exact even when a Peak
+    PCAN is also plugged in -- only the gs_usb-backed interface reports True. On
+    non-Linux platforms there is no SocketCAN interface to inspect, so fall back
+    to the USB presence probe.
+
+    Used to gate the USB-level adapter reset: only a CANable exhibits the
+    full-TX-buffer pathology a reset fixes, and only a CANable should be
+    USB-reset (a Peak recovers on the next reconnect)."""
+    if platform.system() != 'Linux':
+        return _candlelight_present()
+    try:
+        driver = os.path.basename(os.path.realpath(
+            '/sys/class/net/{}/device/driver'.format(can_device)))
+        return driver == 'gs_usb'
+    except Exception:
+        return False
+
+
+def list_can_interfaces():
+    """Return the CAN interfaces currently present on the system, best-effort.
+
+    Linux: every /sys/class/net entry whose ARPHRD type is CAN (280) -- i.e. real
+    SocketCAN interfaces (canX / slcanX), regardless of up/down state. This is what
+    the puck apps connect to (the shared udev/systemd setup brings CANable/PCAN
+    adapters up as canX automatically).
+
+    Other platforms: returns [] -- there is no SocketCAN to enumerate, so callers
+    fall back to the configured device / PCAN channel selection.
+    """
+    if platform.system() != 'Linux':
+        return []
+    names = []
+    net = '/sys/class/net'
+    try:
+        for name in sorted(os.listdir(net)):
+            try:
+                with open(os.path.join(net, name, 'type')) as f:
+                    if f.read().strip() == '280':   # ARPHRD_CAN
+                        names.append(name)
+            except OSError:
+                continue
+    except OSError:
+        pass
+    return names
+
+
+def is_tx_buffer_error(exc):
+    """True if `exc` is the 'transmit buffer full' CAN error.
+
+    A device on the bus that never ACKs (classically a blank/erased puck) leaves
+    frames unacknowledged until SocketCAN's TX buffer fills and python-can raises
+    CanOperationError('Transmit buffer full'). This is the only CAN error a
+    USB-level adapter reset actually clears -- other CanErrors (bus-off, network
+    down, device unplugged) recover on a plain reconnect/rescan, so they must NOT
+    trigger a reset."""
+    return 'buffer' in str(exc).lower()
 
 
 def pcan_channel(can_device):

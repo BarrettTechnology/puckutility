@@ -89,7 +89,7 @@ mkdir -p "${BINARY_STAGE}"
 PYINSTALLER_ARGS=(
     puckutilityapp.py
     --name PuckUtilityApp
-    --onefile
+    --onedir
     --distpath "${BINARY_STAGE}"
     --add-data="${CANOPEN_SRC}:canopen/"
     --hiddenimport canopen
@@ -115,6 +115,24 @@ PYINSTALLER_ARGS=(
     --hiddenimport can_backend
     --runtime-hook=scripts/set_x11.py
 )
+
+# wxWidgets hard-links a few system libs (libsecret, libnotify) that PyInstaller
+# does not bundle. On a newer target they load from /usr/lib and reference GLib
+# symbols our bundled (Ubuntu 20.04) GLib lacks (g_task_set_static_name,
+# g_once_init_leave_pointer) -> crash at `import wx`. Bundle the build-env copies
+# so they resolve from the bundle and match the bundled GLib. The build image
+# must have them installed -- see Dockerfile.builder.
+if [ "$(uname)" = "Linux" ]; then
+    for soname in libsecret-1.so.0 libnotify.so.4; do
+        src=$(find /usr/lib /lib -name "$soname" 2>/dev/null | head -1)
+        if [ -n "$src" ]; then
+            PYINSTALLER_ARGS+=(--add-binary="${src}:.")
+            echo "Bundling ${soname} from ${src}"
+        else
+            echo "WARNING: ${soname} not found in build env; GUI may crash on newer targets" >&2
+        fi
+    done
+fi
 
 # Bundle GTK pixbuf loaders so PNG/JPEG rendering works on any Ubuntu version.
 # gdk-pixbuf-query-loaders generates a cache with absolute paths; we replace
@@ -162,7 +180,7 @@ if [ "$FORMAT" = "pyinstaller" ]; then
     fi
     rm -f "build/PuckUtilityApp-lin-${VERSION}.zip"
 
-    cp "${BINARY_STAGE}/PuckUtilityApp" "${OUTDIR}/"
+    cp -r "${BINARY_STAGE}/PuckUtilityApp/." "${OUTDIR}/"
     cp -r images/          "${OUTDIR}/"
     cp -r config/          "${OUTDIR}/"
     cp puck4.eds           "${OUTDIR}/"
@@ -208,7 +226,7 @@ elif [ "$FORMAT" = "deb" ]; then
     mkdir -p "${DEB_ROOT}/DEBIAN"
 
     # --- App binary and data files ------------------------------------------
-    cp "${BINARY_STAGE}/PuckUtilityApp" "${APP_DIR}/"
+    cp -r "${BINARY_STAGE}/PuckUtilityApp/." "${APP_DIR}/"
     chmod 755 "${APP_DIR}/PuckUtilityApp"
     cp -r images/        "${APP_DIR}/"
     cp -r config/        "${APP_DIR}/"
@@ -242,6 +260,11 @@ elif [ "$FORMAT" = "deb" ]; then
 # NO_AT_BRIDGE) is set by the app at startup -- see the top of puckutilityapp.py.
 # Keep this wrapper minimal so dev and packaged runs behave identically.
 cd /usr/share/puckutilityapp
+# Skip system GIO modules: the bundled (old) GLib cannot load the newer system
+# gio modules (gvfs/dconf/proxy/gnutls) and prints noisy "Failed to load module"
+# warnings. The app does not use them (GSETTINGS_BACKEND=memory). Empty dir = load none.
+export GIO_MODULE_DIR="/tmp/puck-empty-gio-$(id -un)"
+mkdir -p "$GIO_MODULE_DIR" 2>/dev/null
 LOG="/tmp/puckutilityapp-$(id -un).log"
 echo "=== launch $(date --iso-8601=seconds) ===" >> "$LOG"
 /usr/share/puckutilityapp/PuckUtilityApp "$@" 2>&1 | tee -a "$LOG"

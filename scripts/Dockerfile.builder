@@ -21,7 +21,7 @@ ENV PATH=/usr/local/bin:$PATH
 RUN apt-get update -qq && \
     apt-get install -y -qq \
         curl ca-certificates binutils \
-        libgtk-3-0 libsdl2-2.0-0 libgdk-pixbuf2.0-bin libusb-1.0-0 zip dpkg && \
+        libgtk-3-0 libsecret-1-0 libnotify4 libsdl2-2.0-0 libgdk-pixbuf2.0-bin libusb-1.0-0 zip dpkg && \
     rm -rf /var/lib/apt/lists/* && \
     GDK_QUERY=$(find /usr/lib -name 'gdk-pixbuf-query-loaders' 2>/dev/null | head -1) && \
     if [ -n "$GDK_QUERY" ] && [ ! -f /usr/bin/gdk-pixbuf-query-loaders ]; then \
