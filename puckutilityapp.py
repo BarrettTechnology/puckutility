@@ -42,6 +42,7 @@ if sys.platform.startswith('linux'):
 import wx
 import wx.adv
 import log_viewer
+import splash_screen
 from puckutilityapp_gui import puckutilityapp_frame
 from calibrate_menu import calibrate
 from factory_menu import factory
@@ -61,6 +62,7 @@ from threading import Thread
 import multiprocessing
 multiprocessing.freeze_support() 
 from canopen_runner import progressbar
+from app_settings import AppSettings
 from flashp4 import progressbar
 import time
 import webbrowser
@@ -540,8 +542,15 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         wx.ToolTip.SetReshow(3000)
         # if self.getMode() == 'Current':
             # Specifications
-        print('Setting Tool Tips...')
+        # print('Setting Tool Tips...')   # cosmetic UI wiring -- no diagnostic value
         self.choice_port.SetToolTip('Select CAN port')
+        self.settings = AppSettings("puckutility")   # persistent "memory" of user defaults
+        _saved_port = self.settings.get("can_port")
+        if _saved_port:
+            try:
+                self.choice_port.SetStringSelection(_saved_port)
+            except Exception:
+                pass
         self.button_1.SetToolTip('Scan to find all Pucks on the CAN bus')
         self.choice_id.SetToolTip('Select active Puck')
         self.text_version.SetToolTip('Firmware version of active Puck')
@@ -814,6 +823,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             canopen.sdo.SdoClient.RESPONSE_TIMEOUT = _timeout
 
     def configure_Puck(self, configure_pdos=True):
+        print("Configuring Puck...")
 
         # Read and set gear ratio from object dictionary
         motor_rev = self.node.sdo.upload(0x6091,1)
@@ -840,7 +850,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
         print('Gear Ratio determined: {}'.format(self.gearRatio))
 
-        print("Reading PDOs...")
         try:
             self.node.tpdo.read()
             self.node.rpdo.read()
@@ -855,7 +864,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         # NEW
 
         if configure_pdos:
-            print("Configuring TPDOs...")
             try:
                 self.node.tpdo.read()
                 self.node.tpdo[3].clear()
@@ -884,7 +892,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.node.tpdo[3].add_callback(self.tpdo3_callback)
             self.node.emcy.add_callback(self.on_emcy_received)
 
-            print("Configuring RPDOs...")
             try:
                 self.node.rpdo[2].clear()
                 self.node.rpdo[2].add_variable('TargetVelocity')  # 0x60FF, 32-bit
@@ -1102,10 +1109,17 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 self.network.disconnect()
             except Exception:
                 pass
-            # Skip the USB reset during an auto-reconnect: resetting the adapter
-            # on every quiet retry is what produced the "continuously loops
-            # resets" symptom. A genuine replug re-enumerates on its own.
-            _did_reset = False if auto_reconnect else self._reset_can_usb(can_device)
+            # Only USB-reset an actual CANable hitting the full-TX-buffer error
+            # (a puck that never ACKs). A Peak, a down bus, or an absent dongle
+            # gains nothing from a reset and recovers on the retry below -- which
+            # is what made it fire "any time a puck doesn't load". Also skip it
+            # during an auto-reconnect: resetting on every quiet retry is what
+            # produced the "continuously loops resets" symptom (a genuine replug
+            # re-enumerates on its own).
+            _should_reset = (not auto_reconnect
+                             and can_backend.iface_is_candlelight(can_device)
+                             and can_backend.is_tx_buffer_error(e))
+            _did_reset = self._reset_can_usb(can_device) if _should_reset else False
             if _did_reset:
                 self.frame_statusbar.SetStatusText('Resetting CAN adapter…', 1)
                 self.frame_statusbar.Refresh()
@@ -1223,6 +1237,11 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             scan_length = len(self.network.scanner.nodes)
             if(scan_length > 0):
                 MyApp.updateNodes(self, self.network.scanner.nodes)
+                # Remember the working CAN port so next launch defaults to it.
+                try:
+                    self.settings.set("can_port", self.choice_port.GetStringSelection())
+                except Exception:
+                    pass
                 # Populate the node choice list
                 self.choice_id.SetItems([str(i) for i in self.network.scanner.nodes])
             if self.init:                   
@@ -2393,6 +2412,34 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             pass
 
 class MyApp(wx.App):
+
+    def _bring_to_front(self, frame):
+        """Pull `frame` to the foreground at startup. A plain Raise() is unreliable
+        under GTK/GNOME focus-stealing prevention -- the window lands behind the
+        terminal that launched it -- so momentarily mark it always-on-top to force
+        the window manager to raise + focus it, then drop that flag a beat later so
+        it behaves like a normal window."""
+        if frame is None:
+            return
+        try:
+            frame.Show()
+            if frame.IsIconized():
+                frame.Iconize(False)
+            base_style = frame.GetWindowStyle()
+            frame.SetWindowStyle(base_style | wx.STAY_ON_TOP)
+            frame.Raise()
+            frame.RequestUserAttention()
+            wx.CallLater(600, lambda: self._drop_topmost(frame, base_style))
+        except Exception:
+            pass
+
+    def _drop_topmost(self, frame, base_style):
+        try:
+            frame.SetWindowStyle(base_style)
+            frame.Raise()
+        except Exception:
+            pass
+
     # Set by __main__ before instantiation when --touchscreen is passed.
     touchscreen = False
 
@@ -2406,33 +2453,19 @@ class MyApp(wx.App):
         self.SetAppName('PuckUtilityApp')
         self.SetClassName('PuckUtilityApp')
 
-        splash_bmp = self._make_splash_bitmap()
-        self._splash = wx.adv.SplashScreen(
-            splash_bmp,
-            wx.adv.SPLASH_CENTRE_ON_SCREEN | wx.adv.SPLASH_NO_TIMEOUT,
-            0, None, style=wx.BORDER_NONE | wx.STAY_ON_TOP
-        )
+        # Rounded, transparent-corner splash (shared splash_screen helper).
+        self._splash = splash_screen.show_splash(
+            resource_path(os.path.join("images", "Splash.png")))
         # Return immediately so the event loop starts and the splash is fully
         # painted by the OS before the heavy frame construction begins.
         wx.CallLater(100, self._finish_init)
         return True
 
     def _make_splash_bitmap(self):
-        bg = wx.Image(resource_path(os.path.join("images", "Background.png")), wx.BITMAP_TYPE_PNG)
-        logo = wx.Image(resource_path(os.path.join("images", "BarrettLogoScaled-NoBG.png")), wx.BITMAP_TYPE_PNG)
-
-        bg_w, bg_h = bg.GetWidth(), bg.GetHeight()
-        logo_w, logo_h = logo.GetWidth(), logo.GetHeight()
-        x = (bg_w - logo_w) // 2
-        y = (bg_h - logo_h) // 2
-
-        result = wx.Bitmap(bg_w, bg_h, 32)
-        dc = wx.MemoryDC(result)
-        gc = wx.GraphicsContext.Create(dc)
-        gc.DrawBitmap(wx.Bitmap(bg), 0, 0, bg_w, bg_h)
-        gc.DrawBitmap(wx.Bitmap(logo), x, y, logo_w, logo_h)
-        dc.SelectObject(wx.NullBitmap)
-        return result
+        # Splash is pre-composed (Background.png + the navy Barrett logo) into
+        # images/Splash.png, so the banner logo (BarrettLogoScaled-NoBG.png) and
+        # the splash can be sized independently of each other.
+        return wx.Bitmap(resource_path(os.path.join("images", "Splash.png")), wx.BITMAP_TYPE_PNG)
 
     def _finish_init(self):
         self.frame = MyFrame(None, wx.ID_ANY, "")
@@ -2468,12 +2501,11 @@ class MyApp(wx.App):
             except Exception:
                 self.frame.CentreOnScreen()
         self._splash.Destroy()     # now remove splash — frame is positioned + rendered underneath
-        # gtk_window_present() — raise window AND send the GNOME startup-
-        # notification completion signal so the dock-launched window gets focus
-        # on Ubuntu 22+.  frame.Show() alone only calls gtk_widget_show_all()
-        # which doesn't fire the startup notification, so the window opens
-        # behind everything with no focus grant from GNOME Shell.
-        self.frame.Raise()
+        # Pull the window to the foreground. Raise() alone often loses to GNOME's
+        # focus-stealing prevention (the window opens behind the launching terminal
+        # with no focus), so _bring_to_front momentarily marks it always-on-top to
+        # force the window manager to raise + focus it.
+        self._bring_to_front(self.frame)
 
         self.Bind(wx.EVT_KEY_DOWN, self.frame.onKeyDown)
         self.Bind(wx.EVT_KEY_UP,   self.frame.onKeyUp)

@@ -91,7 +91,7 @@ Revision Number (bits 0-15: minor rev; bits 16-31: major rev),,0x1018,3,UNSIGNED
 
 # Motor specifications (from datasheet)
 Motor rated torque (mNm),,0x6076,0,UNSIGNED32,22
-Max motor vel (0.1 cts/sec),,0x6080,0,UNSIGNED32,2000000
+Max motor vel (cts/sec),,0x6080,0,UNSIGNED32,2000000
 Motor poles,,0x3011,3,UNSIGNED8,2
 Motor Kt (mNm/A),,0x3011,4,UNSIGNED16,19
 Motor Rt (0.01 Ohms),,0x3011,5,UNSIGNED16,2050

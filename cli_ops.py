@@ -150,9 +150,22 @@ class CLIProgress:
 def _cli_make_network(can_device):
     """Thin wrapper around can_backend.make_network so cli paths honour the
     active adapter selection (PCAN vs CandleLight) set by the GUI menu or
-    by future CLI flags."""
+    by future CLI flags.
+
+    Connection failures (adapter unplugged, interface down, wrong canN) exit
+    with a one-line message instead of a traceback -- every CLI operation
+    funnels through here, so this is the single place that needs to fail
+    cleanly."""
     import can_backend
-    return can_backend.make_network(can_device, bitrate=1000000)
+    try:
+        return can_backend.make_network(can_device, bitrate=1000000)
+    except Exception as e:
+        print(f"Error: could not open CAN interface '{can_device}': {e}",
+              file=sys.stderr)
+        print("Check the adapter is connected and the interface is up "
+              "(`ip link show type can`), or select another port with --can.",
+              file=sys.stderr)
+        sys.exit(1)
 
 
 def _cli_connect(can_device):

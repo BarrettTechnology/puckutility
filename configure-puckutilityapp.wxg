@@ -78,7 +78,7 @@
                     </item>
                     <item>
                         <label>Cogging Error Compensation</label>
-                        <handler>cogging_error_compensation</handler>
+                        <handler>cogging_calibrate_auto</handler>
                     </item>
                     <item>
                         <label>Current Sense Bias</label>
