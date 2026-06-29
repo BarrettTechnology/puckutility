@@ -1,0 +1,13 @@
+# Dev-only tooling — NOT runtime or build dependencies. Deliberately kept out of
+# requirements.txt (which is fully pinned and feeds the PyInstaller .deb), so it
+# is never bundled into the frozen app. scripts/setup-pip.sh installs this into
+# the source .venv so every developer can edit the wxGlade GUI and regenerate
+# *_gui.py from the matching configure-*.wxg file.
+#
+# wxGlade is NOT published on PyPI; install from the upstream GitHub release tag.
+# Pinned to 1.1.1: its design GUI runs on current GTK (1.1.0a2's GUI segfaults on
+# GTK3/Wayland), and all committed *_gui.py were regenerated with 1.1.1. Keep
+# codegen and the GUI on the SAME version so regenerating stays a clean, no-drift
+# round-trip. The old apt python3-wxglade is 0.9.x and cannot read the .wxg at all.
+# wxGlade reuses the wxPython already pinned in requirements.txt; needs `git`.
+wxGlade @ git+https://github.com/wxGlade/wxGlade.git@v1.1.1
