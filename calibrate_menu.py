@@ -916,19 +916,32 @@ class calibrate():
 
     def calibrate_itiming(self, event, calAll=False):  # wxGlade: wxp3_frame.<event_handler>
         # ALGORITHM OVERVIEW
-        # MaxSettlingTime is only applied by firmware at initialisation, so each
-        # timing step requires a full save → NMT reset → configure_Puck cycle before
-        # sampling.  The sweep is therefore structured as:
-        #   outer loop: timing values  (one reset per step)
-        #   inner loop: SVM sectors    (ramp + sample within the same boot)
+        # MaxSettlingTime (0x3001:5) is applied live by firmware on write while idle
+        # (parsePwmTiming -> pwm_update_pwm_timing, stm32 app/pwm.c), so each timing step
+        # just drops to IDLE, writes the value, then drives to sample — no per-step save or
+        # NMT reset (fw >= 4.4.0).  The sweep is structured as:
+        #   outer loop: timing values  (one live write per step, no reset)
+        #   inner loop: SVM sectors    (ramp + sample within the same energise)
         #
-        # KNOWN LIMITATION — CYCLE-TO-CYCLE NOISE
-        # The dominant noise source (~2 ADC counts plat_dev) is not within-step
-        # measurement noise but between-step ramp variation: each reset produces a
-        # slightly different motor_ud convergence, so the absolute Alpha.Raw value
-        # drifts by ~2–4 counts even in the fully-settled plateau region.
-        # Increasing N_SAMPLES does not help because the variation is between boots,
-        # not within a single measurement window.
+        # THERMAL DRIFT — and why we reference-subtract
+        # The dominant error is a slow thermal drift of the absolute Alpha/Beta.Raw value
+        # over the sweep: while energised at calibration_current the windings warm and the
+        # ADC midpoint creeps, drifting the raw reading by tens of counts across the ~minute
+        # sweep (observed ~44 counts on a real P4).  That swamps the true settling signal
+        # (~9–40 counts) and, because the analysis takes its "settled plateau" from the LAST
+        # (hence most-drifted) steps, it reports a crossing tens-of-% too high (e.g. 1231 ns
+        # vs a scope-confirmed ~400 ns).
+        #
+        # FIX — per-step reference subtraction:
+        # At every timing step we sample twice, back-to-back: once at the test value t and
+        # once at a fully-settled reference time (settled_ref = sweep_max, well past the
+        # ringing).  We store the DIFFERENCE signal(t) - signal(settled_ref).  The two
+        # samples are ~1.5 s apart, so the thermal drift is common-mode and cancels by
+        # construction; the ADC DC bias cancels too (it is in both terms).  What remains is
+        # purely settling-dependent: ~0 once t is past the ringing, rising as t drops into
+        # the transient.  The downstream crossing analysis is unchanged — it already works on
+        # plateau-relative |deviation|, which is translation-invariant, so feeding it the
+        # drift-free difference just sharpens the edge it finds.
         #
         # FUTURE IMPROVEMENT — MULTI-CURRENT SLOPE DETECTION
         # Sampling at multiple current levels per sector per step (e.g. 25 %, 50 %,
@@ -978,6 +991,17 @@ class calibrate():
             i_peak = self.node.sdo['Calibration']['i_peak'].raw
             if calibration_current > i_peak:
                 calibration_current = i_peak
+            # CURRENT SELECTION — keep this MODEST.  Calibrate at i_cal: the settling edge is
+            # current-dependent so don't under-drive, but driving high is dangerous — 3000 mA
+            # collapsed the bus on a weaker supply (0x3220 undervoltage).  (The earlier "frozen
+            # current" was not a current problem at all: settled_ref had been set to half_period,
+            # which disables current generation — fixed; settled_ref is now 2000 ns.)  Let the now-valid
+            # reference + spread metric extract the knee.  The ramp below bails safely if even this
+            # target can't be reached (bus sag / stall / ceiling) instead of pushing into a fault.
+            CAL_CURRENT_SCALE = 1.0
+            calibration_current = max(1, int(calibration_current * CAL_CURRENT_SCALE))
+            print("Itiming drive current: {} mA  (i_cal × {:.2f}, i_peak={} mA)".format(
+                calibration_current, CAL_CURRENT_SCALE, i_peak))
     
             dead_time         = self.node.sdo['Amp']['DeadTime'].raw         # ns
             sampling_time     = self.node.sdo['Amp']['SamplingTime'].raw     # ns (fixed, not touched)
@@ -986,15 +1010,66 @@ class calibrate():
             freq_hz           = self.node.sdo['Amp']['Frequency'].raw
     
             half_period_ns = 1_000_000_000 // (2 * max(freq_hz, 1))
-    
-            # MaxSettlingTime is only read by firmware during initialization — runtime
-            # SDO writes have no effect until the puck is reset.  The sweep must
-            # therefore save→reset→re-init for every timing step.
+
+            # Fully-settled reference MaxSettlingTime.  CRITICAL: it must be (a) past the ringing
+            # (~400 ns, secondary structure to ~950 ns) AND (b) well below half_period_ns — at the
+            # full half-period there's no room left for ADC sample+convert in the PWM cycle and the
+            # firmware stops generating current entirely (diagnosed: id=0/Araw=bias at 12500 ns on
+            # a 40 kHz puck).  2000 ns satisfies both with margin; cap at a fraction of the half-
+            # period so a higher-PWM-freq puck never lands in the no-current zone.
+            settled_ref = min(2000, half_period_ns // 3)
+
+            # MaxSettlingTime (0x3001:5) is applied LIVE by firmware: its write callback
+            # (parsePwmTiming -> pwm_update_pwm_timing, stm32 app/pwm.c) reconfigures the
+            # PWM timer the instant it is written while the puck is in MODE_IDLE.  So each
+            # sweep step just drops to IDLE, writes the value (effective immediately), then
+            # drives to sample — no per-step EEPROM save or NMT reset (fw >= 4.4.0).  Only
+            # the final chosen value is saved to EEPROM at the end.
     
             # Alpha/Beta raw ADC bias (zero-current midpoint) for centring the signal
             alpha_bias = self.node.sdo['Alpha']['Bias'].raw
             beta_bias  = self.node.sdo['Beta']['Bias'].raw
-    
+
+            # --- current/bus/fault helpers (used by both the sanity check and the pre-ramp) ---
+            # Drive current is gauged by MAGNITUDE √(id²+iq²), NOT id alone.  With the gearbox
+            # holding the rotor, a commanded electrical angle puts the current on the q-axis, so
+            # id reads ~0 while real current flows on iq — keying the ramp off id makes it chase a
+            # phantom and overdrive ud until the supply browns out.  Magnitude is alignment-proof.
+            def _read_imag():
+                try:
+                    _idv = self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak
+                    _iqv = self.node.sdo['CurrentFeedback'].raw / 1000.0 * i_peak
+                    return (_idv * _idv + _iqv * _iqv) ** 0.5
+                except Exception:
+                    return None
+            try:
+                _bus_min = self.node.sdo['Object2384']['AmplifierMinVoltage'].raw
+            except Exception:
+                _bus_min = None
+
+            def _read_bus():
+                try:
+                    return self.node.sdo['Amplifier']['BusVoltage'].raw
+                except Exception:
+                    return None
+
+            def _check_fault(where):
+                """Actively log the puck fault state (StatusWord fault bit + bus voltage) so a
+                voltage/brownout fault during the cal lands in THIS log — the async EMCY handler
+                suppresses/Warns several voltage codes and we were missing them.  Returns True if
+                faulted or comms dropped (brownout)."""
+                try:
+                    _sw = self.node.sdo["StatusWord"].raw
+                except Exception:
+                    print("  !! FAULT/COMMS LOST during {} — no StatusWord response "
+                          "(supply brownout / puck reset likely).".format(where))
+                    return True
+                if _sw & 0x08:  # CiA-402 fault bit
+                    print("  !! PUCK FAULT during {}: StatusWord={:#06x}  BusVoltage={}  "
+                          "(undervolt limit {})".format(where, _sw, _read_bus(), _bus_min))
+                    return True
+                return False
+
             # 6 SVM sector centers spaced 60° apart (theta_e raw: ±32767 = ±pi)
             sector_angles = [
                 int( 32767 / 6),      #  30° = pi/6
@@ -1006,21 +1081,23 @@ class calibrate():
             ]
     
             # --- MaxSettlingTime sanity check ---
-            # Two save+reset cycles at opposite extremes confirm whether the parameter
-            # has any effect on Alpha.Raw after the firmware reads it at init.
-            print("--- MaxSettlingTime sanity check (2 resets) ---")
+            # Two LIVE writes at opposite extremes confirm the parameter actually moves
+            # Alpha.Raw on this puck.  Firmware applies 0x3001:5 immediately on write while
+            # idle (parsePwmTiming -> pwm_update_pwm_timing, stm32 app/pwm.c) — no reset.
+            print("--- MaxSettlingTime sanity check (live, no reset) ---")
             node_id = self.node.id
             _DIAG_SAMPLES = 30
-            _diag_theta = int(32767 / 6)  # 30°
+            _DIAG_UD_MAX  = 1200   # iSense reached full current at ud≈733, so 1200 covers the good
+                                   # range without entering the deep-brownout zone (3000 collapsed it)
+            # Sample at a signal-carrying angle (where Alpha sees the current), not θ=30° which is
+            # a flat Alpha angle — otherwise the sanity check cries "no effect" on real signal.
+            _diag_theta = sector_angles[2]  # 150°, the ±150° sectors are where Alpha rings
             _diag_means = {}
-            for _t_diag, _label in [(0, 'min'), (half_period_ns, 'max')]:
+            for _t_diag, _label in [(0, 'min'), (settled_ref, 'max')]:
+                self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE  # idle: write applies live
                 self.node.sdo['Amp']['MaxSettlingTime'].raw = _t_diag
-                self.node.sdo['Save']['Single'].raw = ((0x3001 << 8) | 0x05)
-                self.network.send_message(0x0, [0x81, int(node_id)])
-                _sleep_responsive(0.5)
-                self.configure_Puck(configure_pdos=False)
                 _readback = self.node.sdo['Amp']['MaxSettlingTime'].raw
-                print("  MaxSettlingTime={:6d} ns  readback after reset={:6d} ns  {}".format(
+                print("  MaxSettlingTime={:6d} ns  readback={:6d} ns  {}".format(
                     _t_diag, _readback, "OK" if _readback == _t_diag else "MISMATCH"))
                 self.node.sdo["ControlWord"].raw = CLEAR_FAULT
                 self.node.sdo["ControlWord"].raw = SHUTDOWN
@@ -1029,18 +1106,39 @@ class calibrate():
                 self.node.sdo['Theta_e'].raw = _diag_theta
                 self.node.sdo['Motor']['ud'].raw = 0
                 _diag_ud = 0
-                while (self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak < 0.8 * calibration_current
-                       and _diag_ud < 32000):
-                    _diag_ud = min(_diag_ud + 500, 32000)
+                while ((_read_imag() or 0) < calibration_current and _diag_ud < _DIAG_UD_MAX):
+                    _diag_ud = min(_diag_ud + 150, _DIAG_UD_MAX)
                     self.node.sdo['Motor']['ud'].raw = _diag_ud
-                    time.sleep(0.01)
+                    time.sleep(0.02)
                     wx.Yield()
-                while (self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak < calibration_current
-                       and _diag_ud < 32000):
-                    _diag_ud = min(_diag_ud + 100, 32000)
-                    self.node.sdo['Motor']['ud'].raw = _diag_ud
-                    time.sleep(0.01)
-                    wx.Yield()
+                    # Full per-signal diagnostic: separates "supply collapsed" (raw Alpha near bias,
+                    # bus sagging) from "readback lying" (raw Alpha swung but id/iq don't).
+                    _id_dbg = self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak
+                    _iq_dbg = self.node.sdo['CurrentFeedback'].raw / 1000.0 * i_peak
+                    _araw   = self.node.sdo['Alpha']['Raw'].raw
+                    _braw   = self.node.sdo['Beta']['Raw'].raw
+                    print("    diag {}: ud={:5d}  id={:6.0f}  iq={:6.0f} mA  Araw={:.0f} Braw={:.0f} "
+                          "(bias α{:.0f} β{:.0f})  bus={}".format(
+                          _label, _diag_ud, _id_dbg, _iq_dbg, _araw, _braw,
+                          alpha_bias, beta_bias, _read_bus()))
+                    if _check_fault("sanity-check ramp ({})".format(_label)):
+                        self.node.sdo['Motor']['ud'].raw = 0
+                        self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
+                        self.node.sdo['Amp']['MaxSettlingTime'].raw = original_settling
+                        raise RuntimeError("Itiming cal ABORTED at sanity check: puck faulted / "
+                                           "comms lost while ramping (see fault line above).")
+                # If current never tracked drive (stuck — e.g. uncalibrated commutation), bail here
+                # instead of holding voltage at the cap and proceeding into the sweep.
+                _diag_imag = _read_imag() or 0
+                if _diag_ud >= _DIAG_UD_MAX and _diag_imag < 0.5 * calibration_current:
+                    self.node.sdo['Motor']['ud'].raw = 0
+                    self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
+                    self.node.sdo['Amp']['MaxSettlingTime'].raw = original_settling
+                    raise RuntimeError(
+                        "Itiming cal ABORTED at sanity check: current |I| stuck at {:.0f} mA at ud "
+                        "ceiling {} (target {} mA) — drive not producing current. Check "
+                        "commutation/iSense calibration and the supply.".format(
+                            _diag_imag, _DIAG_UD_MAX, calibration_current))
                 _sleep_responsive(0.2)
                 _s = 0
                 for _ in range(_DIAG_SAMPLES):
@@ -1052,45 +1150,122 @@ class calibrate():
             _diag_diff = abs(_diag_means['max'] - _diag_means['min'])
             if _diag_diff < 5.0:
                 print("  WARNING: MaxSettlingTime has NO measurable effect on Alpha.Raw "
-                      "after reset (diff={:.3f} counts). Check with firmware team whether "
+                      "when applied live (diff={:.3f} counts). Check with firmware team whether "
                       "0x3001/5 is wired to the ADC trigger in this build.".format(_diag_diff))
             else:
-                print("  OK: MaxSettlingTime effect confirmed after reset "
+                print("  OK: MaxSettlingTime live effect confirmed "
                       "(diff={:.3f} counts).".format(_diag_diff))
             print("--- End sanity check ---")
             # ------------------------------------
     
-            # Two-pass sweep: coarse (100 ns) locates the crossing region, fine (25 ns) resolves it.
-            # sector_ud is determined once at coarse_max where the ADC is guaranteed settled,
-            # giving an accurate ramp free of settling-transient bias.  Both passes then apply
-            # the stored voltage directly — no re-ramp between passes.
-            coarse_step   = 100
-            fine_step     = 25
-            N_SAMPLES_C   = 10    # fewer samples in coarse pass for speed
-            N_SAMPLES_F   = 10    # fine pass: boot-to-boot variation dominates, not within-step noise
-            SETTLE_C      = 0.15  # s  coarse inductive-settle wait
-            SETTLE_F      = 0.20  # s  fine inductive-settle wait
-            coarse_start  = 0
-            coarse_max    = 1600
-            coarse_values = list(range(coarse_start, coarse_max + 1, coarse_step))
-            n_coarse      = len(coarse_values)
-            sector_ud     = [None] * len(sector_angles)
+            # Single uniform sweep, 0 → sweep_max at sweep_step.  Starting at 0 ns captures the
+            # full ringing transient (large reference-subtracted deviation) decaying into the
+            # settled plateau, so the curve plainly shows "ringing → settle → flat".  The old
+            # coarse→fine two-pass only existed to ration expensive per-step reboots; with
+            # MaxSettlingTime applied live (no reset) and thermal drift cancelled by reference
+            # subtraction, a single fine-resolution straight shot is simpler and shows the whole
+            # curve.  sector_ud is fixed once at settled_ref (ADC guaranteed settled) and reused
+            # for every step — no re-ramp.
+            sweep_start  = 0
+            sweep_max    = 800    # ringing fully decays well before here (knee ~400 ns); the old
+                                  # 1600 ns top was wasted energised time → motor heat
+            sweep_step   = 25
+            N_SAMPLES    = 10
+            SETTLE       = 0.06   # s  inductive-settle wait; L/R is ms-scale so this is ample,
+                                  # and shorter dwell = far less winding heat than the old 0.20 s
+            REF_EVERY    = 5      # sample the settled reference every Nth step (+first/last) and
+                                  # interpolate between — drift is slow, so per-step reference
+                                  # sampling was ~half the sweep time for no extra accuracy
+            sweep_values = list(range(sweep_start, sweep_max + 1, sweep_step))
+            n_steps      = len(sweep_values)
+            sector_ud    = [None] * len(sector_angles)
+
+            # settled_ref is defined up near half_period_ns (must be past the ringing but below
+            # the half-period, where current generation stops).  Each step subtracts a settled
+            # reference (sampled every REF_EVERY steps, interpolated) so slow drift cancels.
+            TEMP_LIMIT_C = 85     # bail if puck OR motor reaches this (°C)
+
+            # ~n_steps test sweeps + ~n_steps/REF_EVERY reference sweeps; per-energise overhead is
+            # ~0.1 s of mode/control SDO writes (live write, no NMT reset).
+            est_pre   = len(sector_angles) * 3.0 + 0.5
+            _ref_n    = n_steps // REF_EVERY + 2
+            est_sweep = (n_steps + _ref_n) * (0.1 + len(sector_angles) * (SETTLE + N_SAMPLES * 0.005))
+            print("Single sweep: {} to {} ns ({} steps × {} ns)  ref={} ns  half period={} ns".format(
+                sweep_start, sweep_max, n_steps, sweep_step, settled_ref, half_period_ns))
+            print("Est. time: {:.0f} s  (pre-ramp {:.0f} s + sweep {:.0f} s)".format(
+                est_pre + est_sweep, est_pre, est_sweep))
     
-            est_pre = len(sector_angles) * 3.0 + 0.5
-            est_c   = n_coarse * (0.5 + len(sector_angles) * (SETTLE_C + N_SAMPLES_C * 0.005))
-            est_f   = 20 * (0.5 + len(sector_angles) * (SETTLE_F + N_SAMPLES_F * 0.005))
-            print("Two-pass sweep: coarse {} to {} ns ({} steps × {} ns)  half period={} ns".format(
-                coarse_start, coarse_max, n_coarse, coarse_step, half_period_ns))
-            print("Est. time: {:.0f} s  "
-                  "(pre-ramp {:.0f} s + coarse {:.0f} s + fine ~{:.0f} s, ~20 fine steps assumed)".format(
-                  est_pre + est_c + est_f, est_pre, est_c, est_f))
-    
-            # --- Pre-sweep: ramp at coarse_max where ADC is settled ---
-            print("Pre-sweep ramp at {} ns...".format(coarse_max))
-            self.node.sdo['Amp']['MaxSettlingTime'].raw = coarse_max
-            self.node.sdo['Save']['Single'].raw = ((0x3001 << 8) | 0x05)
-            self.network.send_message(0x0, [0x81, int(node_id)])
-            _sleep_responsive(0.5)
+            def _read_amp_temp():
+                """Amplifier-board (puck) temperature in °C — the ADC and its voltage reference
+                live here, so this is the temperature that drives the bias drift we cancel.
+                Returns None if unavailable."""
+                try:
+                    return self.node.sdo['Amplifier']['Temperature'].raw
+                except Exception:
+                    return None
+
+            def _read_motor_temp():
+                """Motor winding thermistor in °C (0x3010:3 Motor.Therm, raw/10), or None if the
+                reading is unavailable/invalid.  Firmware reports ≤0 / -273 when there is no valid
+                sensor, so those are treated as None (they can't trip the heat check anyway)."""
+                val = None
+                try:
+                    val = self.node.sdo['Motor']['Therm'].raw / 10.0
+                except Exception:
+                    try:
+                        val = self.node.tpdo[3]['Motor.Therm'].raw / 10.0
+                    except Exception:
+                        return None
+                return val if val is not None and val > 0 else None
+
+            def _fmt_temp(v):
+                return "{:.1f}°C".format(v) if v is not None else "N/A"
+
+            def _check_overheat(puck_c, motor_c, where):
+                """De-energise and ABORT the cal if puck or motor is at/over TEMP_LIMIT_C, so we
+                never push more current into an already-hot motor.  Leaves MaxSettlingTime at its
+                original value (nothing is saved on a hot abort)."""
+                over = [(n, v) for n, v in (("puck", puck_c), ("motor", motor_c))
+                        if v is not None and v >= TEMP_LIMIT_C]
+                if over:
+                    self.node.sdo['Motor']['ud'].raw = 0
+                    self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
+                    self.node.sdo['Amp']['MaxSettlingTime'].raw = original_settling
+                    _w = ", ".join("{} {:.1f}°C".format(n, v) for n, v in over)
+                    raise RuntimeError(
+                        "Itiming cal ABORTED on overheat at {} ({} ≥ {}°C). De-energised and "
+                        "left MaxSettlingTime unchanged ({} ns). Let it cool and retry.".format(
+                            where, _w, TEMP_LIMIT_C, original_settling))
+
+            # --- Pre-sweep: ramp at settled_ref where ADC is settled ---
+            # Find the motor_ud that produces calibration_current at each sector by converging
+            # UP in fine, step-limited increments.  CRITICAL: the first probe must be small.
+            # The old code forced a 32000//12 = 2666 first step; since the loop only ramps up and
+            # exits the instant current ≥ target, that single coarse jump overshot the target by
+            # several-fold and locked it in — the drive current never tracked calibration_current
+            # and cooked the motor regardless of the scale factor.  We now probe small, then take
+            # damped proportional steps capped to _RAMP_STEP_MAX so a noisy current reading can
+            # never command a big jump, and bail if we can't reach target by _UD_CEILING (which
+            # would indicate a bad current-sense reading rather than a real need for more drive).
+            _RAMP_STEP_MAX = 150
+            _UD_CEILING    = 3000   # tight backstop: real targets need a few hundred ud, so
+                                    # reaching this means the current can't be hit — bail, don't
+                                    # keep driving (8000 let a runaway crash the bus and heat up)
+
+            def _ramp_abort(msg):
+                """De-energise, restore settling, and abort — used when the drive can't reach the
+                target current (bus sag / stall / ceiling) so we never push into an undervoltage
+                fault or heat the motor chasing an unreachable current."""
+                self.node.sdo['Motor']['ud'].raw = 0
+                self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
+                self.node.sdo['Amp']['MaxSettlingTime'].raw = original_settling
+                raise RuntimeError("Itiming cal ABORTED: " + msg +
+                                   "  (lower CAL_CURRENT_SCALE or check supply/tune.)")
+
+            print("Pre-sweep ramp at {} ns (target current {} mA, bus min {})...".format(
+                settled_ref, calibration_current, _bus_min))
+            self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE  # idle: write applies live
+            self.node.sdo['Amp']['MaxSettlingTime'].raw = settled_ref
             self.node.sdo["ControlWord"].raw = CLEAR_FAULT
             self.node.sdo["ControlWord"].raw = SHUTDOWN
             self.node.sdo["ControlWord"].raw = OP_ENABLED
@@ -1100,137 +1275,171 @@ class calibrate():
                 self.node.sdo['Motor']['ud'].raw = 0
                 motor_ud = 0
                 _sleep_responsive(0.1)  # let inductive current decay before ramp check
-                while (self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak < calibration_current
-                       and motor_ud < 32000):
-                    _id_now = self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak
-                    if motor_ud > 0 and _id_now > 0:
-                        _ramp_step = max(50, int((motor_ud * calibration_current / _id_now - motor_ud) / 4))
+                _imag     = _read_imag() or 0.0   # current MAGNITUDE √(id²+iq²), alignment-proof
+                _imag_best = _imag
+                _stall    = 0
+                while _imag < calibration_current and motor_ud < _UD_CEILING:
+                    # Bus-voltage guard: a sag means the supply can't source this current and the
+                    # drive is about to (or did) undervoltage-fault — bail before chasing it up.
+                    _bus = _read_bus()
+                    if _bus_min is not None and _bus is not None and _bus < _bus_min:
+                        _ramp_abort("bus voltage sagged to {} (min {}) at ud={} chasing {} mA "
+                                    "— supply can't deliver this current.".format(
+                                        _bus, _bus_min, motor_ud, calibration_current))
+                    if motor_ud > 0 and _imag > 0:
+                        # Damped proportional estimate of the ud needed, capped both ways so it
+                        # creeps toward the target and never overshoots by more than one step.
+                        _ramp_step = int((motor_ud * calibration_current / _imag - motor_ud) / 4)
+                        _ramp_step = max(25, min(_ramp_step, _RAMP_STEP_MAX))
                     else:
-                        _ramp_step = max(50, 32000 // 12)
-                    motor_ud = min(motor_ud + _ramp_step, 32000)
+                        _ramp_step = 50   # small initial probe to get a first current reading
+                    motor_ud = min(motor_ud + _ramp_step, _UD_CEILING)
                     self.node.sdo['Motor']['ud'].raw = motor_ud
-                    time.sleep(0.01)
+                    time.sleep(0.03)   # let the inductive current actually rise before re-reading
                     wx.Yield()
+                    if _check_fault("pre-ramp sector {} (ud={})".format(sector_idx + 1, motor_ud)):
+                        _ramp_abort("puck faulted / comms lost during ramp (see fault line above).")
+                    _imag = _read_imag() or 0.0
+                    if sector_idx == 0:
+                        print("    ramp: ud={:5d}  |I|≈{:6.0f} mA  bus={}".format(
+                            motor_ud, _imag, _read_bus()))
+                    # Stall guard: ud climbing but current not following (drive folding back under
+                    # sag, unstable tune, or bad sense) — bail before reaching the ceiling.  ~2 id
+                    # counts (quantises at ~i_peak/1000 mA/count) so sensor noise can't reset it.
+                    if _imag > _imag_best + max(10.0, 2.0 * i_peak / 1000.0):
+                        _imag_best = _imag
+                        _stall     = 0
+                    else:
+                        _stall += 1
+                        if _stall >= 25:
+                            _ramp_abort("current |I| stalled at ≈{:.0f} mA (ud={}) chasing {} mA "
+                                        "— drive not responding (bus sag / unstable tune / sense)."
+                                        .format(_imag, motor_ud, calibration_current))
+                self.node.sdo['Motor']['ud'].raw = 0  # de-energise between sectors
+                _imag_final = _read_imag() or 0.0
+                if motor_ud >= _UD_CEILING and _imag_final < 0.9 * calibration_current:
+                    _ramp_abort("hit ud ceiling {} at only {:.0f} mA (target {} mA) "
+                                "— can't reach target current.".format(
+                                    _UD_CEILING, _imag_final, calibration_current))
                 sector_ud[sector_idx] = motor_ud
-                print("  sector {}/6  motor_ud={} (reused for all sweep steps)".format(
-                    sector_idx + 1, motor_ud))
+                print("  sector {}/6  motor_ud={}  measured |I|≈{:.0f} mA (target {} mA)".format(
+                    sector_idx + 1, motor_ud, _imag_final, calibration_current))
+                _check_overheat(_read_amp_temp(), _read_motor_temp(),
+                                "pre-ramp sector {}".format(sector_idx + 1))
             self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
-    
-            # --- Pass 1: coarse ---
-            coarse_data = [[None] * len(sector_angles) for _ in range(n_coarse)]
-            for t_idx, t in enumerate(coarse_values):
-                self.frame_statusbar.SetStatusText(
-                    "Timing cal — coarse {}/{} ({} ns)".format(t_idx + 1, n_coarse, t), 1)
-                self.frame_statusbar.Update()
-                wx.Yield()
-                self.node.sdo['Amp']['MaxSettlingTime'].raw = t
-                self.node.sdo['Save']['Single'].raw = ((0x3001 << 8) | 0x05)
-                self.network.send_message(0x0, [0x81, int(node_id)])
-                _sleep_responsive(0.5)
+
+            def _sweep_sample_at(settling_ns, settle_wait, n_samples):
+                """Energise at the given MaxSettlingTime (applied live) and return, per sector,
+                (Alpha_mean, Beta_mean, Alpha_std, Beta_std) of the Raw samples.  The std is the
+                reference-free within-step spread: on the ringing slew, sample-timing jitter is
+                amplified into amplitude scatter, so spread should be elevated where unsettled and
+                drop once flat.  Reuses pre-ramp sector_ud; leaves the puck in MODE_IDLE."""
+                self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE  # idle: write applies live
+                self.node.sdo['Amp']['MaxSettlingTime'].raw = settling_ns
                 self.node.sdo["ControlWord"].raw = CLEAR_FAULT
                 self.node.sdo["ControlWord"].raw = SHUTDOWN
                 self.node.sdo["ControlWord"].raw = OP_ENABLED
                 self.node.sdo["SetModeOfOperation"].raw = MODE_PHASE_VOLTAGE_ANGLE
+                out = []
                 for sector_idx, theta_e in enumerate(sector_angles):
                     self.node.sdo['Theta_e'].raw = theta_e
                     self.node.sdo['Motor']['ud'].raw = sector_ud[sector_idx]
-                    _sleep_responsive(SETTLE_C)
-                    alpha_sum = 0
-                    beta_sum  = 0
-                    for _ in range(N_SAMPLES_C):
-                        alpha_sum += self.node.sdo['Alpha']['Raw'].raw
-                        beta_sum  += self.node.sdo['Beta']['Raw'].raw
+                    _sleep_responsive(settle_wait)
+                    a_samples = []
+                    b_samples = []
+                    for _ in range(n_samples):
+                        a_samples.append(self.node.sdo['Alpha']['Raw'].raw)
+                        b_samples.append(self.node.sdo['Beta']['Raw'].raw)
                         time.sleep(0.005)
                         wx.Yield()
-                    coarse_data[t_idx][sector_idx] = (alpha_sum / N_SAMPLES_C,
-                                                       beta_sum  / N_SAMPLES_C)
+                    a_mean = sum(a_samples) / n_samples
+                    b_mean = sum(b_samples) / n_samples
+                    a_std  = (sum((x - a_mean) ** 2 for x in a_samples) / n_samples) ** 0.5
+                    b_std  = (sum((x - b_mean) ** 2 for x in b_samples) / n_samples) ** 0.5
+                    out.append((a_mean, b_mean, a_std, b_std))
                     self.node.sdo['Motor']['ud'].raw = 0  # de-energise between sectors
                 self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
-                print("  Coarse {}/{}: {} ns  done".format(t_idx + 1, n_coarse, t))
-    
-            # --- Coarse analysis: find crossing bracket to set fine sweep bounds ---
-            plat_c       = max(0, 3 * n_coarse // 4)
-            cross_lo_all = []
-            cross_hi_all = []
-            for sector_idx in range(len(sector_angles)):
-                for ch_idx, bias in ((0, alpha_bias), (1, beta_bias)):
-                    ch_vals_c  = [coarse_data[t_idx][sector_idx][ch_idx] - bias
-                                  for t_idx in range(n_coarse)]
-                    plateau_c  = sum(ch_vals_c[plat_c:]) / len(ch_vals_c[plat_c:])
-                    devs_c     = [abs(v - plateau_c) for v in ch_vals_c]
-                    pd_sorted  = sorted(devs_c[plat_c:])
-                    pd_mid     = len(pd_sorted) // 2
-                    plat_dev_c = (pd_sorted[pd_mid] if len(pd_sorted) % 2
-                                  else (pd_sorted[pd_mid - 1] + pd_sorted[pd_mid]) / 2.0)
-                    amp_c      = max(devs_c) - plat_dev_c
-                    if amp_c < max(8.0, 3.0 * plat_dev_c):
-                        continue  # flat channel, skip
-                    thresh_c = plat_dev_c + 0.10 * max(amp_c, 1.0)
-                    smooth_c = list(devs_c)
-                    for i in range(1, n_coarse - 1):
-                        smooth_c[i] = (devs_c[i - 1] + devs_c[i] + devs_c[i + 1]) / 3.0
-                    for i in range(1, n_coarse):
-                        if smooth_c[i - 1] > thresh_c >= smooth_c[i]:
-                            cross_lo_all.append(coarse_values[i - 1])
-                            cross_hi_all.append(coarse_values[i])
-                            break
-    
-            if cross_lo_all:
-                fine_start = max(coarse_start, min(cross_lo_all) - coarse_step)
-                fine_end   = min(coarse_max,   max(cross_hi_all) + 3 * coarse_step)
-                print("Coarse crossing bracket: {}–{} ns  →  fine sweep: {}–{} ns  "
-                      "({} steps × {} ns)".format(
-                      min(cross_lo_all), max(cross_hi_all),
-                      fine_start, fine_end,
-                      len(range(fine_start, fine_end + 1, fine_step)), fine_step))
-            else:
-                fine_start = coarse_start
-                fine_end   = coarse_max
-                print("WARNING: no crossing found in coarse pass — "
-                      "using full range for fine sweep")
-    
-            fine_values = list(range(fine_start, fine_end + 1, fine_step))
-    
-            # --- Pass 2: fine ---
-            print("Pass 2 (fine): {} to {} ns  ({} steps × {} ns)".format(
-                fine_start, fine_end, len(fine_values), fine_step))
-            fine_data = [[None] * len(sector_angles) for _ in range(len(fine_values))]
-            for t_idx, t in enumerate(fine_values):
+                return out
+
+            # --- Sweep (reference-subtracted) ---
+            # ΔT instrumentation: logging puck+motor temp before/per-step/after confirms the
+            # drift hypothesis (raw creep tracks temp rise) and proves reference-subtraction
+            # removes the temp-correlated component.  Two SDO reads/step are negligible vs the
+            # 2×6×N_SAMPLES Alpha/Beta reads.  We also HARD-ABORT if either reaches TEMP_LIMIT_C.
+            step_temps = []
+            temp_start  = _read_amp_temp()
+            mtemp_start = _read_motor_temp()
+            print("Sweep start: puck={}  motor={}".format(
+                _fmt_temp(temp_start), _fmt_temp(mtemp_start)))
+            _check_overheat(temp_start, mtemp_start, "start")  # don't even begin if already hot
+            sweep_test = [None] * n_steps      # per-step test sample (mean+std per sector)
+            ref_points = []                    # (t_idx, ref_sample) at the reference steps only
+            for t_idx, t in enumerate(sweep_values):
                 self.frame_statusbar.SetStatusText(
-                    "Timing cal — fine {}/{} ({} ns)".format(
-                        t_idx + 1, len(fine_values), t), 1)
+                    "Timing cal — {}/{} ({} ns)".format(t_idx + 1, n_steps, t), 1)
                 self.frame_statusbar.Update()
                 wx.Yield()
-                self.node.sdo['Amp']['MaxSettlingTime'].raw = t
-                self.node.sdo['Save']['Single'].raw = ((0x3001 << 8) | 0x05)
-                self.network.send_message(0x0, [0x81, int(node_id)])
-                _sleep_responsive(0.5)
-                self.node.sdo["ControlWord"].raw = CLEAR_FAULT
-                self.node.sdo["ControlWord"].raw = SHUTDOWN
-                self.node.sdo["ControlWord"].raw = OP_ENABLED
-                self.node.sdo["SetModeOfOperation"].raw = MODE_PHASE_VOLTAGE_ANGLE
-                for sector_idx, theta_e in enumerate(sector_angles):
-                    self.node.sdo['Theta_e'].raw = theta_e
-                    self.node.sdo['Motor']['ud'].raw = sector_ud[sector_idx]
-                    _sleep_responsive(SETTLE_F)
-                    alpha_sum = 0
-                    beta_sum  = 0
-                    for _ in range(N_SAMPLES_F):
-                        alpha_sum += self.node.sdo['Alpha']['Raw'].raw
-                        beta_sum  += self.node.sdo['Beta']['Raw'].raw
-                        time.sleep(0.005)
-                        wx.Yield()
-                    a_raw = alpha_sum / N_SAMPLES_F
-                    b_raw = beta_sum  / N_SAMPLES_F
-                    fine_data[t_idx][sector_idx] = (a_raw, b_raw)
-                    print("  sector {}/6  theta_e={:6d}  alpha={:7.1f}  beta={:7.1f}".format(
-                        sector_idx + 1, theta_e, a_raw, b_raw))
-                    self.node.sdo['Motor']['ud'].raw = 0  # de-energise between sectors
-                self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
-    
-            # Analysis uses the fine-pass results
-            timing_values    = fine_values
-            step_sector_data = fine_data
+                _is_ref = (t_idx % REF_EVERY == 0) or (t_idx == n_steps - 1)
+                sweep_test[t_idx] = _sweep_sample_at(t, SETTLE, N_SAMPLES)
+                if _is_ref:   # settled reference, only periodically — interpolated between
+                    ref_points.append((t_idx, _sweep_sample_at(settled_ref, SETTLE, N_SAMPLES)))
+                _astd = sum(s[2] for s in sweep_test[t_idx]) / len(sector_angles)
+                _bstd = sum(s[3] for s in sweep_test[t_idx]) / len(sector_angles)
+                t_now = _read_amp_temp()
+                m_now = _read_motor_temp()
+                step_temps.append((t_now, m_now))
+                print("  step {}/{}: {} ns  puck={}  motor={}  spread σα={:.1f} σβ={:.1f}{}".format(
+                    t_idx + 1, n_steps, t, _fmt_temp(t_now), _fmt_temp(m_now), _astd, _bstd,
+                    "  [ref]" if _is_ref else ""))
+                _check_overheat(t_now, m_now, "step {}/{}".format(t_idx + 1, n_steps))
+                if _check_fault("sweep step {}/{}".format(t_idx + 1, n_steps)):
+                    self.node.sdo['Motor']['ud'].raw = 0
+                    self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
+                    self.node.sdo['Amp']['MaxSettlingTime'].raw = original_settling
+                    raise RuntimeError("Itiming cal ABORTED: puck faulted / comms lost during "
+                                       "sweep (see fault line above).")
+
+            # Linearly interpolate the settled reference (per sector, per channel) between the
+            # sampled reference steps, then form the reference-subtracted sweep → cancels slow drift.
+            def _ref_at(_ti):
+                if _ti <= ref_points[0][0]:
+                    return ref_points[0][1]
+                if _ti >= ref_points[-1][0]:
+                    return ref_points[-1][1]
+                for _k in range(len(ref_points) - 1):
+                    _i0, _r0 = ref_points[_k]
+                    _i1, _r1 = ref_points[_k + 1]
+                    if _i0 <= _ti <= _i1:
+                        _f = (_ti - _i0) / (_i1 - _i0) if _i1 > _i0 else 0.0
+                        return [(_r0[s][0] + _f * (_r1[s][0] - _r0[s][0]),
+                                 _r0[s][1] + _f * (_r1[s][1] - _r0[s][1]))
+                                for s in range(len(sector_angles))]
+                return ref_points[-1][1]
+
+            sweep_data = [[None] * len(sector_angles) for _ in range(n_steps)]
+            for t_idx in range(n_steps):
+                _ref = _ref_at(t_idx)
+                for sector_idx in range(len(sector_angles)):
+                    sweep_data[t_idx][sector_idx] = (
+                        sweep_test[t_idx][sector_idx][0] - _ref[sector_idx][0],
+                        sweep_test[t_idx][sector_idx][1] - _ref[sector_idx][1])
+
+            temp_end  = _read_amp_temp()
+            mtemp_end = _read_motor_temp()
+            print("Sweep end: puck={}  motor={}".format(
+                _fmt_temp(temp_end), _fmt_temp(mtemp_end)))
+            if temp_start is not None and temp_end is not None:
+                print("Sweep ΔT (puck): {:.1f}°C → {:.1f}°C  (rise {:+.1f}°C over {} steps) — "
+                      "this is the thermal swing reference-subtraction cancelled.".format(
+                          float(temp_start), float(temp_end),
+                          float(temp_end) - float(temp_start), n_steps))
+            if mtemp_start is not None and mtemp_end is not None:
+                print("Sweep ΔT (motor): {:.1f}°C → {:.1f}°C  (rise {:+.1f}°C)".format(
+                          mtemp_start, mtemp_end, mtemp_end - mtemp_start))
+
+            # Analysis uses the full sweep
+            timing_values    = sweep_values
+            step_sector_data = sweep_data
     
             # --- Analysis: per-sector threshold crossing on bias-subtracted signal ---
             sector_settling_times = []
@@ -1238,7 +1447,60 @@ class calibrate():
             sector_upper_bounds   = []   # per-sector upper window limit (None if not detected)
             # Populated during analysis for the debug plot (devs, smooth, threshold, t_ch per channel)
             plot_data = {}
-    
+
+            # --- Deciding factor: amplitude-GATE channels, fit a decay to the survivors, take the
+            # median knee.  Which channels carry signal varies by puck/design, so the gate is
+            # dynamic (per-channel SNR), not a hardcoded channel list.  The fit uses every point,
+            # so it is robust to the per-step bumpiness that makes a threshold crossing lurch. ---
+            import math
+            _GATE_K      = 4.0    # trust a channel only if peak signal ≥ this × its own noise floor
+            _GATE_FLOOR  = 4.0    # ...and ≥ this many counts absolute (kills tiny-but-clean noise)
+            _SETTLE_FRAC = 0.10   # "settled" = fit decayed to this fraction of its initial amplitude
+            trusted_knees = []    # fit knees from every channel that clears the gate (any sector)
+
+            def _fit_decay(_times, _smooth, _baseline):
+                """Fit the LEADING-EDGE decay only: (dev-baseline) = A·e^(-t/τ) over the points
+                from t=0 down to where the curve first reaches the noise floor.  Restricting to the
+                leading edge is essential — plateau noise also sits above baseline, and including
+                it flattens the fit into an absurd τ.  Also require the curve to START high
+                (settling is maximal at t=0), which rejects mid-peaking bumps that aren't settling
+                transients.  Returns (A, τ) or None."""
+                _n    = len(_smooth)
+                _peak = max(_smooth)
+                _amp  = _peak - _baseline
+                if _amp < 1.0:
+                    return None
+                if _smooth[0] < 0.6 * _peak:          # not a leading-edge decay → not settling
+                    return None
+                _floor = _baseline + max(1.0, 0.15 * _amp)
+                _end = 0
+                while _end < _n and _smooth[_end] > _floor:   # walk the leading edge to the floor
+                    _end += 1
+                _xs, _ys = [], []
+                for i in range(0, min(_end + 1, _n)):
+                    _e = _smooth[i] - _baseline
+                    if _e > 0.2:
+                        _xs.append(float(_times[i])); _ys.append(math.log(_e))
+                if len(_xs) < 3:
+                    return None
+                _nx  = len(_xs)
+                _sx  = sum(_xs);              _sy  = sum(_ys)
+                _sxx = sum(x*x for x in _xs); _sxy = sum(x*y for x, y in zip(_xs, _ys))
+                _den = _nx*_sxx - _sx*_sx
+                if _den == 0:
+                    return None
+                _m = (_nx*_sxy - _sx*_sy) / _den
+                if _m >= 0:                  # not decaying → not a settling curve
+                    return None
+                _b = (_sy - _m*_sx) / _nx
+                return (math.exp(_b), -1.0 / _m)
+
+            def _median(_xs):
+                _s = sorted(_xs); _n = len(_s)
+                if not _n:
+                    return None
+                return _s[_n // 2] if _n % 2 else (_s[_n // 2 - 1] + _s[_n // 2]) / 2.0
+
             for sector_idx in range(len(sector_angles)):
                 times        = timing_values
                 signal_means = [step_sector_data[t_idx][sector_idx]
@@ -1335,12 +1597,33 @@ class calibrate():
                           "t_settle={:.1f} ns  t_sweet={} ns{}  ({})".format(
                           ch_name, threshold, plat_dev, signal_amplitude,
                           t_ch, int(t_sweet), upper_str, reason))
+                    # --- Gate + decay fit: the deciding factor ---
+                    is_trusted = signal_amplitude >= max(_GATE_FLOOR, _GATE_K * plat_dev)
+                    fit        = _fit_decay(times, smooth, plat_dev) if is_trusted else None
+                    fit_knee   = None
+                    fit_curve  = None
+                    if fit is not None:
+                        _A, _tau = fit
+                        if _tau > 0:
+                            fit_knee  = max(0.0, min(_tau * math.log(1.0 / _SETTLE_FRAC),
+                                                     float(sweep_max)))
+                            fit_curve = [plat_dev + _A * math.exp(-t / _tau) for t in times]
+                            trusted_knees.append(fit_knee)
+                        else:
+                            is_trusted = False
+                    else:
+                        is_trusted = False   # no decaying fit → exclude from the result
+                    print("    -> {}".format(
+                          "GATED [ok]  fit knee = {:.0f} ns".format(fit_knee)
+                          if (is_trusted and fit_knee is not None)
+                          else "excluded from result (below gate / no decay fit)"))
                     t_settle = max(t_settle, t_ch)
-    
+
                     plot_data[sector_idx][ch_name] = {
                         'devs': devs, 'smooth': smooth,
                         'threshold': threshold, 't_ch': t_ch,
                         't_sweet': t_sweet, 't_upper': t_upper,
+                        'is_trusted': is_trusted, 'fit_curve': fit_curve, 'fit_knee': fit_knee,
                     }
     
                 print("  Sector {} settling time: {:.1f} ns".format(sector_idx + 1, t_settle))
@@ -1378,13 +1661,17 @@ class calibrate():
                 _node_label = 'Node {}  {}'.format(node_id, _puck_model)
 
                 fig, axes = plt.subplots(2, 3, figsize=(16, 9), sharey=False)
+                _overall_knee = _median(trusted_knees)
                 fig.suptitle(
-                    'MaxSettlingTime calibration — ADC deviation vs settling time\n'
-                    '{} — fine sweep {} – {} ns, {} ns steps  '
-                    '(coarse {} – {} ns, {} ns steps)'.format(
-                        _node_label,
-                        fine_start, fine_end, fine_step,
-                        coarse_start, coarse_max, coarse_step),
+                    'MaxSettlingTime calibration — gated decay-fit knee   '
+                    '(drive {} mA, ref {} ns, sweep {}-{} ns / {} ns)\n'
+                    '{}   |   RESULT: {}'.format(
+                        calibration_current, settled_ref,
+                        sweep_start, sweep_max, sweep_step, _node_label,
+                        ('{:.0f} ns  (median of {} gated channels)'.format(
+                            _overall_knee, len(trusted_knees))
+                         if _overall_knee is not None
+                         else 'NOT RESOLVABLE — no channel cleared the gate')),
                     fontsize=12)
     
                 ch_colors = {'Alpha': ('steelblue', 'royalblue'),
@@ -1392,38 +1679,28 @@ class calibrate():
     
                 for sector_idx in range(len(sector_angles)):
                     ax = axes.flat[sector_idx]
-                    t_sector = sector_settling_times[sector_idx]
     
                     for ch_name, (light, dark) in ch_colors.items():
                         pd = plot_data[sector_idx][ch_name]
-                        ax.plot(timing_values, pd['devs'], 'o', color=light,
-                                markersize=3, alpha=0.5, label='{} raw'.format(ch_name))
-                        ax.plot(timing_values, pd['smooth'], '-', color=dark,
-                                linewidth=1.5, label='{} smooth'.format(ch_name))
-                        ax.axhline(pd['threshold'], color=dark, linestyle='--',
-                                   linewidth=0.8, alpha=0.7)
-                        if pd['t_ch'] > 0:
-                            ax.axvline(pd['t_ch'], color=dark, linestyle=':',
+                        _trust = pd.get('is_trusted')
+                        # raw deviation points: bold if the channel is gated in, faint if excluded
+                        ax.plot(timing_values, pd['devs'], 'o', color=light, markersize=3,
+                                alpha=(0.75 if _trust else 0.20),
+                                label='{} {}'.format(ch_name, 'GATED' if _trust else 'excluded'))
+                        if _trust and pd.get('fit_curve') is not None:
+                            # decay fit + its knee, only on the trusted channels
+                            ax.plot(timing_values, pd['fit_curve'], '-', color=dark, linewidth=2.0,
+                                    label='{} fit  knee {:.0f} ns'.format(ch_name, pd['fit_knee']))
+                            ax.axvline(pd['fit_knee'], color=dark, linestyle=':',
                                        linewidth=1.2, alpha=0.8)
-                        if pd['t_sweet'] is not None:
-                            ax.axvline(pd['t_sweet'], color=dark, linestyle=(0, (3, 1, 1, 1)),
-                                       linewidth=1.0, alpha=0.6)
-                        if pd['t_upper'] is not None:
-                            ax.axvline(pd['t_upper'], color=dark, linestyle='--',
-                                       linewidth=1.2, alpha=0.9)
+                        else:
+                            ax.plot(timing_values, pd['smooth'], '-', color=light,
+                                    linewidth=0.8, alpha=0.35)
     
-                    # Sector result (worst-case channel lower bound)
-                    ax.axvline(t_sector, color='black', linewidth=1.5,
-                               label='lower {:.0f} ns'.format(t_sector))
-                    # Sector sweet spot (centre of valid window)
-                    if sector_sweet_spots[sector_idx] is not None:
-                        ax.axvline(sector_sweet_spots[sector_idx], color='green',
-                                   linewidth=1.2, linestyle='--',
-                                   label='sweet ~{:.0f} ns'.format(sector_sweet_spots[sector_idx]))
-                    if sector_upper_bounds[sector_idx] is not None:
-                        ax.axvline(sector_upper_bounds[sector_idx], color='orange',
-                                   linewidth=1.2, linestyle='--',
-                                   label='upper {:.0f} ns'.format(sector_upper_bounds[sector_idx]))
+                    # Overall result: median knee across all gated channels (same on every panel)
+                    if _overall_knee is not None:
+                        ax.axvline(_overall_knee, color='black', linewidth=1.8,
+                                   label='RESULT {:.0f} ns'.format(_overall_knee))
                     ax.set_title('Sector {}/6  θ_e={}'.format(
                         sector_idx + 1, sector_angles[sector_idx]), fontsize=10)
                     ax.set_xlabel('MaxSettlingTime (ns)', fontsize=8)
@@ -1445,35 +1722,33 @@ class calibrate():
             except Exception as _plot_err:
                 print("Plot failed: {}".format(_plot_err))
     
-            # Conservative choice: maximum settling time required across all sectors
-            optimal_settling = int(max(sector_settling_times))
-            optimal_settling = min(optimal_settling, fine_end)
-    
-            print("Per-sector settling times (ns): {}".format(
+            # Deciding factor: median fit-knee across the GATED channels (the ones with real
+            # signal above their own noise floor).  Robust to the flat/noisy channels that used to
+            # set the answer via max-of-all, and portable across pucks because the gate is dynamic.
+            print("Per-sector threshold crossings (ns): {}".format(
                 [round(t, 1) for t in sector_settling_times]))
-            valid_sweets = [s for s in sector_sweet_spots if s is not None]
-            valid_uppers = [u for u in sector_upper_bounds if u is not None]
-            if valid_sweets:
-                overall_sweet = sum(valid_sweets) / len(valid_sweets)
-                sweet_range   = (int(min(valid_sweets)), int(max(valid_sweets)))
-                print("Per-sector sweet spots  (ns): {}".format(
-                    [round(s, 0) if s is not None else None for s in sector_sweet_spots]))
-                print("ADC window: lower bound={} ns  sweet spot=~{:.0f} ns (range {}–{} ns)  "
-                      "upper bound={}".format(
-                          optimal_settling,
-                          overall_sweet, sweet_range[0], sweet_range[1],
-                          "{} ns".format(int(min(valid_uppers))) if valid_uppers
-                          else "not detected in sweep (>{} ns)".format(fine_end)))
-            print("Optimal MaxSettlingTime: {} ns  (was {} ns)".format(
-                optimal_settling, original_settling))
-    
-            self.node.sdo['Amp']['MaxSettlingTime'].raw = optimal_settling
-            self.node.sdo['Save']['Single'].raw = ((0x3001 << 8) | 0x05)
-            print("Saved Amp.MaxSettlingTime to EEPROM — rebooting to apply...")
-            self.network.send_message(0x0, [0x81, int(node_id)])
-            _sleep_responsive(0.5)
-            self.configure_Puck()
-            print("Puck rebooted with MaxSettlingTime={} ns active.".format(optimal_settling))
+            print("Gated channels: {}  ->  knees (ns): {}".format(
+                len(trusted_knees), [round(k) for k in sorted(trusted_knees)]))
+            _knee = _median(trusted_knees)
+            if _knee is not None:
+                optimal_settling = int(round(max(0.0, min(_knee, float(sweep_max)))))
+                _resolvable = True
+                print("Optimal MaxSettlingTime: {} ns  (median of {} gated channels; was {} ns)".format(
+                    optimal_settling, len(trusted_knees), original_settling))
+            else:
+                optimal_settling = original_settling
+                _resolvable = False
+                print("Settling NOT resolvable: no channel cleared the gate (signal in the noise "
+                      "floor). Leaving MaxSettlingTime unchanged at {} ns — try more drive current "
+                      "or check 0x3001:5 wiring.".format(original_settling))
+
+            if _resolvable:
+                self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE  # idle: write applies live
+                self.node.sdo['Amp']['MaxSettlingTime'].raw = optimal_settling
+                self.node.sdo['Save']['Single'].raw = ((0x3001 << 8) | 0x05)
+                print("MaxSettlingTime={} ns applied live and saved to EEPROM.".format(optimal_settling))
+            else:
+                self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
     
             self.frame_statusbar.SetStatusText(
                 "Current timing calibrated: {} ns".format(optimal_settling), 1)
