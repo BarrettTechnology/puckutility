@@ -1708,6 +1708,210 @@ class calibrate():
             self._cal_fault(_exc)
             self.Enable()
 
+    def measure_gain_ripple(self, event, calAll=False):  # wxGlade: puckutilityapp_frame.<event_handler>
+        """Measure α/β current-sense balance as a spinning-vector CIRCULARITY ripple.
+
+        Drives a constant voltage vector around a full electrical rotation and records the current
+        MAGNITUDE |I|=sqrt(id²+iq²) at each angle.  Balanced α/β sense -> constant |I| (a circle);
+        a gain imbalance makes |I| ripple at 2×-electrical -- the exact fingerprint of the low-speed,
+        inertia-smoothed, encoder-independent 'cogging' we're chasing.  Reports pk-pk and the
+        2×-electrical amplitude as % of mean |I|.  Run before/after the gain cal to see the imbalance
+        (and, once the circularity FIT lands, to prove it dropped)."""
+        if calAll == False:
+            if self.check_for_node() == False:
+                return False
+            self.Disable()
+        if self.ADC_ON == True:
+            self.on_off_adc(self)       # quiet the ADC monitor -- it contends for SDO reads
+            self.adcWasON = True
+        else:
+            self.adcWasON = False
+        import math, os
+        try:
+            i_peak   = self.node.sdo['Calibration']['i_peak'].raw
+            i_cal    = self.node.sdo['Calibration']['i_cal'].raw
+            beta_gf  = self.node.sdo['Beta']['Gainfactor'].raw
+            alpha_gf = self.node.sdo['Alpha']['Gainfactor'].raw
+            alpha_bias = float(self.node.sdo['Alpha']['Bias'].raw)
+            beta_bias  = float(self.node.sdo['Beta']['Bias'].raw)
+            _asens = 2.96   # ~counts/mA (from gain cal) to convert the raw-ADC offset to mA
+            print("--- iSense alpha/beta current-ripple (circularity) measurement ---")
+            print("Gainfactors in effect: Alpha={}  Beta={}  (target {} mA)".format(
+                alpha_gf, beta_gf, i_cal))
+
+            def _imag():
+                _id = self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak
+                _iq = self.node.sdo['CurrentFeedback'].raw / 1000.0 * i_peak
+                return (_id * _id + _iq * _iq) ** 0.5
+
+            def _wait_settled(timeout=1.5):
+                # Wait for the rotor to actually STOP after a theta_e step.  If it's still moving its
+                # back-EMF modulates |I| and swamps the tiny alpha/beta imbalance (the 0.08 s first
+                # build read pure rotor motion -> a 71% swing).  Poll the raw encoder until it holds
+                # within 2 counts for ~0.2 s, or bail at timeout.
+                _p0 = self.node.sdo['Encoder']['RawPosition'].raw
+                _t0 = time.time(); _stable = 0
+                while time.time() - _t0 < timeout:
+                    time.sleep(0.06); wx.Yield()
+                    _p1 = self.node.sdo['Encoder']['RawPosition'].raw
+                    if abs(_p1 - _p0) <= 2:
+                        _stable += 1
+                        if _stable >= 3:
+                            return
+                    else:
+                        _stable = 0
+                    _p0 = _p1
+
+            # Energise in voltage-angle mode.  Seed a voltage at theta=0 and let the rotor ALIGN and
+            # STOP before ramping, so the ramp reads a stationary (motion-free) current.
+            self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
+            self.node.sdo["ControlWord"].raw = CLEAR_FAULT
+            self.node.sdo["ControlWord"].raw = SHUTDOWN
+            self.node.sdo["ControlWord"].raw = OP_ENABLED
+            self.node.sdo["SetModeOfOperation"].raw = MODE_PHASE_VOLTAGE_ANGLE
+            self.node.sdo['Theta_e'].raw = 0
+            self.node.sdo['Motor']['ud'].raw = 2000   # seed to pull the rotor to theta=0
+            _wait_settled()
+            motor_ud = 2000
+            _cur = _imag() or 0.0
+            while _cur < i_cal and motor_ud < 16000:
+                motor_ud += 150
+                self.node.sdo['Motor']['ud'].raw = motor_ud
+                time.sleep(0.04)
+                wx.Yield()
+                _cur = _imag() or 0.0
+            _wait_settled()
+            _cur = _imag() or 0.0
+            print("Drive established: ud={}  |I|~={:.0f} mA (settled)".format(motor_ud, _cur))
+
+            # --- OFFSET vs MaxSettlingTime: does the sample timing drive the offset? ---
+            # Fixed ud => constant ACTUAL current across settlings, so any change in the measured
+            # offset is purely a sample-timing effect.
+            _N, _M = 24, 20
+            _orig_settling = self.node.sdo['Amp']['MaxSettlingTime'].raw
+
+            def _sweep_offset():
+                # One full-electrical-cycle sweep at the current ud+settling; rotor stopped each step.
+                # Returns (mean|I|, pkpk%, offset_mA, iA, iB, amp1x_mA, amp2x_pct).
+                _theta = [int(round(-32768 + i * 65536.0 / _N)) for i in range(_N)]
+                _mg, _idl, _iql, _afl, _bfl = [], [], [], [], []
+                for _k, _th in enumerate(_theta):
+                    self.frame_statusbar.SetStatusText("offset/settling - {}/{}".format(_k + 1, _N), 1)
+                    self.node.sdo['Theta_e'].raw = _th
+                    _wait_settled()
+                    _sid = _siq = _saf = _sbf = 0.0
+                    for _ in range(_M):
+                        _sid += self.node.sdo['Motor']['id'].raw
+                        _siq += self.node.sdo['CurrentFeedback'].raw
+                        _saf += self.node.sdo['Alpha']['Filtered'].raw
+                        _sbf += self.node.sdo['Beta']['Filtered'].raw
+                        time.sleep(0.003); wx.Yield()
+                    _idm = (_sid / _M) / 1000.0 * i_peak
+                    _iqm = (_siq / _M) / 1000.0 * i_peak
+                    _idl.append(_idm); _iql.append(_iqm)
+                    _afl.append(_saf / _M); _bfl.append(_sbf / _M)
+                    _mg.append((_idm * _idm + _iqm * _iqm) ** 0.5)
+                _r = [_theta[i] / 32768.0 * math.pi for i in range(_N)]
+                _mnv = (sum(_mg) / _N) or 1.0
+                _pk = (max(_mg) - min(_mg)) / _mnv * 100.0
+                _oa = sum(_idl[i] * math.cos(_r[i]) - _iql[i] * math.sin(_r[i]) for i in range(_N)) / _N
+                _ob = sum(_idl[i] * math.sin(_r[i]) + _iql[i] * math.cos(_r[i]) for i in range(_N)) / _N
+                _offv = (_oa * _oa + _ob * _ob) ** 0.5
+                # RAW cross-check: mean raw Alpha/Beta over the full turn, minus bias -- the offset
+                # straight from the ADC (no Park, no theta_e assumption).  The true rotating current
+                # averages to zero, so a nonzero mean here IS a real sense offset.  If this disagrees
+                # with _offv, the firmware Parks by the encoder (not theta_e) and _offv was an artifact.
+                _rawoff = (((sum(_afl) / _N - alpha_bias) / _asens) ** 2 +
+                           ((sum(_bfl) / _N - beta_bias) / _asens) ** 2) ** 0.5
+                _c1 = sum(_mg[i] * math.cos(_r[i]) for i in range(_N))
+                _s1 = sum(_mg[i] * math.sin(_r[i]) for i in range(_N))
+                _a1 = 2.0 * math.sqrt(_c1 * _c1 + _s1 * _s1) / _N
+                _c2 = sum(_mg[i] * math.cos(2.0 * _r[i]) for i in range(_N))
+                _s2 = sum(_mg[i] * math.sin(2.0 * _r[i]) for i in range(_N))
+                _a2 = 2.0 * math.sqrt(_c2 * _c2 + _s2 * _s2) / _N / _mnv * 100.0
+                return _mnv, _pk, _offv, _oa, _ob, _a1, _a2, _rawoff
+
+            # OFFSET vs CURRENT at the current settling -- learn how the offset scales with load so we
+            # can pick the right correction (fixed subtract vs current-proportional).
+            _levels = sorted(set(max(20, int(i_cal * _f)) for _f in (0.3, 0.55, 0.8, 1.0, 1.3)))
+            print("--- OFFSET vs CURRENT (fixed settling={} ns) ---".format(_orig_settling))
+            print("  target(mA)  mean|I|   recon-OFFSET(mA)   raw-ADC-OFFSET(mA)   pk-pk%   off/|I|%")
+            _rows = []
+            for _lvl in _levels:
+                # ramp ud to ~_lvl at theta=0 (rotor stopped), then measure offset over a full turn
+                self.node.sdo['Theta_e'].raw = 0
+                _ud = 500
+                self.node.sdo['Motor']['ud'].raw = _ud
+                _wait_settled()
+                _cur = _imag() or 0.0
+                while _cur < _lvl and _ud < 16000:
+                    _ud += 150
+                    self.node.sdo['Motor']['ud'].raw = _ud
+                    time.sleep(0.04); wx.Yield()
+                    _cur = _imag() or 0.0
+                _wait_settled()
+                _mnv, _pk, _offv, _oa, _ob, _a1, _a2, _rawoff = _sweep_offset()
+                _frac = _offv / _mnv * 100.0 if _mnv else 0.0
+                _rows.append((_mnv, _offv, _rawoff))
+                print("  {:8d}  {:7.1f}   {:10.1f}       {:10.1f}        {:6.1f}  {:7.1f}".format(
+                    _lvl, _mnv, _offv, _rawoff, _pk, _frac))
+
+            self.node.sdo['Motor']['ud'].raw = 0
+            self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
+            self.node.sdo['Amp']['MaxSettlingTime'].raw = _orig_settling    # RESTORE original
+            print("Restored MaxSettlingTime = {} ns".format(_orig_settling))
+
+            # Least-squares fit offset = a + b*|I| across the levels -> the correction model.
+            _xs = [r[0] for r in _rows]; _ys = [r[1] for r in _rows]
+            _nL = max(len(_xs), 1)
+            _mx = sum(_xs) / _nL; _my = sum(_ys) / _nL
+            _den = sum((x - _mx) ** 2 for x in _xs) or 1.0
+            _b = sum((_xs[i] - _mx) * (_ys[i] - _my) for i in range(len(_xs))) / _den
+            _a = _my - _b * _mx
+            print(">>> fit  offset(mA) = {:.1f} + {:.3f}*|I|   (baseline {:.1f} mA + {:.1f}% of current)".format(
+                _a, _b, _a, _b * 100.0))
+            if abs(_a) < 0.3 * max(_my, 1.0):
+                print(">>>   -> mostly CURRENT-PROPORTIONAL (~{:.1f}% of |I|): correct with a "
+                      "current-scaled subtraction along the fixed offset direction.".format(_b * 100.0))
+            else:
+                print(">>>   -> significant FIXED baseline ({:.1f} mA): a constant subtract handles most; "
+                      "add the {:.1f}%/|I| slope term for exactness.".format(_a, _b * 100.0))
+
+            try:
+                import matplotlib
+                matplotlib.use('Agg')
+                import matplotlib.pyplot as plt
+                fig, ax = plt.subplots(figsize=(8, 4))
+                ax.plot([r[0] for r in _rows], [r[1] for r in _rows], 'o-', label='offset')
+                ax.plot(_xs, [_a + _b * x for x in _xs], 'r--', lw=0.8,
+                        label='fit {:.0f}+{:.2f}|I|'.format(_a, _b))
+                ax.set_xlabel('current |I| (mA)'); ax.set_ylabel('stator current OFFSET (mA)')
+                ax.set_title('current-sense offset vs load (P4-16, settling={} ns)'.format(_orig_settling))
+                ax.grid(True, alpha=0.3); ax.legend()
+                _path = os.path.abspath('offset_vs_current.png')
+                fig.savefig(_path, dpi=110, bbox_inches='tight'); plt.close(fig)
+                print("Plot saved: {}".format(_path))
+            except Exception as _pe:
+                print("(plot skipped: {})".format(_pe))
+
+            self.frame_statusbar.SetStatusText("offset = {:.0f} + {:.2f}|I| mA".format(_a, _b), 1)
+            if self.ADC_ON == False and self.adcWasON == True:
+                self.on_off_adc(self)   # restore ADC monitor
+            if calAll == False:
+                self.Enable()
+        except Exception as _exc:
+            try:
+                self.node.sdo['Motor']['ud'].raw = 0
+                self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
+            except Exception:
+                pass
+            if self.ADC_ON == False and self.adcWasON == True:
+                self.on_off_adc(self)
+            if calAll:
+                raise
+            self._cal_fault(_exc)
+            self.Enable()
+
     def calibrate_islope(self, event):  # wxGlade: wxp3_frame.<event_handler>
         print("Event handler 'calibrate_islope' not implemented!")
         event.Skip()
