@@ -351,7 +351,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         # Disable the unimplemented menu items
         menu = "Menu"
         for item in [#"Calibrate All", 
-          "Current Sense Slope", "Encoder Direction", # "Current Sense Timing", # Comment out Current Sense Timing to enable cal feature
+          "Encoder Direction", # "Current Sense Slope", "Current Sense Timing", # Comment out to enable those cal features
           "Tune Gains...", "Save to CSV..."]:
           menu_item = self.frame_menubar.FindMenuItem(menu, item)
           self.frame_menubar.Enable(menu_item, False)
@@ -1877,6 +1877,34 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.on_off_adc(self)
             self.adcWasON = False
 
+    def _cal_params_sane(self):
+        """Sanity-check the active puck's iSense calibration before enabling a drive mode.
+        A bad bias / gainfactor / current-slope produces phantom current -> oscillation at 0 torque
+        (and worse).  Returns (ok, reason).  On any read failure (transient SDO timeout, older
+        firmware) returns (True, None): only ever block on a CONFIRMED-bad value, never a false
+        positive that would strand a good puck."""
+        try:
+            a_gf = self.node.sdo['Alpha']['Gainfactor'].raw   # Q4.12, ~4096 = 1.0
+            b_gf = self.node.sdo['Beta']['Gainfactor'].raw
+            a_bi = self.node.sdo['Alpha']['Bias'].raw         # Q12.4, ~32768 = mid-scale
+            b_bi = self.node.sdo['Beta']['Bias'].raw
+        except Exception:
+            return True, None
+        if not (2048 <= a_gf <= 8192 and 2048 <= b_gf <= 8192):
+            return False, "gainfactor out of range (Alpha={}, Beta={}; ~4096 expected)".format(a_gf, b_gf)
+        if not (25600 <= a_bi <= 38400 and 25600 <= b_bi <= 38400):
+            return False, "iSense bias out of range (Alpha={}, Beta={} Q12.4; ~32768 expected)".format(a_bi, b_bi)
+        try:  # current-slope (0x3008:7 / 0x3009:7) -- absent on older firmware, so skip on error
+            a_sl = self.node.sdo[0x3008][7].raw
+            b_sl = self.node.sdo[0x3009][7].raw
+            if a_sl > 32767: a_sl -= 65536
+            if b_sl > 32767: b_sl -= 65536
+            if abs(a_sl) >= 2048 or abs(b_sl) >= 2048:
+                return False, "current-slope absurd (Alpha={}, Beta={} Q4.12; |k|<0.5 expected)".format(a_sl, b_sl)
+        except Exception:
+            pass
+        return True, None
+
     def select_test(self, event):  # wxGlade: wxp3_frame.<event_handler>
         if getattr(self, '_emcy_selection', False):
             return
@@ -1927,6 +1955,20 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             if self.ADC_ON == True:
                 self.node.rpdo[1].transmit()
                 self.node.network.sync.start()
+            return
+
+        # Cal-sanity gate: never enable a drive mode with iSense cal that would cause phantom
+        # current / oscillation at 0 torque. (IDLE, quick_test==0, already returned above.)
+        _ok, _reason = self._cal_params_sane()
+        if not _ok:
+            self.choice_test.SetSelection(0)
+            print("DRIVE BLOCKED -- calibration looks bad: {}".format(_reason))
+            print("  Run a full calibration before driving (this state causes phantom current / "
+                  "oscillation at 0 torque).")
+            dlg = wx.MessageDialog(None, "Drive blocked -- calibration looks bad:\n{}\n\n"
+                                   "Run a full calibration before driving.".format(_reason),
+                                   'Bad calibration', wx.OK | wx.ICON_WARNING)
+            dlg.ShowModal(); dlg.Destroy()
             return
 
         # Clear faults, RTSO, OpEnabled
@@ -2055,18 +2097,31 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             return
 
         if self.ADC_ON == True:
-            self.node.network.sync.stop()
+            try:
+                self.node.network.sync.stop()
+            except Exception:
+                pass  # BCM rejects stop if already stopped / bus hiccup -- harmless
             time.sleep(0.05)  # Let any in-flight sync frame clear before SDO transactions
 
         if quick_test == 1:  # Torque
-            rated_torque = self.node.sdo["RatedTorque"].raw
-            if abs(cmd_value / self.gearRatio) > rated_torque:
-                cmd_value = math.copysign(rated_torque * self.gearRatio, cmd_value)
-            trq_value = round(cmd_value * 1000 / (rated_torque * self.gearRatio))
-            print(f"Set TargetTorque = {cmd_value} mNm ({round(trq_value / 10, 2)}% max)")
-            self.node.sdo["TargetTorque"].raw = trq_value
-            self.node.rpdo[1]["TargetTorque"].raw = trq_value
-            self.node.rpdo[1]["ControlWord"].raw = OP_ENABLED
+            try:
+                rated_torque = self.node.sdo["RatedTorque"].raw
+                if abs(cmd_value / self.gearRatio) > rated_torque:
+                    cmd_value = math.copysign(rated_torque * self.gearRatio, cmd_value)
+                trq_value = round(cmd_value * 1000 / (rated_torque * self.gearRatio))
+                print(f"Set TargetTorque = {cmd_value} mNm ({round(trq_value / 10, 2)}% max)")
+                self.node.sdo["TargetTorque"].raw = trq_value
+                self.node.rpdo[1]["TargetTorque"].raw = trq_value
+                self.node.rpdo[1]["ControlWord"].raw = OP_ENABLED
+            except Exception as _e:
+                print("Torque command aborted -- puck not responding (comms): {}".format(_e))
+                self.choice_test.SetSelection(0)
+                try:
+                    if self.ADC_ON == True:
+                        self.node.network.sync.start()
+                except Exception:
+                    pass
+                return
 
         elif quick_test == 2:  # Velocity
             ctspersec = round(cmd_value * 4096 / 60 * self.gearRatio)

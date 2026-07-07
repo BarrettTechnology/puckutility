@@ -94,7 +94,11 @@
                     </item>
                     <item>
                         <label>Current Sense Slope</label>
-                        <handler>calibrate_islope</handler>
+                        <handler>calibrate_current_slope</handler>
+                    </item>
+                    <item>
+                        <label>iSense Balance Ripple</label>
+                        <handler>measure_gain_ripple</handler>
                     </item>
                     <item>
                         <label>Encoder Zero</label>
