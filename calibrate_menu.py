@@ -504,6 +504,7 @@ class calibrate():
             # print("No active puck")
             return False
         print("Running full calibration for Puck {}".format(self.getID()))
+        _cal_t0 = time.time()   # baseline timer: total start-to-finish for the full cal
 
         self.frame_statusbar.SetStatusText("Progress: 0%", 1)
         self.progress.Show()
@@ -559,14 +560,19 @@ class calibrate():
                 return
 
             self.UpdateUI(72)
+            # Re-measure the Current Sense Slope we cleared at the top (Bias+Gain are fresh now).
+            self.calibrate_current_slope(None, True)
+
+            self.UpdateUI(85)
             self.calibrate_enczero(None, True,
-                              _upd=lambda v: self.UpdateUI(72 + v * 28 // 100))
+                              _upd=lambda v: self.UpdateUI(85 + v * 15 // 100))
 
             self.OnTaskComplete()
             self.requireCal = False
         except Exception as e:
             self._cal_fault(e)
         finally:
+            print("Full calibration finished in {:.1f} s.".format(time.time() - _cal_t0))
             if _cog_was_active:
                 try:
                     self.node.sdo[0x3028][1].raw = 1
