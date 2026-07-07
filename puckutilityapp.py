@@ -871,6 +871,12 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 self.node.tpdo[3].add_variable('Motor', 'Therm')
                 self.node.tpdo[3].trans_type = 10
                 self.node.tpdo[3].enabled = True
+                # TPDO4: Motor.id on every SYNC — the cal fast-read reads it under continuous SYNC.
+                # PDO mapping only changes while not operational, so it's set here at configure time.
+                self.node.tpdo[4].clear()
+                self.node.tpdo[4].add_variable('Motor', 'id')
+                self.node.tpdo[4].trans_type = 1
+                self.node.tpdo[4].enabled = True
                 self.node.tpdo.save()
             except Exception as e:
                 print(f"Failed to set up TPDOs: {e}")
@@ -1892,8 +1898,12 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             return True, None
         if not (2048 <= a_gf <= 8192 and 2048 <= b_gf <= 8192):
             return False, "gainfactor out of range (Alpha={}, Beta={}; ~4096 expected)".format(a_gf, b_gf)
-        if not (25600 <= a_bi <= 38400 and 25600 <= b_bi <= 38400):
-            return False, "iSense bias out of range (Alpha={}, Beta={} Q12.4; ~32768 expected)".format(a_bi, b_bi)
+        # Bias is Q12.4 (~32768 mid) on current firmware but Q12.0 (~2048 mid) on older firmware.
+        # Accept EITHER mid-scale so an older-firmware puck is never falsely blocked from driving.
+        _bias_ok = lambda v: (25600 <= v <= 38400) or (1536 <= v <= 2560)   # Q12.4 | Q12.0
+        if not (_bias_ok(a_bi) and _bias_ok(b_bi)):
+            return False, ("iSense bias out of range (Alpha={}, Beta={}; expect ~32768 Q12.4 or "
+                           "~2048 Q12.0)".format(a_bi, b_bi))
         try:  # current-slope (0x3008:7 / 0x3009:7) -- absent on older firmware, so skip on error
             a_sl = self.node.sdo[0x3008][7].raw
             b_sl = self.node.sdo[0x3009][7].raw

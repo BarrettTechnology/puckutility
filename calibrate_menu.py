@@ -1249,9 +1249,14 @@ class calibrate():
                     _wait_settled()
                     _sid = _siq = 0.0
                     for _ in range(_N_AVG):
-                        _sid += self.node.sdo['Motor']['id'].raw
-                        _siq += self.node.sdo['CurrentFeedback'].raw
-                        time.sleep(0.003); wx.Yield()
+                        _v = fp.read() if fp else None       # fresh streamed [id, iq] or None
+                        if _v is not None:
+                            _sid += _v[0]; _siq += _v[1]
+                        else:                                # SDO fallback (also the fp-disabled path)
+                            _sid += self.node.sdo['Motor']['id'].raw
+                            _siq += self.node.sdo['CurrentFeedback'].raw
+                            time.sleep(0.003)
+                        wx.Yield()
                     _idm = (_sid / _N_AVG) / 1000.0 * i_peak
                     _iqm = (_siq / _N_AVG) / 1000.0 * i_peak
                     _mg.append((_idm * _idm + _iqm * _iqm) ** 0.5)
@@ -1284,6 +1289,18 @@ class calibrate():
             _check_overheat(temp_start, mtemp_start, "start")  # don't even begin if already hot
 
             results = []   # list of dicts: settling, meanI, amp2x, plateau
+            from fast_pdo import FastPDO   # stream id (TPDO4) + iq (TPDO2); SYNC off during SDO bursts
+            fp = None
+            try:
+                fp = FastPDO(self.node)
+                fp.__enter__()
+                if fp.ok:
+                    print("  fast-read: id via TPDO4, iq via TPDO2 (SYNC-gated; SDO fallback armed).")
+                else:
+                    print("  fast-read unavailable ({}); using SDO.".format(fp.err)); fp = None
+            except Exception as _fe:
+                print("  fast-read setup failed ({}); using SDO.".format(_fe)); fp = None
+            _pdo_checked = False
             for s_idx, t in enumerate(settle_values):
                 self.frame_statusbar.SetStatusText(
                     "Timing cal — {}/{} ({} ns)".format(s_idx + 1, len(settle_values), t), 1)
@@ -1300,11 +1317,26 @@ class calibrate():
                 self.node.sdo['Theta_e'].raw = 0
                 self.node.sdo['Motor']['ud'].raw = drive_ud
                 _wait_settled()
+                # The SDO burst above ran SYNC-off; turn SYNC on now for the check + sampling reads
+                # (continuous SYNC + a rapid SDO burst collide -> 0x05040001).
+                if fp: fp.sync_on()
+                if fp and not _pdo_checked and t > 0:   # verify on the first settling with real current
+                    _sv = [self.node.sdo['Motor']['id'].raw, self.node.sdo['CurrentFeedback'].raw]
+                    _pv = fp.read()
+                    _pdo_checked = True
+                    print("  fast-read check @ {} ns:  PDO id/iq={}  SDO id/iq={}".format(t, _pv, _sv))
+                    if _pv is None or abs(_pv[0] - _sv[0]) > 40 or abs(_pv[1] - _sv[1]) > 40:
+                        print("  fast-read MISMATCH -> disabling PDO, using SDO for this sweep.")
+                        try: fp.__exit__(None, None, None)
+                        except Exception: pass
+                        fp = None
                 if _check_fault("sweep step {}/{} ({} ns)".format(s_idx + 1, len(settle_values), t)):
+                    if fp: fp.__exit__(None, None, None)
                     _restore_idle()
                     raise RuntimeError("Itiming cal ABORTED: puck faulted / comms lost during "
                                        "sweep (see fault line above).")
                 _mnv, _a2 = _measure_ripple()
+                if fp: fp.sync_off()   # SYNC off before the next settling's SDO burst
                 results.append({'settling': t, 'meanI': _mnv, 'amp2x': _a2, 'plateau': False})
                 _t_now = _read_amp_temp(); _m_now = _read_motor_temp()
                 print("  step {}/{}: {:5d} ns (rb {:5d})  mean|I|={:7.1f} mA  2×={:6.2f}%  "
@@ -1313,6 +1345,7 @@ class calibrate():
                           _fmt_temp(_t_now), _fmt_temp(_m_now)))
                 _check_overheat(_t_now, _m_now,
                                 "step {}/{}".format(s_idx + 1, len(settle_values)))
+            if fp: fp.__exit__(None, None, None)   # stop SYNC + restore callbacks after the sweep
             self.node.sdo['Motor']['ud'].raw = 0
             self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
 
