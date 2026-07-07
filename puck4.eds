@@ -2352,14 +2352,14 @@ DefaultValue=0
 [3008]
 ParameterName=Alpha
 ObjectType=0x09
-SubNumber=7
+SubNumber=8
 
 [3008sub0]
 ParameterName=NumberOfEntries
 ObjectType=0x07
 DataType=0x0005
 AccessType=ro
-DefaultValue=6
+DefaultValue=7
 
 [3008sub1]
 ParameterName=Raw
@@ -2403,17 +2403,24 @@ DataType=0x0006
 AccessType=rw
 DefaultValue=0
 
+[3008sub7]
+ParameterName=Slope
+ObjectType=0x07
+DataType=0x0003
+AccessType=rw
+DefaultValue=0
+
 [3009]
 ParameterName=Beta
 ObjectType=0x09
-SubNumber=7
+SubNumber=8
 
 [3009sub0]
 ParameterName=NumberOfEntries
 ObjectType=0x07
 DataType=0x0005
 AccessType=ro
-DefaultValue=6
+DefaultValue=7
 
 [3009sub1]
 ParameterName=Raw
@@ -2454,6 +2461,13 @@ DefaultValue=0
 ParameterName=Gainfactor
 ObjectType=0x07
 DataType=0x0006
+AccessType=rw
+DefaultValue=0
+
+[3009sub7]
+ParameterName=Slope
+ObjectType=0x07
+DataType=0x0003
 AccessType=rw
 DefaultValue=0
 
