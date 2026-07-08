@@ -2069,10 +2069,27 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.text_testvalue.SetValue("0")
 
         elif quick_test == 4:  # Homing
+            # Homing ran as a silent no-op because the CiA-402 Homing Method (0x6098) is never set:
+            # its EDS default is 0 = "no homing method", so the bit-4 start armed a state machine with
+            # no procedure to execute. Program a method here: respect one already stored in
+            # EEPROM/config, else default to 35 = "home on current position" (latches the present
+            # position as home with NO commanded motion — the only universally safe default when the
+            # mechanism's real homing procedure is unknown). For a home that physically seeks a
+            # reference, store the mechanism-appropriate method in 0x6098 (EEPROM) and it's respected.
+            try:
+                _hm = self.node.sdo[0x6098].raw
+            except Exception:
+                _hm = 0
+            if _hm:
+                print("HomingMethod (0x6098) = {} (from config/EEPROM)".format(_hm))
+            else:
+                _hm = 35
+                self.node.sdo[0x6098].raw = _hm
+                print("HomingMethod (0x6098) was unset; defaulting to {} (home on current position).".format(_hm))
             print("Setting Mode = HOMING")
             self.node.sdo["SetModeOfOperation"].raw = MODE_HOMING
             self.node.rpdo[1]["SetModeOfOperation"].raw = MODE_HOMING
-            self.node.rpdo[1]["ControlWord"].raw = OP_ENABLED
+            self.node.rpdo[1]["ControlWord"].raw = OP_ENABLED   # bit4 low -> clean rising edge in run_test
             self.text_testvalue.SetValue("0")
 
         if self.ADC_ON == True:
@@ -2175,14 +2192,34 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 time.sleep(0.01)
 
         elif quick_test == 4:  # Homing
-            self.node.sdo["HomingOffset"].raw = int(cmd_value)
-            self.node.rpdo[1]["ControlWord"].raw = OP_ENABLED | 0x10  # | homing-start bit
+            self.node.sdo["HomingOffset"].raw = int(cmd_value)   # coordinate offset only, NOT a trigger
+            print("Starting homing (Controlword bit4 rising edge)...")
+            self.node.rpdo[1]["ControlWord"].raw = OP_ENABLED | 0x10  # 0->1 on bit4 = homing start
             self.node.rpdo[1].transmit()
             self.node.network.sync.transmit()
+            # Poll: bit 13 (0x2000) = homing error, bit 12 (0x1000) = homing attained (success), else
+            # timeout. The old poll waited on bit 12 only, so a failed home was indistinguishable
+            # from a 30 s hang.
+            _sw = 0
             for _ in range(300):  # 30 s timeout
-                if self.node.sdo["StatusWord"].raw & 0x1000:
+                _sw = self.node.sdo["StatusWord"].raw
+                if _sw & 0x2000:
+                    print("HOMING ERROR - StatusWord {:#06x}".format(_sw))
+                    break
+                if _sw & 0x1000:
+                    print("Homing attained (success) - StatusWord {:#06x}".format(_sw))
+                    # Recenter the position dial on the freshly-homed spot (see getPosition).
+                    try:
+                        self._dial_zero = self.node.sdo['PositionFeedback'].raw
+                        print("  dial recentered to homed position (PositionFeedback={}).".format(
+                            self._dial_zero))
+                    except Exception:
+                        pass
                     break
                 time.sleep(0.1)
+            else:
+                print("Homing timed out: no attained/error bit within 30 s - StatusWord {:#06x}".format(_sw))
+            # Clear bit 4 (falling edge) so the next run re-triggers cleanly.
             self.node.rpdo[1]["ControlWord"].raw = OP_ENABLED
             self.node.rpdo[1].transmit()
             self.node.network.sync.transmit()
@@ -2293,7 +2330,10 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         if self.ADC_ON == False:
             return        
         try:
-            encPos = self.node.tpdo[1]['PositionFeedback'].raw
+            # Subtract the dial-zero captured at the last successful HOME so the dial recenters on
+            # home. home-on-current-position (method 35/37) attains without necessarily resetting the
+            # reported PositionFeedback, so we zero the DISPLAY here instead.
+            encPos = self.node.tpdo[1]['PositionFeedback'].raw - getattr(self, '_dial_zero', 0)
             currentSysTime = time.time() # Get Current System time for accurate calc
             
             encPosRad = encPos * 2.0 * math.pi / self.encoderResolution / self.gearRatio # * 0.0015339 / self.gearRatio # added division by gear ratio 

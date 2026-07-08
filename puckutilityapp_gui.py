@@ -53,8 +53,8 @@ class puckutilityapp_frame(wx.Frame):
         self.Bind(wx.EVT_MENU, self.calibrate_itiming, item)
         item = wxglade_tmp_menu.Append(wx.ID_ANY, "Current Sense Slope", "")
         self.Bind(wx.EVT_MENU, self.calibrate_current_slope, item)
-        item = wxglade_tmp_menu.Append(wx.ID_ANY, "iSense Balance Ripple", "")
-        self.Bind(wx.EVT_MENU, self.measure_gain_ripple, item)
+        # (R&D methods measure_gain_ripple / calibrate_slope_spin_test retained in calibrate_menu.py,
+        #  no longer surfaced as menu items.)
         item = wxglade_tmp_menu.Append(wx.ID_ANY, "Encoder Zero", "")
         self.Bind(wx.EVT_MENU, self.calibrate_enczero, item)
         item = wxglade_tmp_menu.Append(wx.ID_ANY, "Encoder Direction", "")

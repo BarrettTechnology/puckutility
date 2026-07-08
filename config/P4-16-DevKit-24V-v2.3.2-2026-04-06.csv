@@ -159,7 +159,7 @@ DQ-Axis current Ki,,0x2380,2,UNSIGNED32,0x481e3057
 PWM freq (Hz),,0x3001,1,UNSIGNED32,80000
 Dead time (ns),,0x3001,2,UNSIGNED16,420 # 930 # 570 # 420 = good!with 1000 settling# 290 # needs max = 420ns # was 290 + 350 nom or 510 max input filter?? 
 Max prop delay (ns),,0x3001,3,UNSIGNED16,940 # 750 # 530 # needs max = 750 + 190 turn on time? # was # 530
-Max settling time (ns),,0x3001,5,UNSIGNED16,1000 # 600 # 1000 = lovely!! # no = 600 # YES = 1000 # 1200 # was 1600 # 1400 latest
+Max settling time (ns),,0x3001,5,UNSIGNED16,800 # pinned per-board constant; auto-sweep unreliable (see PDO fix)
 Sampling time (ns),,0x3001,6,UNSIGNED16,400
 Conversion time (ns),,0x3001,7,UNSIGNED16,1475
 Max sensor current (mA),,0x3001,8,UNSIGNED16,10000
