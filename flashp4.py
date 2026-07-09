@@ -213,14 +213,38 @@ def read_flashloader_version(can_device, can_id):
         # Always hand the puck back to its application. Restore AutoLaunch=1 so a
         # power cycle self-heals even if the explicit LAUNCH below doesn't take,
         # then issue LAUNCH to boot the (already-valid) application now.
+        #
+        # LAUNCH reboots the node out of the flashloader, so it can NEVER ack this SDO (it's already
+        # rebooting) -- the confirmed write ALWAYS "times out" (0x05040000). That's the intended outcome,
+        # not a fault, so use a short timeout and quiet the canopen SDO logger for these two reboot-
+        # triggering writes only, instead of a long hang + a scary ERROR line every --info.
+        import logging as _logging
+        _canlog = _logging.getLogger('canopen'); _prev_lvl = _canlog.level
         try:
-            node.sdo["ProgramInfo"]["AutoLaunch"].raw = 1
+            _prev_to = node.sdo.RESPONSE_TIMEOUT
         except Exception:
-            pass
+            _prev_to = None
         try:
-            node.sdo['ProgramCommand']['Command'].raw = flash_command.LAUNCH
-        except Exception:
-            pass
+            _canlog.setLevel(_logging.CRITICAL)
+            try:
+                node.sdo.RESPONSE_TIMEOUT = 0.25
+            except Exception:
+                pass
+            try:
+                node.sdo["ProgramInfo"]["AutoLaunch"].raw = 1
+            except Exception:
+                pass
+            try:
+                node.sdo['ProgramCommand']['Command'].raw = flash_command.LAUNCH
+            except Exception:
+                pass
+        finally:
+            _canlog.setLevel(_prev_lvl)
+            if _prev_to is not None:
+                try:
+                    node.sdo.RESPONSE_TIMEOUT = _prev_to
+                except Exception:
+                    pass
         try:
             network.disconnect()
         except Exception:

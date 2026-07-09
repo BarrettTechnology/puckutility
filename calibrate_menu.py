@@ -561,7 +561,25 @@ class calibrate():
 
             self.UpdateUI(72)
             # Re-measure the Current Sense Slope we cleared at the top (Bias+Gain are fresh now).
-            self.calibrate_current_slope(None, True)
+            # ROBUSTNESS: the slope is a REFINEMENT that streams over the FastPDO path, which can hit a
+            # transient SYNC/SDO comms glitch (0x05040000 / "No SDO response"). That must NOT abort the
+            # whole cal -- the slope was cleared at the top, so a failure just leaves it OFF (safe). Retry
+            # once (transients clear), then continue to enczero + the fold regardless.
+            for _slope_try in (1, 2):
+                try:
+                    self.calibrate_current_slope(None, True, force_sdo=(_slope_try == 2))
+                    break
+                except Exception as _slope_err:
+                    print("  Current Sense Slope attempt {}/2 failed: {}".format(_slope_try, _slope_err))
+                    try:                                   # leave the drive SAFE before retry/continue
+                        self.node.sdo['Motor']['ud'].raw = 0
+                        self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
+                        self.node.sdo["ControlWord"].raw = CLEAR_FAULT
+                    except Exception:
+                        pass
+                    if _slope_try == 2:
+                        print("  Slope left OFF (not stored); continuing the calibration.")
+                        self._slope_stored = False
 
             self.UpdateUI(85)
             self.calibrate_enczero(None, True,
@@ -1069,19 +1087,22 @@ class calibrate():
             #   NOTE: with the fast PDO read + only tiny pulses per settling point, this could push to
             #   i_peak for maximum ring (brief peaks above continuous are OK) — start at 0.85 x I_cont;
             #   raise _RING_FRAC toward i_peak once the pulse duration is confirmed short/safe.
-            _RING_FRAC = 1.0     # drive at EXACTLY I_cont (continuous rating -> safe sustained; the
-                                 # sweep ΔT is ~1°C). Max continuous current = most pronounced ring.
+            # Ring-stimulus current. The switching ring scales with current UP TO the point its SNR
+            # saturates (~1 A); beyond that it's just heat. So this is a SETTLING-TEST current, deliberately
+            # a fixed band -- NOT the motor's full I_cont/i_cal (a big geared motor's I_cont is ~9 A, far too
+            # much). Clamp to [MIN, MAX], bounded by i_peak. MIN guarantees enough ring on small motors,
+            # MAX protects big ones.
+            _STIM_MIN_MA = 500
+            _STIM_MAX_MA = 1000
             try:
                 _i_cont = int.from_bytes(self.node.sdo.upload(0x3011, 8), 'little', signed=False)
             except Exception:
                 _i_cont = int(getattr(self, 'i_cont', 0) or 0)
-            if _i_cont > 0:
-                calibration_current = max(int(i_cal), int(_RING_FRAC * _i_cont))
-                calibration_current = min(calibration_current, int(_i_cont))  # never exceed continuous
-                print("  Ring stimulus: driving {} mA (~{:.0%} of I_cont {} mA) — high current maximises "
-                      "the ring.".format(calibration_current, calibration_current / _i_cont, _i_cont))
-            else:
-                calibration_current = max(1, int(i_cal))
+            _base = _i_cont if _i_cont > 0 else int(i_cal)
+            calibration_current = min(max(_STIM_MIN_MA, int(_base)), _STIM_MAX_MA)
+            calibration_current = min(calibration_current, int(i_peak))   # absolute backstop: never > i_peak
+            print("  Ring stimulus: {} mA  (I_cont={} mA; clamped to [{}, {}] mA for the settling test)."
+                  .format(calibration_current, _i_cont, _STIM_MIN_MA, _STIM_MAX_MA))
 
             original_settling = self.node.sdo['Amp']['MaxSettlingTime'].raw  # ns
             freq_hz           = self.node.sdo['Amp']['Frequency'].raw
@@ -1124,10 +1145,23 @@ class calibrate():
                     return None
 
             def _read_amp_temp():
+                # Temperature is logging-only (N/A fallback). At high PWM the node occasionally can't ack
+                # this SDO in time while draining PDO/SYNC traffic -- a handled transient. Retry once (a few
+                # ms later it answers) and quiet the canopen abort log so a benign miss doesn't spam a scary
+                # ERROR line. NOT a blanket suppression -- scoped to this one benign read.
+                import logging as _lg
+                _cl = _lg.getLogger('canopen'); _pl = _cl.level
                 try:
-                    return self.node.sdo['Amplifier']['Temperature'].raw
-                except Exception:
+                    _cl.setLevel(_lg.CRITICAL)
+                    for _i in range(2):
+                        try:
+                            return self.node.sdo['Amplifier']['Temperature'].raw
+                        except Exception:
+                            if _i == 0:
+                                time.sleep(0.01)
                     return None
+                finally:
+                    _cl.setLevel(_pl)
 
             def _read_motor_temp():
                 val = None
@@ -1631,15 +1665,22 @@ class calibrate():
                 _srt[i]['ring'] = _rings[i]
             _ref_rings = sorted(_rings[i] for i in _ref_idxs if _rings[i] is not None)
             _noise = _ref_rings[len(_ref_rings) // 2] if _ref_rings else 0.0     # ref-region self-scatter
-            _band  = max(_noise * 1.8, _noise + 2.0)                             # "ring cleared" threshold
             _ring_peak = max((r for r in _rings if r is not None), default=0.0)
+            # GATE ("is there a real ring") scales with the signal |αβ|: a low-sensing-gain motor (P4-37,
+            # |αβ|~68) shows a real ring of only ~2-3 counts where the P4-16 (|αβ|~120) shows ~5-10, so a
+            # fixed absolute count gated the small-signal motor out. ~2.5% of |αβ| (floored) instead.
+            _ring_sig = max(1.5, 0.025 * _mag_max)
+            # BAND ("ring cleared") = the ring has dropped ~70% of the way from its PEAK back to the noise
+            # floor. Using the peak->noise RANGE (not a fixed offset) auto-scales across motors AND stops a
+            # HALF-cleared low settling from qualifying (a fixed band let a still-ringing 120 ns through).
+            _band  = max(1.5 * _noise, _noise + 0.30 * (_ring_peak - _noise))
 
             optimal_settling = original_settling
             _resolvable = False
             _pick = None
             _t_settle = None
             _sel_desc = "none"
-            _ring_real = _ring_peak >= max(2.0 * max(_noise, 1e-6), _noise + 3.0)
+            _ring_real = _ring_peak >= max(2.0 * max(_noise, 1e-6), _noise + _ring_sig)
             if _ring_real:
                 # Scan from the HIGHEST settling downward, tracking the LOWEST cleared settling, and TOLERATE
                 # up to ONE not-cleared settling along the way (an isolated thermal spike, e.g. 300 ns on a
@@ -1662,13 +1703,22 @@ class calibrate():
                     _t_settle = int(_srt[_pi]['settling']); _pick = _srt[_pi]
                     _sel_desc = ("MEASURED ring-clear (lowest cleared settling, ring <= {:.1f}, tolerating "
                                  "1 spike; ref-noise {:.1f})".format(_band, _noise))
-            if _pick is None:                     # no ring above the noise -> safe floor
-                _cands2 = [i for i in range(n) if _means[i] >= _MAG_OK * _mag_max
-                           and _srt[i]['settling'] >= _FLOOR_NS]
-                if _cands2:
-                    _b = min(_cands2, key=lambda i: _srt[i]['settling'])
-                    _t_settle = int(_srt[_b]['settling']); _pick = _srt[_b]
-                _sel_desc = "{} ns safety floor (no ring resolvable above noise)".format(_FLOOR_NS)
+            if _pick is None:
+                if not _ring_real:
+                    # No resolvable ring on this motor (e.g. flat |αβ|, ring buried in noise). Do NOT drop to
+                    # the floor -- that would be a destructive guess AND it zeroes the slope. Leave _t_settle
+                    # None so the existing MaxSettlingTime is KEPT untouched (see the resolvable branch below).
+                    _t_settle = None
+                    _sel_desc = "no ring resolvable -- keeping existing {} ns (no change)".format(
+                        original_settling)
+                else:
+                    # ring WAS real but nothing cleared the band (odd) -> safe floor
+                    _cands2 = [i for i in range(n) if _means[i] >= _MAG_OK * _mag_max
+                               and _srt[i]['settling'] >= _FLOOR_NS]
+                    if _cands2:
+                        _b = min(_cands2, key=lambda i: _srt[i]['settling'])
+                        _t_settle = int(_srt[_b]['settling']); _pick = _srt[_b]
+                    _sel_desc = "{} ns safety floor".format(_FLOOR_NS)
 
             print("Settling sweep results (RING = worst-pattern dev from the ring-free end; pick = lowest cleared):")
             print("  {:>7} {:>9} {:>9} {:>9} {:>9}".format("settle", "ring", "drift", "offset", "|αβ|"))
@@ -2171,18 +2221,16 @@ class calibrate():
             new_a = int(round(old_a + dbias_a))
             new_b = int(round(old_b + dbias_b))
 
-            print("=== Baseline Offset Fold (TEST) ===")
-            print("  fitted drive-on baseline: a0={:+.2f} mA  b0={:+.2f} mA".format(a0, b0))
-            print("  ma_per_ct={:.5f}  gainfactor A={:.0f} B={:.0f}".format(ma_per_ct, gf_a, gf_b))
-            print("  Alpha Bias (Q12.4): {} -> {}  (delta {:+.0f})".format(old_a, new_a, dbias_a))
-            print("  Beta  Bias (Q12.4): {} -> {}  (delta {:+.0f})".format(old_b, new_b, dbias_b))
+            print("=== Baseline Offset Fold: a0={:+.2f} b0={:+.2f} mA (drive-on residual) ===".format(a0, b0))
+            print("  Alpha Bias {} -> {} ({:+.0f})   Beta Bias {} -> {} ({:+.0f})".format(
+                old_a, new_a, dbias_a, old_b, new_b, dbias_b))
             self.node.sdo['Alpha']['Bias'].raw = new_a
             self.node.sdo['Beta']['Bias'].raw = new_b
             self.node.sdo['Save']['Single'].raw = ((0x3008 << 8) | 0x03)   # persist Alpha iSense
             self.node.sdo['Save']['Single'].raw = ((0x3009 << 8) | 0x03)   # persist Beta iSense
-            print("  applied + saved. Drive and check smoothness at the CURRENT settling.")
-            print("  REVERT: re-run 'Current Sense Bias' (or a full cal) — it re-measures Bias clean.")
-            print("  NOTE: over-corrects by a0/b0 at TRUE zero current (Bias is unconditional).")
+            # Over-corrects by a0/b0 at TRUE zero current (Bias is unconditional); the firmware drive-gated
+            # offset is the clean fix. To revert, re-run Current Sense Bias (or a full cal) -- re-measures clean.
+            print("  applied + saved  (revert = re-run Current Sense Bias).")
             if calAll == False:
                 self.Enable()
             return True
@@ -2193,7 +2241,7 @@ class calibrate():
             self.Enable()
             return False
 
-    def calibrate_current_slope(self, event, calAll=False):  # wxGlade: puckutilityapp_frame.<event_handler>
+    def calibrate_current_slope(self, event, calAll=False, force_sdo=False):  # wxGlade: puckutilityapp_frame.<event_handler>
         """Calibrate the current-PROPORTIONAL alpha/beta current-sense offset (Current Sense Slope).
 
         With Bias (0 A) and Gain (counts/mA) already calibrated, the P4-16 still shows a residual
@@ -2301,19 +2349,24 @@ class calibrate():
                              # but watch CAN bus load / notifier-thread keep-up (frames would drop ->
                              # per-sample SDO fallback = slower, not faster).
             fp = None
-            try:
-                from fast_pdo import FastPDO
-                _fp = FastPDO(self.node, sync_period_ms=_sync_ms)
-                _fp.__enter__()
-                if getattr(_fp, 'ok', False):
-                    fp = _fp
-                    print("  PDO fast-read active (id/iq stream @ {:g} ms SYNC = {:.0f} Hz).".format(
-                        _sync_ms, 1000.0 / _sync_ms))
-                else:
-                    _fp.__exit__(None, None, None)
-                    print("  PDO setup failed ({}); using SDO.".format(getattr(_fp, 'err', '?')))
-            except Exception as _pe:
-                print("  PDO unavailable ({}); using SDO.".format(_pe))
+            if force_sdo:
+                # Retry path: skip the FastPDO after a prior SYNC/SDO comms glitch and use the reliable
+                # (slower) per-sample SDO stream instead.
+                print("  Slope on SDO path (FastPDO skipped after a prior comms glitch).")
+            else:
+                try:
+                    from fast_pdo import FastPDO
+                    _fp = FastPDO(self.node, sync_period_ms=_sync_ms)
+                    _fp.__enter__()
+                    if getattr(_fp, 'ok', False):
+                        fp = _fp
+                        print("  PDO fast-read active (id/iq stream @ {:g} ms SYNC = {:.0f} Hz).".format(
+                            _sync_ms, 1000.0 / _sync_ms))
+                    else:
+                        _fp.__exit__(None, None, None)
+                        print("  PDO setup failed ({}); using SDO.".format(getattr(_fp, 'err', '?')))
+                except Exception as _pe:
+                    print("  PDO unavailable ({}); using SDO.".format(_pe))
 
             # Energise in voltage-angle mode; align+stop the rotor at theta=0 before ramping.
             self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
@@ -2392,8 +2445,12 @@ class calibrate():
             # current (nonlinear via duty), so extra low-current points anchor the intercept a0 that the
             # baseline fold consumes — three near/below 0.35*i_cal pin |I|=0 instead of extrapolating a
             # long way down. The PDO's cheap samples pay for the extra levels' settles.
+            # Sweep 0.1 -> 1.0x i_cal (NOT above it): the offset fit only needs to cover the operating
+            # point, and driving past i_cal just burns I^2*R (a big low-KV winding is watts). Weighted LOW
+            # (3 levels below 0.35x) to pin the |I|=0 baseline the fold consumes.
+            _i_top = int(i_cal)   # HARD ceiling on the sweep current -- never drive above the operating pt
             _levels = sorted(set(max(20, int(i_cal * _f))
-                                 for _f in (0.1, 0.2, 0.32, 0.5, 0.7, 0.95, 1.25)))
+                                 for _f in (0.1, 0.2, 0.32, 0.5, 0.7, 0.85, 1.0)))
             _rows = []   # (meanI, off_alpha, off_beta) per level
             _ud = 500
             for _lvl in _levels:
@@ -2401,7 +2458,9 @@ class calibrate():
                 self.node.sdo['Motor']['ud'].raw = _ud
                 _wait_settled()
                 _cur = _imag() or 0.0
-                while _cur < _lvl and _ud < 16000:
+                # stop at the target OR at i_cal (whichever first) -- the i_cal clamp guards the overshoot
+                # a geared rotor's back-EMF can inflate, so we never ramp ud past the operating current.
+                while _cur < _lvl and _cur < _i_top and _ud < 16000:
                     _ud += 300
                     self.node.sdo['Motor']['ud'].raw = _ud
                     time.sleep(0.02); wx.Yield()
@@ -2461,29 +2520,16 @@ class calibrate():
             if angle_spread > 20.0:
                 print(">>> WARNING: offset direction not consistent ({:.1f} deg spread) -- not a clean "
                       "fixed-direction slope.".format(angle_spread))
-            if abs(a0) > 5.0 or abs(b0) > 5.0:
-                print(">>> NOTE: baseline intercept a0={:+.1f}, b0={:+.1f} mA — this is the fixed "
-                      "DRIVE-ON current-sense offset (present under PWM switching, so an idle bias "
-                      "can't capture it) plus fit extrapolation — NOT stale bias. The slope removes "
-                      "only the current-PROPORTIONAL part; a firmware baseline-offset correction "
-                      "would be needed to remove this residual.".format(a0, b0))
-
-            # --- FIRST-CUT SLOPE vs RESIDUAL BASELINE (what the stored fix does / does NOT remove) ---
+            # a0/b0 = the fixed DRIVE-ON current-sense offset (present under PWM switching, so an idle bias
+            # can't capture it) + fit extrapolation -- NOT stale bias. The slope removes only the current-
+            # PROPORTIONAL part; the baseline fold (or a firmware drive-gated offset) removes this residual.
             _base_mag = (a0 * a0 + b0 * b0) ** 0.5
             _base_dir = math.degrees(math.atan2(b0, a0))
             _off_op   = (((a0 + kA * i_cal) ** 2) + ((b0 + kB * i_cal) ** 2)) ** 0.5
-            print("=" * 64)
-            print(">>> CORRECTION SUMMARY  (operating |I| = i_cal = {} mA)".format(i_cal))
-            print(">>>   SLOPE     (firmware subtracts kA*|I|, kB*|I|):  {:.3f} mA/mA @ {:+.0f} deg"
-                  .format(slope_mag, direction_deg))
-            print(">>>   BASELINE  (residual, NOT removed by the slope):  {:.1f} mA @ {:+.0f} deg"
-                  .format(_base_mag, _base_dir))
-            print(">>>   NET at |I|={} mA:  {:.1f} mA offset  -->  ~{:.1f} mA left after slope correction"
-                  .format(i_cal, _off_op, _base_mag))
-            if _base_mag > 8.0:
-                print(">>>   (baseline > 8 mA: this slope term is a PARTIAL fix -- it leaves a residual")
-                print(">>>    fixed offset that a separate baseline-offset correction could remove)")
-            print("=" * 64)
+            print(">>> residual baseline (NOT removed by slope): {:.1f} mA @ {:+.0f} deg   "
+                  "[net {:.1f} mA at i_cal {} mA{}]".format(
+                      _base_mag, _base_dir, _off_op, i_cal,
+                      "; >8mA => partial fix, needs baseline fold/firmware" if _base_mag > 8.0 else ""))
 
             # --- SANITY GATE: never store garbage. A reset/bad gainfactor (e.g. after a firmware
             #     flash) makes that channel read ~0, collapsing the |I| circle so the measured
