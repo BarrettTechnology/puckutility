@@ -1350,6 +1350,47 @@ class calibrate():
                 _off = ((_asum / _na) ** 2 + (_bsum / _na) ** 2) ** 0.5   # circle center = ring
                 return _mag, _off, sum(_scat) / len(_scat), _allres, _patt   # +per-pattern for the ring plot
 
+            def _circle_residual(_patt):
+                # REFERENCE-FREE ring metric. The 6 held patterns' mean vectors should lie on ONE circle
+                # (radius |I|, centre = the DC offset). The ring displaces each pattern-dependently, so
+                # the RMS radial residual of a least-squares (Kasa) circle fit IS the ring distortion:
+                # high while the ring is present, collapsing to the ~scatter floor once it clears. Unlike
+                # the offset/|αβ|, a UNIFORM window-collapse just shrinks the radius -> residual stays low,
+                # so this isolates the ring from window collapse.
+                _pts = [(a, b) for (a, b, _s) in (_patt or [])]
+                if len(_pts) < 4:
+                    return 0.0
+                try:
+                    import numpy as _np
+                    _A = _np.array([[2.0 * a, 2.0 * b, 1.0] for (a, b) in _pts])
+                    _z = _np.array([a * a + b * b for (a, b) in _pts])
+                    _sol = _np.linalg.lstsq(_A, _z, rcond=None)[0]
+                    _cx, _cy, _c = float(_sol[0]), float(_sol[1]), float(_sol[2])
+                    _R2 = _c + _cx * _cx + _cy * _cy
+                    if _R2 <= 0:
+                        return 0.0
+                    _R = _R2 ** 0.5
+                    _res = [(((a - _cx) ** 2 + (b - _cy) ** 2) ** 0.5 - _R) for (a, b) in _pts]
+                    return (sum(r * r for r in _res) / len(_res)) ** 0.5
+                except Exception:
+                    return 0.0
+
+            def _reading_drift(_row_a, _row_b):
+                # CONVERGENCE metric = how far the 6-pattern constellation MOVED between two settlings,
+                # per 75 ns. At a fixed angle the true current is constant, so this motion is: (a) the ring
+                # clearing = systematic DRIFT (high at low settling), (b) the converged plateau = near-zero
+                # (ring gone, window not yet collapsed), (c) window collapse = erratic JUMPING (high again).
+                # So it has a clean MINIMUM at the ring-clear convergence -- unlike the circle residual,
+                # which a uniform collapse keeps shrinking. The pick is the velocity minimum.
+                _pa = _row_a.get('patterns') or []
+                _pb = _row_b.get('patterns') or []
+                if not _pa or not _pb or len(_pa) != len(_pb):
+                    return None
+                _ds = max(1.0, abs(float(_row_a['settling'] - _row_b['settling'])))
+                _d = sum(((_pa[k][0] - _pb[k][0]) ** 2 + (_pa[k][1] - _pb[k][1]) ** 2) ** 0.5
+                         for k in range(len(_pa))) / len(_pa)
+                return _d / _ds * 75.0
+
             # --- Settling sweep values: coarse (fast) grid 0..just-below half_period_ns ---
             # Few points keep the whole cal to a few seconds.  The pick is a KNEE in accuracy+noise,
             # robust to spacing, so 150 ns steps are plenty.  Clip below half_period so a step can
@@ -1368,11 +1409,9 @@ class calibrate():
             settle_values = sorted(set(settle_values))
             if not settle_values:
                 settle_values = [0]
-            print("Settling sweep: {} ns  (kept < half-period {} ns)".format(
-                settle_values, half_period_ns))
-            print("Est. time: ~{:.0f} s  ({} settlings × {} angles)".format(
-                len(settle_values) * (0.6 + _N_ANGLES * 0.15) + 4.0,
-                len(settle_values), _N_ANGLES))
+            print("Randomized settling sweep (de-correlates heating from settling), then thermal-detrend + "
+                  "average, then pick the reading-drift minimum = convergence. Half-period {} ns."
+                  .format(half_period_ns))
 
             temp_start  = _read_amp_temp()
             mtemp_start = _read_motor_temp()
@@ -1441,15 +1480,18 @@ class calibrate():
                         getattr(_fp, 'err', '?')))
             except Exception as _pe:
                 print("  PDO unavailable ({}); held-angle sweep on SDO.".format(_pe))
-            for s_idx, t in enumerate(settle_values):
-                self.frame_statusbar.SetStatusText(
-                    "Timing cal — {}/{} ({} ns)".format(s_idx + 1, len(settle_values), t), 1)
+            # === ADAPTIVE settling sweep. Climb settling watching the circle RESIDUAL (the ring); LOCK IN
+            # EARLY once it has bottomed (ring cleared) so we skip the wasted high-settling window-collapse
+            # tail, then FINE-sweep around the knee for accuracy. Settling can't be set live while driving,
+            # so each step does a mode transition (IDLE -> write -> re-enter voltage-angle at the same ud).
+            def _measure_at(t):
+                # One mode-transition + measurement (no dedup, no store) -> returns the row for the caller.
+                t = int(max(0, min(t, half_period_ns - 1)))
+                self.frame_statusbar.SetStatusText("Timing cal — {} ns".format(t), 1)
                 self.frame_statusbar.Update(); wx.Yield()
-                # Set the settling live while IDLE, then re-enter voltage-angle mode at the SAME ud.
                 self.node.sdo['Motor']['ud'].raw = 0
-                self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE  # idle: write applies live
+                self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
                 self.node.sdo['Amp']['MaxSettlingTime'].raw = t
-                _readback = self.node.sdo['Amp']['MaxSettlingTime'].raw
                 self.node.sdo["ControlWord"].raw = CLEAR_FAULT
                 self.node.sdo["ControlWord"].raw = SHUTDOWN
                 self.node.sdo["ControlWord"].raw = OP_ENABLED
@@ -1457,24 +1499,74 @@ class calibrate():
                 self.node.sdo['Theta_e'].raw = 0
                 self.node.sdo['Motor']['ud'].raw = drive_ud
                 _wait_settled()
-                # SYNC is toggled per-angle INSIDE _measure_point (on only for each streamed burst), so
-                # this fault check + the mode-switch SDO above all run SYNC-off (no 0x0504 collision).
-                if _check_fault("sweep step {}/{} ({} ns)".format(s_idx + 1, len(settle_values), t)):
+                # SYNC is toggled per-angle inside _measure_point, so this fault check + the mode-switch
+                # SDO above all run SYNC-off (no 0x0504 collision).
+                if _check_fault("sweep {} ns".format(t)):
                     if fp: fp.__exit__(None, None, None)
                     _restore_idle()
-                    raise RuntimeError("Itiming cal ABORTED: puck faulted / comms lost during "
-                                       "sweep (see fault line above).")
-                _mean, _off, _cv, _samples, _patterns = _measure_point()
-                results.append({'settling': t, 'meanI': _mean, 'offset': _off, 'cv': _cv,
-                                'samples': _samples, 'patterns': _patterns})
+                    raise RuntimeError("Itiming cal ABORTED: puck faulted / comms lost during sweep.")
+                _mean, _off, _cv, _samples, _patt = _measure_point()
+                return {'settling': t, 'meanI': _mean, 'offset': _off, 'cv': _cv,
+                        'samples': _samples, 'patterns': [list(p) for p in _patt]}
+
+            # === RANDOMIZED + thermally-detrended sweep. A monotonic 0->N sweep CONFOUNDS settling with the
+            # puck heating: both climb together, so the ring (a settling effect) and thermal drift (a TIME
+            # effect) land on the same axis and can't be separated -- the pick slides with thermal state.
+            # Fix: visit the settlings in RANDOM order over several passes, then remove the linear drift vs
+            # measurement-TIME (the heating) and AVERAGE each settling. Because the order is random, that
+            # time-trend is the thermal drift, NOT the ring -- so the ring (tied to settling) survives clean.
+            import random
+            _grid = [s for s in range(0, min(481, half_period_ns), 60)]
+            _REPEATS = 2     # 2 passes = 18 measurements. We can't recover the coarse/fine early-lock (it's
+                             #   thermally broken), so spend the passes on a RELIABLE single run instead:
+                             #   the 2nd pass averages noise + firms up the detrend fit for reproducibility.
+            _order = _grid * _REPEATS
+            random.Random(20260709).shuffle(_order)   # fixed seed: reproducible order, still de-correlated
+            print("  randomized sweep: {} settlings x {} passes = {} measurements (de-correlates heating "
+                  "from settling)".format(len(_grid), _REPEATS, len(_order)))
+            _raw = []
+            for _ti, _s in enumerate(_order):
+                _r = _measure_at(_s); _r['tidx'] = _ti; _raw.append(_r)
                 _t_now = _read_amp_temp(); _m_now = _read_motor_temp()
-                print("  step {}/{}: {:5d} ns (rb {:5d})  |αβ|={:7.1f}  offset={:7.1f}  cv={:5.2f}%  "
-                      "puck={} motor={}".format(
-                          s_idx + 1, len(settle_values), t, _readback, _mean, _off, _cv,
-                          _fmt_temp(_t_now), _fmt_temp(_m_now)))
-                _check_overheat(_t_now, _m_now,
-                                "step {}/{}".format(s_idx + 1, len(settle_values)))
+                print("  [{:2d}/{:2d}] {:5d} ns  |αβ|={:7.1f}  offset={:6.1f}  puck={}".format(
+                    _ti + 1, len(_order), _s, _r['meanI'], _r['offset'], _fmt_temp(_t_now)))
+                _check_overheat(_t_now, _m_now, "meas {}/{}".format(_ti + 1, len(_order)))
             if fp: fp.__exit__(None, None, None)   # stop SYNC + restore callbacks after the sweep
+
+            # THERMAL DETREND: subtract the linear trend vs measurement-time from every pattern-vector
+            # component. Randomized order => that trend is the puck heating (time), not the ring (settling).
+            _np6 = min((len(r['patterns']) for r in _raw), default=0)
+            _tt = [r['tidx'] for r in _raw]
+            _tm = sum(_tt) / len(_tt) if _tt else 0.0
+            _tv = sum((t - _tm) ** 2 for t in _tt) or 1.0
+            for k in range(_np6):
+                for _c in (0, 1):
+                    _vv = [r['patterns'][k][_c] for r in _raw]
+                    _vm = sum(_vv) / len(_vv)
+                    _sl = sum((_tt[i] - _tm) * (_vv[i] - _vm) for i in range(len(_raw))) / _tv
+                    for i in range(len(_raw)):
+                        _raw[i]['patterns'][k][_c] -= _sl * (_tt[i] - _tm)
+
+            # AVERAGE the detrended repeats per settling -> one clean row per settling.
+            results = []
+            for _s in sorted(set(_grid)):
+                _grp = [r for r in _raw if r['settling'] == _s]
+                if not _grp:
+                    continue
+                _np_s = min(len(r['patterns']) for r in _grp)
+                _patt_avg = [(sum(r['patterns'][k][0] for r in _grp) / len(_grp),
+                              sum(r['patterns'][k][1] for r in _grp) / len(_grp),
+                              sum(r['patterns'][k][2] for r in _grp) / len(_grp)) for k in range(_np_s)]
+                _ca = sum(p[0] for p in _patt_avg) / len(_patt_avg)
+                _cb = sum(p[1] for p in _patt_avg) / len(_patt_avg)
+                results.append({'settling': _s,
+                                'meanI': sum(r['meanI'] for r in _grp) / len(_grp),
+                                'offset': (_ca * _ca + _cb * _cb) ** 0.5,
+                                'cv': sum(r['cv'] for r in _grp) / len(_grp),
+                                'samples': (_grp[0].get('samples') or []),
+                                'patterns': _patt_avg,
+                                'residual': _circle_residual(_patt_avg)})
+            results.sort(key=lambda r: r['settling'])
             self.node.sdo['Motor']['ud'].raw = 0
             self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
 
@@ -1487,73 +1579,121 @@ class calibrate():
                 print("Sweep ΔT (motor): {:.1f}°C → {:.1f}°C  (rise {:+.1f}°C)".format(
                     mtemp_start, mtemp_end, mtemp_end - mtemp_start))
 
-            # --- Analysis: the RAW-alpha/beta SCATTER is the ring detector (Filtered can't see the ring).
-            # On the switching ring the raw ADC sample sits on a steep dV/dt, so ADC-trigger jitter turns
-            # into big sample-to-sample scatter; once the ring rings out (flat), scatter collapses to a
-            # floor. So pick the LOWEST settling where the scatter has fallen to its floor = the ring has
-            # JUST cleared = minimum settling / max headroom, safely PAST the ring (not the ring-edge that
-            # the noisy offset picked). Offset/|αβ| kept for context; the baseline fold handles the DC.
-            # 0 ns is never auto-selected; the accurate-magnitude gate rejects the window-collapse tail.
-            _means = [r['meanI'] for r in results]
-            _offs  = [r['offset'] for r in results]
-            _scats = [r.get('cv', 0.0) for r in results]   # RAW scatter % = ring detector
-            n = len(results)
+            # --- Analysis: the CONVERGENCE POINT via reading DRIFT. The per-pattern diagnostic proved the
+            # ring IS visible when you DON'T average across patterns: at a fixed angle the true current is
+            # constant, so any change in the 6-pattern reading as settling increases is either the ring
+            # clearing (low settling) or window collapse (high settling). The ring-clear = where the reading
+            # STOPS changing = minimum settling-to-settling drift. (The circle RESIDUAL fails here: a uniform
+            # collapse keeps shrinking the circle while it still FITS, so residual falls into the tail -- the
+            # drift instead climbs back up when the reading destabilises, giving a true minimum at converge.)
+            _srt = sorted(results, key=lambda r: r['settling'])
+            n = len(_srt)
+            _means = [r['meanI'] for r in _srt]
             _mag_max = max(_means) if _means else 0.0
             _MAG_OK  = 0.90
-            # HARD SAFETY FLOOR. The 10 ns diagnostic proved the ring is unmeasurable open-loop AND that
-            # these signals reward going too low — and too low is not merely suboptimal, it BRICKS the cal
-            # state: a 10 ns pick zeroed the current-sense slope, broke iSense, and the next run couldn't
-            # even establish drive (hit the ud ceiling). So never auto-pick below a known-safe margin past
-            # the fail region (75/150/450 all ran clean; 10 broke it). The baseline fold handles the DC.
-            _FLOOR_NS = 150
-            _cands = [i for i in range(n)
-                      if _means[i] >= _MAG_OK * _mag_max and results[i]['settling'] >= _FLOOR_NS]
-            sc_floor = min((_scats[i] for i in _cands), default=0.0)
-            sc_peak  = max((_scats[i] for i in _cands), default=0.0)
-            _SC_BAND = 1.35   # within 35% of the floor == ring cleared
-            _SC_GATE = 0.15   # scatter must actually DROP this many % (peak-floor) to count as a real ring
-            band = max(sc_floor * _SC_BAND, sc_floor + 0.10)
+            # SAFETY FLOOR (fallback only). The drift metric measures the convergence directly; this floor
+            # applies ONLY when there's no clear convergence (drift flat). Kept at 50 ns to leave room on
+            # the low side. 0 ns is never picked. The baseline fold handles the DC offset.
+            _FLOOR_NS = 50
+
+            # RING vs the RING-FREE END. Thermal is now detrended out, so the only thing left that moves the
+            # per-pattern reading with settling is the ring (clears as settling RISES) and window collapse
+            # (drops |αβ| -- gated out). Because the ring clears as settling rises, the highest non-collapsed
+            # settlings are ring-FREE: average their pattern vectors as the reference. Each settling's WORST
+            # per-pattern deviation from that reference = the residual ring there. Pick the LOWEST settling
+            # whose ring has fallen to the reference-region noise = ring just cleared = max headroom. (Drift
+            # kept as a context column; differencing adjacent settlings amplifies noise on a weak ring.)
+            def _drift_at(i):
+                _S = _srt[i]['settling']
+                _below = [j for j in range(n) if _srt[j]['settling'] <= _S - 45]
+                if not _below:
+                    return None
+                _j = min(_below, key=lambda j: abs(_srt[j]['settling'] - (_S - 75)))
+                return _reading_drift(_srt[i], _srt[_j])
+            for i in range(n):
+                _srt[i]['drift'] = _drift_at(i)
+
+            _acc = [i for i in range(n) if _means[i] >= _MAG_OK * _mag_max]       # not window-collapsed
+            _ref_idxs = sorted(_acc, key=lambda i: _srt[i]['settling'])[-3:] if _acc else []
+            _np_r = min((len(_srt[i]['patterns']) for i in _ref_idxs), default=0)
+            _ref = [(sum(_srt[i]['patterns'][k][0] for i in _ref_idxs) / len(_ref_idxs),
+                     sum(_srt[i]['patterns'][k][1] for i in _ref_idxs) / len(_ref_idxs))
+                    for k in range(_np_r)]
+            def _ring_at(i):
+                _p = _srt[i]['patterns']
+                if _np_r == 0 or len(_p) < _np_r:
+                    return None
+                return max((((_p[k][0] - _ref[k][0]) ** 2 + (_p[k][1] - _ref[k][1]) ** 2) ** 0.5)
+                           for k in range(_np_r))
+            _rings = [_ring_at(i) for i in range(n)]
+            for i in range(n):
+                _srt[i]['ring'] = _rings[i]
+            _ref_rings = sorted(_rings[i] for i in _ref_idxs if _rings[i] is not None)
+            _noise = _ref_rings[len(_ref_rings) // 2] if _ref_rings else 0.0     # ref-region self-scatter
+            _band  = max(_noise * 1.8, _noise + 2.0)                             # "ring cleared" threshold
+            _ring_peak = max((r for r in _rings if r is not None), default=0.0)
 
             optimal_settling = original_settling
             _resolvable = False
             _pick = None
             _t_settle = None
-            # The ring is unmeasurable open-loop (proven by the 10 ns diagnostic), so we do NOT chase a
-            # ring edge. Pick the LOWEST accurate settling AT/ABOVE the safety floor = the safe headroom
-            # sweet spot; the accurate-|αβ| gate caps the top (window collapse), the floor caps the bottom
-            # (the fail region), and the baseline fold removes the DC offset regardless of the exact value.
-            _sel_desc = "lowest accurate settling >= {} ns safety floor".format(_FLOOR_NS)
-            if _cands:
-                _b = min(_cands, key=lambda i: results[i]['settling'])
-                _t_settle = int(results[_b]['settling']); _pick = results[_b]
+            _sel_desc = "none"
+            _ring_real = _ring_peak >= max(2.0 * max(_noise, 1e-6), _noise + 3.0)
+            if _ring_real:
+                # Scan from the HIGHEST settling downward, tracking the LOWEST cleared settling, and TOLERATE
+                # up to ONE not-cleared settling along the way (an isolated thermal spike, e.g. 300 ns on a
+                # warm puck). A SECOND not-cleared settling = the real ring wall -> stop. The pick is the
+                # lowest cleared settling reached = the point past which the ring is reliably gone. This
+                # rejects both low-settling noise DIPS (a lone low 60 ns doesn't count if the ring above it
+                # is real) AND a single high-settling noise SPIKE (which otherwise shoved the pick a step up,
+                # 180<->360 between a cool and a warm run). Reproduces run-to-run.
+                _acc_s = sorted([i for i in range(n) if _means[i] >= _MAG_OK * _mag_max
+                                 and _srt[i]['settling'] >= _FLOOR_NS], key=lambda i: _srt[i]['settling'])
+                _pi = None; _skips = 0
+                for i in reversed(_acc_s):
+                    if _rings[i] is not None and _rings[i] <= _band:
+                        _pi = i
+                    else:
+                        _skips += 1
+                        if _skips > 1:
+                            break
+                if _pi is not None:
+                    _t_settle = int(_srt[_pi]['settling']); _pick = _srt[_pi]
+                    _sel_desc = ("MEASURED ring-clear (lowest cleared settling, ring <= {:.1f}, tolerating "
+                                 "1 spike; ref-noise {:.1f})".format(_band, _noise))
+            if _pick is None:                     # no ring above the noise -> safe floor
+                _cands2 = [i for i in range(n) if _means[i] >= _MAG_OK * _mag_max
+                           and _srt[i]['settling'] >= _FLOOR_NS]
+                if _cands2:
+                    _b = min(_cands2, key=lambda i: _srt[i]['settling'])
+                    _t_settle = int(_srt[_b]['settling']); _pick = _srt[_b]
+                _sel_desc = "{} ns safety floor (no ring resolvable above noise)".format(_FLOOR_NS)
 
-            print("Settling sweep results (RAW-alpha/beta scatter = ring detector):")
-            print("  {:>7} {:>10} {:>10} {:>10}".format("settle", "scatter%", "offset", "|αβ|(mag)"))
-            for r in results:
+            print("Settling sweep results (RING = worst-pattern dev from the ring-free end; pick = lowest cleared):")
+            print("  {:>7} {:>9} {:>9} {:>9} {:>9}".format("settle", "ring", "drift", "offset", "|αβ|"))
+            for r in _srt:
                 _mk = "  <- pick" if (_pick is not None and r is _pick) else ""
-                print("  {:7d} {:10.3f} {:10.1f} {:10.1f}{}".format(
-                    r['settling'], r.get('cv', 0.0), r['offset'], r['meanI'], _mk))
-            print("  ring scatter: floor={:.3f}% peak={:.3f}%  cleared<={:.3f}%  accurate |αβ| >= {:.0f}"
-                  .format(sc_floor, sc_peak, band, _MAG_OK * _mag_max))
+                _rr = "{:9.2f}".format(r['ring']) if r.get('ring') is not None else "{:>9}".format("-")
+                _ds = "{:9.2f}".format(r['drift']) if r.get('drift') is not None else "{:>9}".format("-")
+                print("  {:7d} {} {} {:9.1f} {:9.1f}{}".format(
+                    r['settling'], _rr, _ds, r['offset'], r['meanI'], _mk))
+            print("  ring: ref-noise={:.2f} peak={:.2f} cleared<={:.2f}  real-ring={}  accurate |αβ| >= {:.0f}"
+                  .format(_noise, _ring_peak, _band, _ring_real, _MAG_OK * _mag_max))
 
-            # --- PER-PATTERN ring table (what the 3rd plot panel shows, in numbers). For each of the 6
-            # SVM patterns the current vector is fixed, so the mean-vector DEVIATION from the ~300 ns clean
-            # reference IS the ring at that pattern. Ring -> the deviation RISES at low settling on the
-            # worst (extremal-duty) patterns; all-flat -> no resolvable ring. ---
-            _np = max((len(r.get('patterns') or []) for r in results), default=0)
-            if _np > 0:
-                _ref_i = min(range(len(results)), key=lambda i: abs(results[i]['settling'] - 300))
-                _ref = results[_ref_i].get('patterns') or []
-                print("--- per-PATTERN ring: |mean-vector deviation| from {} ns ref (counts) ---".format(
-                    results[_ref_i]['settling']))
+            # --- PER-PATTERN ring table. Deviation of each pattern's mean vector from the RING-FREE END
+            # (average of the highest non-collapsed settlings -- the SAME reference the pick uses, NOT a
+            # hardcoded 300 ns). This is the honest residual ring per pattern: LARGE at low settling, falling
+            # to the reference noise once cleared. NO settling is artificially zero here. ---
+            if _np_r > 0 and _ref:
+                print("--- per-PATTERN ring: |dev from ring-free end (avg of top settlings)| (counts) ---")
                 print("  {:>7}".format("settle") + "".join(
-                    "  P{}({:+d})".format(p, int(round(-180 + p * 360.0 / _np))) for p in range(_np)))
-                for r in results:
+                    "  P{}({:+d})".format(p, int(round(-180 + p * 360.0 / _np_r))) for p in range(_np_r)))
+                for r in _srt:
                     _pt = r.get('patterns') or []
                     _cells = []
-                    for p in range(_np):
+                    for p in range(_np_r):
                         if p < len(_pt) and p < len(_ref):
-                            _a, _b, _ = _pt[p]; _ra, _rb, _ = _ref[p]
+                            _a, _b, _ = _pt[p]; _ra, _rb = _ref[p]
                             _cells.append("{:9.1f}".format(((_a - _ra) ** 2 + (_b - _rb) ** 2) ** 0.5))
                         else:
                             _cells.append("{:>9}".format("-"))
@@ -1562,14 +1702,12 @@ class calibrate():
             if _t_settle is not None:
                 optimal_settling = _t_settle
                 _resolvable = True
-                _reason = ("{}: {} ns (safe headroom; the ring is unmeasurable open-loop so we floor it "
-                           "rather than chase it, and the fold handles the DC offset).".format(
-                               _sel_desc, _t_settle))
+                _reason = ("{}: {} ns (the fold handles the DC offset).".format(_sel_desc, _t_settle))
                 print("Optimal MaxSettlingTime: {} ns  (was {} ns)".format(
                     optimal_settling, original_settling))
                 print("  reason: {}".format(_reason))
             else:
-                _reason = ("NOT resolvable: no accurate settling / no ring-scatter drop. Left "
+                _reason = ("NOT resolvable: no accurate settling candidate. Left "
                            "MaxSettlingTime at {} ns.".format(original_settling))
                 print(_reason)
 
@@ -1606,19 +1744,22 @@ class calibrate():
                 _puck_model = getattr(self, '_PRODUCT_CODE_MODELS', {}).get(_pc, 'unknown')
                 _node_label = 'Node {}  {}'.format(self.node.id, _puck_model)
 
-                _xs    = [r['settling'] for r in results]
-                _scatp = [r.get('cv', 0.0) for r in results]
-                _mean  = [r['meanI']    for r in results]
+                _xs     = [r['settling'] for r in _srt]
+                _ringp  = [(r.get('ring') if r.get('ring') is not None else float('nan')) for r in _srt]
+                _mean   = [r['meanI'] for r in _srt]
 
                 fig, (ax, ax2, ax3) = plt.subplots(1, 3, figsize=(23, 6))
                 axr = ax.twinx()
-                # LEFT PANEL: aggregates — RAW-alpha/beta SCATTER (ring proxy) + |αβ| magnitude context.
-                ax.plot(_xs, _scatp, '-o', color='tomato', markersize=6, linewidth=1.8,
-                        label='raw α/β scatter % — ring')
+                # LEFT PANEL: the residual RING (worst-pattern deviation from the ring-free end) = the pick
+                # driver, after thermal detrend. HIGH at low settling (ring present), falls to the ref-region
+                # noise once cleared -> pick the LOWEST settling that has cleared. |αβ| on the twin axis is
+                # the window-collapse guard (drops only when over-settled).
+                ax.plot(_xs, _ringp, '-o', color='tomato', markersize=6, linewidth=1.8,
+                        label='residual ring (worst pattern) — falls to noise = cleared')
+                ax.axhline(_band, color='gray', linestyle='--', linewidth=0.9, alpha=0.6,
+                           label='cleared <= {:.1f}'.format(_band))
                 axr.plot(_xs, _mean, '--s', color='steelblue', markersize=5,
                          linewidth=1.0, alpha=0.6, label='|αβ| magnitude (counts, window collapse)')
-                ax.axhline(band, color='gray', linestyle='-', linewidth=0.8, alpha=0.5,
-                           label='ring-cleared ≤ {:.3f}%'.format(band))
                 if _resolvable:
                     ax.axvline(optimal_settling, color='black', linewidth=2.0,
                                label='PICK {} ns'.format(optimal_settling))
@@ -1628,12 +1769,12 @@ class calibrate():
                 else:
                     _result_note = 'NOT RESOLVABLE (kept {} ns)'.format(original_settling)
 
-                ax.set_title('MaxSettlingTime cal — lowest settling past the ring (raw-α/β scatter)\n'
+                ax.set_title('MaxSettlingTime cal — measured ring-clear (detrended)\n'
                              '{}   (drive {} mA, ud {})   |   RESULT: {}'.format(
                                  _node_label, calibration_current, drive_ud, _result_note),
                              fontsize=11)
                 ax.set_xlabel('MaxSettlingTime (ns)')
-                ax.set_ylabel('raw α/β scatter % (ring)', color='tomato')
+                ax.set_ylabel('residual ring (counts) — worst pattern', color='tomato')
                 axr.set_ylabel('|αβ| magnitude (counts)', color='steelblue')
                 ax.grid(True, alpha=0.25)
                 _l1, _b1 = ax.get_legend_handles_labels()
@@ -1672,36 +1813,30 @@ class calibrate():
                 ax2.grid(True, alpha=0.25)
                 ax2.legend(fontsize=8, loc='upper right')
 
-                # THIRD PANEL: the PER-PATTERN ring. Each of the 6 SVM patterns is held at a fixed angle,
-                # so its true current vector is CONSTANT -- any change in its mean (α, β) vs settling is
-                # PURELY the ring. Plotting the deviation of each pattern's mean vector from a clean
-                # reference (nearest 300 ns) isolates the ring PER pattern: if it exists it rises at LOW
-                # settling, worst on the extremal-duty patterns; if all 6 stay flat, the ring is truly
-                # unresolvable and the 150 ns floor is confirmed. (High-settling rise = window collapse.)
-                _np = max((len(r.get('patterns') or []) for r in results), default=0)
-                if _np > 0:
-                    _ref_i = min(range(len(results)), key=lambda i: abs(results[i]['settling'] - 300))
-                    for p in range(_np):
-                        _rp = results[_ref_i].get('patterns') or []
-                        if p >= len(_rp):
-                            continue
-                        _ra, _rb, _ = _rp[p]
+                # THIRD PANEL: the PER-PATTERN ring, referenced to the RING-FREE END (avg of the highest
+                # non-collapsed settlings -- the same reference the pick uses, NOT a hardcoded 300 ns, which
+                # would force that settling to a FALSE zero). Each pattern's deviation from that reference is
+                # its residual ring: LARGE at low settling, falling to the reference noise once cleared. No
+                # settling is artificially zero. (A settling that dips to ~0 here is genuinely ring-free.)
+                if _np_r > 0 and _ref:
+                    for p in range(_np_r):
+                        _ra, _rb = _ref[p]
                         _dev = []
-                        for r in results:
+                        for r in _srt:
                             _pt = r.get('patterns') or []
                             if p < len(_pt):
                                 _a, _b, _ = _pt[p]
                                 _dev.append(((_a - _ra) ** 2 + (_b - _rb) ** 2) ** 0.5)
                             else:
                                 _dev.append(float('nan'))
-                        _deg = int(round(-180 + p * 360.0 / _np))
+                        _deg = int(round(-180 + p * 360.0 / _np_r))
                         ax3.plot(_xs, _dev, '-o', markersize=4, linewidth=1.4, label='{:+d}°'.format(_deg))
                     if _resolvable:
                         ax3.axvline(optimal_settling, color='black', linewidth=2.0)
-                    ax3.set_title('Per-PATTERN ring: |mean-vector deviation| from clean ref\n'
-                                  '(6 SVM patterns; ring → rises at LOW settle; flat = no ring)', fontsize=11)
+                    ax3.set_title('Per-PATTERN ring: |dev from the RING-FREE end|\n'
+                                  '(6 SVM patterns; ring → rises at LOW settle; flat = cleared)', fontsize=11)
                     ax3.set_xlabel('MaxSettlingTime (ns)')
-                    ax3.set_ylabel('mean-vector deviation from ref (counts)')
+                    ax3.set_ylabel('deviation from ring-free end (counts)')
                     ax3.grid(True, alpha=0.25)
                     ax3.legend(fontsize=7, loc='upper right', ncol=2, title='pattern angle')
 
