@@ -1096,6 +1096,7 @@ class calibrate():
                 freq_hz / 1000.0, half_period_ns))
             print("  Result is valid ONLY at this frequency — verify it is your RUN frequency.")
             print("=" * 70)
+            _t_cal0 = time.time()   # wall-clock for the whole cal (timer printed at the end)
 
             alpha_bias = float(self.node.sdo['Alpha']['Bias'].raw)
             beta_bias  = float(self.node.sdo['Beta']['Bias'].raw)
@@ -1517,9 +1518,9 @@ class calibrate():
             # time-trend is the thermal drift, NOT the ring -- so the ring (tied to settling) survives clean.
             import random
             _grid = [s for s in range(0, min(481, half_period_ns), 60)]
-            _REPEATS = 2     # 2 passes = 18 measurements. We can't recover the coarse/fine early-lock (it's
-                             #   thermally broken), so spend the passes on a RELIABLE single run instead:
-                             #   the 2nd pass averages noise + firms up the detrend fit for reproducibility.
+            _REPEATS = 2     # 2 passes = 18 measurements. Tested: 1 pass is NOT reproducible (120/60/240) --
+                             #   the 2nd pass averages the ring column down enough that the 1-spike tolerance
+                             #   holds, giving a stable 180. Speed comes from live-settling, not fewer passes.
             _order = _grid * _REPEATS
             random.Random(20260709).shuffle(_order)   # fixed seed: reproducible order, still de-correlated
             print("  randomized sweep: {} settlings x {} passes = {} measurements (de-correlates heating "
@@ -1872,6 +1873,9 @@ class calibrate():
                 self.node.sdo['Amp']['MaxSettlingTime'].raw = optimal_settling
                 self.node.sdo['Save']['Single'].raw = ((0x3001 << 8) | 0x05)
                 print("MaxSettlingTime={} ns applied live and saved to EEPROM.".format(optimal_settling))
+                _el = time.time() - _t_cal0
+                print("  ⏱ MaxSettlingTime cal total time: {:.1f} s  ({} measurements)".format(
+                    _el, len(_order)))
                 # GUARD: changing the settling shifts the iSense zero-point AND scale (both are
                 # sample-timing dependent), and the Current Sense Slope (0x3008:7 / 0x3009:7) is a
                 # sample-timing artifact too -- so it is now WRONG and, worse, still ACTIVE in firmware
