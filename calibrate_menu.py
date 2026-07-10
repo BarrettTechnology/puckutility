@@ -3106,7 +3106,8 @@ class calibrate():
             COLLAPSE_FRAC = 0.85                 # vel < this*best -> over-weakened/sync loss -> stop
             ARM_LAG       = 6
             GAIN_MIN      = 1.02                 # need >=2% velocity gain vs low-lag to call it real FW
-            MARGIN_LAGS   = 20                   # bank this far BELOW the peak-velocity lag (noise + edge)
+            MARGIN_LAGS   = 20                   # ROLLOVER case: bank this far BELOW the peak-velocity lag
+            SUSTAIN_MARGIN = 8                    # CAP-LIMITED case: bank this far below the max reliable lag
 
             orig_lag = self.node.sdo['EncoderConfig']['LagFactor'].raw
 
@@ -3167,18 +3168,24 @@ class calibrate():
 
             def _analyze(series):
                 """From the raw series, keep SUSTAINED steps (|I| <= I_TRANSIENT), SMOOTH the velocity
-                (5-pt moving avg) to beat the ~1-2% step noise, then return (peak_lag, peak_vel, v_lo).
+                (5-pt moving avg) to beat the ~1-2% step noise, then return
+                (peak_lag, peak_vel, v_lo, last_lag, still_rising).
+                still_rising = the smoothed velocity at the END is within 2% of the smoothed peak -- i.e.
+                the sweep NEVER rolled over, it was climbing right into the cap/guard ceiling. In that
+                regime the argmax is just noise near the top and the reliable ceiling is last_lag, so the
+                banker should use last_lag (max reliable), NOT argmax - MARGIN_LAGS.
                 Smoothing is what stops a lone near-transient sample from stealing the peak."""
                 sus = [(l, v) for (l, v, i) in series if i <= I_TRANSIENT]
                 if len(sus) < 5:
-                    return 0, 0.0, 0.0
+                    return 0, 0.0, 0.0, 0, False
                 lags = [l for l, v in sus]; vels = [v for l, v in sus]
                 n = len(vels); w = 2; sm = []
                 for k in range(n):
                     a = max(0, k - w); b = min(n, k + w + 1)
                     sm.append(sum(vels[a:b]) / (b - a))
                 bi = max(range(n), key=lambda k: sm[k])
-                return lags[bi], sm[bi], min(sm)
+                still_rising = sm[-1] >= 0.98 * sm[bi]
+                return lags[bi], sm[bi], min(sm), lags[-1], still_rising
 
             self.node.sdo['SetModeOfOperation'].raw = MODE_IDLE
             self.node.sdo['ControlWord'].raw = CLEAR_FAULT
@@ -3197,19 +3204,30 @@ class calibrate():
                 ser_r = _sweep_fw(-1)
                 self.node.sdo['TargetVelocity'].raw = 0
 
-                bl_f, bv_f, vlo_f = _analyze(ser_f)
-                bl_r, bv_r, vlo_r = _analyze(ser_r)
+                bl_f, bv_f, vlo_f, last_f, rise_f = _analyze(ser_f)
+                bl_r, bv_r, vlo_r, last_r, rise_r = _analyze(ser_r)
                 gain_f = (bv_f / vlo_f) if vlo_f > 0 else 1.0
                 gain_r = (bv_r / vlo_r) if vlo_r > 0 else 1.0
                 print("FW result: fwd peak {:.0f} RPM @lag {} (+{:.1f}%)   rev peak {:.0f} RPM @lag {} (+{:.1f}%)"
                       .format(bv_f * 60.0 / enc_resolution, bl_f, (gain_f - 1) * 100.0,
                               bv_r * 60.0 / enc_resolution, bl_r, (gain_r - 1) * 100.0))
                 if gain_f >= GAIN_MIN and gain_r >= GAIN_MIN:
-                    # Both directions gain from field weakening -> bank the conservative (lower) peak lag,
-                    # backed off a margin for velocity noise + clearance from the field-weakening edge.
-                    lag = max(0, min(bl_f, bl_r) - MARGIN_LAGS)
-                    print("Both dirs field-weaken. Banking min peak-lag {} - {} margin = LagFactor {}".format(
-                          min(bl_f, bl_r), MARGIN_LAGS, lag))
+                    if rise_f and rise_r:
+                        # NO rollover: velocity was still climbing into the reliable ceiling (the
+                        # LAG_HARD_CAP the sweep ran clean at, or wherever a guard stopped it). The argmax
+                        # is just noise near the top, so argmax - MARGIN_LAGS throws away real gain. Bank
+                        # the MAX RELIABLE lag = min swept-clean ceiling - a small sustain margin instead.
+                        ceil = min(last_f, last_r)
+                        lag = max(0, ceil - SUSTAIN_MARGIN)
+                        print("Both dirs field-weaken, still RISING at the lag {} ceiling (no rollover) -> "
+                              "banking MAX RELIABLE LagFactor {} (ceiling {} - {} sustain margin).".format(
+                                  ceil, lag, ceil, SUSTAIN_MARGIN))
+                    else:
+                        # A real field-weakening ROLLOVER (velocity peaked then fell) -> bank below the
+                        # conservative (lower) peak lag to clear the drop-off edge + velocity noise.
+                        lag = max(0, min(bl_f, bl_r) - MARGIN_LAGS)
+                        print("Both dirs field-weaken (rollover peak). Banking min peak-lag {} - {} margin "
+                              "= LagFactor {}".format(min(bl_f, bl_r), MARGIN_LAGS, lag))
                 else:
                     lag = 0
                     print(">>> No consistent field-weakening gain (need >= {:.0f}% in BOTH dirs; got fwd {:.1f}% "
@@ -3569,17 +3587,23 @@ class calibrate():
         """
         if not self.check_for_node():
             return
-        if not self._fw_at_least(4, 4, 0):
-            self._prompt_ok("Firmware Too Old",
-                "Magnetic encoder compensation requires firmware v4.4.0 or later.\n"
-                "Please update the firmware and try again.")
-            return
+
+        # Firmware < 4.4.0 has no encoder-compensation object (0x3027) to write, but the SWEEP still
+        # yields useful info: the measured encoder-error harmonics + linearity reveal magnet/encoder
+        # MISALIGNMENT. So on old firmware we run TEST-ONLY -- measure + report, skip the upload.
+        class _EncTestOnly(Exception):
+            pass
+        _test_only = not self._fw_at_least(4, 4, 0)
+        if _test_only:
+            self._prompt_ok("Firmware Too Old — Test Only",
+                "Encoder compensation requires firmware v4.4.0 or later.\n"
+                "Running TEST-ONLY: measures the encoder error (magnet alignment), no upload.")
 
         # If compensation is already active, ask whether to recalibrate or retest.
         # Recalibration always runs an automatic retest sweep afterwards.
         _retest_only = False
         try:
-            if self.node.sdo[0x3027][1].raw:
+            if not _test_only and self.node.sdo[0x3027][1].raw:
                 _cdlg = wx.Dialog(self, title="Encoder Compensation Active")
                 _cdlg_sizer = wx.BoxSizer(wx.VERTICAL)
                 _cdlg_msg = wx.StaticText(
@@ -4330,6 +4354,16 @@ class calibrate():
                 # Sort by k for firmware's iterative complex-rotation optimization
                 _top_bins = sorted(_top_bins, key=lambda _k: _k)
 
+                if _test_only:
+                    print("\n  TEST-ONLY (firmware < 4.4.0): measured, not uploaded.")
+                    print("  Magnet alignment: k=1 = ring off-center/eccentric; "
+                          "k={} (pole-pairs) = magnet spacing.".format(pole_pairs))
+                    # normal path stays powered in phase-voltage mode until the retest idles it (4577);
+                    # test-only skips the retest, so de-energize the motor here before bailing out.
+                    self.node.sdo['Theta_e'].raw = 0
+                    self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
+                    raise _EncTestOnly()
+
                 print("\n  Uploading encoder compensation harmonics to node {} ...".format(node_id))
                 print("  {:>4}  {:>6}  {:>10}  {:>8}  {:>8}".format(
                     "Bin", "k", "Amp(cts)", "A_s(Q88)", "A_c(Q88)"))
@@ -4837,6 +4871,8 @@ class calibrate():
                 except Exception as _fpe:
                     print("  WARNING: FFT plot failed: {}".format(_fpe))
 
+            except _EncTestOnly:
+                pass    # test-only (old firmware): measured + reported, upload/retest intentionally skipped
             except ImportError:
                 print("  (FFT analysis skipped — numpy not installed)")
             except SdoAbortedError as _fft_exc:
