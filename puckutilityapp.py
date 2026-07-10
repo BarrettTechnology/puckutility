@@ -1011,9 +1011,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 try:
                     iq = self.node.sdo['CurrentFeedback'].raw
                     i_peak = self.node.sdo['Calibration']['i_peak'].raw
-                    i_user = self.node.sdo['UserPeakCurrent'].raw
-                    print(f"  CurrentFeedback={iq} mA  i_peak={i_peak} mA  "
-                          f"UserPeakCurrent={i_user} mA")
+                    print(f"  CurrentFeedback={iq} mA  i_peak={i_peak} mA")
                 except Exception as _e:
                     print(f"  Could not read current details: {_e}")
             wx.CallAfter(_log_current)
@@ -1433,6 +1431,22 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         else:
           self.node = self.network[node_id]
 
+        # Reset the puck to a CLEAN PDO state before the first SDO reads. A prior run that
+        # crashed can leave the puck streaming TPDOs (capture-PDO config never restored); that
+        # traffic floods the bus and can time out the reads below. NMT PRE-OPERATIONAL halts all
+        # TPDO transmission while keeping the SDO server alive; configure_Puck + OPERATIONAL
+        # (below) re-establish the map and streaming. Mirrors pucktuner's boot-flood fix; here
+        # SYNC is ADC-gated, so this mainly guards against a prior crash's leftover streaming.
+        try:
+            self.node.nmt.state = 'PRE-OPERATIONAL'
+            time.sleep(0.05)
+            try:
+                self.network.bus.flush_tx_buffer()
+            except Exception:
+                pass
+        except Exception as _preop_e:
+            print('  (pre-op reset before import skipped: {})'.format(_preop_e))
+
         self.text_id.ChangeValue(str(node_id))
 
         version = get_version(self.node.sdo['MfgSoftwareVersion'].raw)
@@ -1482,6 +1496,12 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         # may want to make this more centralized (like for loop to configure all at once)
         # print('Configure...')
         self.configure_Puck() # This makes sure all pucks are configured to remove bug with first round adc on turning puck idle
+        # Back to OPERATIONAL so ADC-on TPDO streaming works (we dropped to PRE-OPERATIONAL
+        # above to read on a quiet bus).
+        try:
+            self.node.nmt.state = 'OPERATIONAL'
+        except Exception:
+            pass
 
     def set_id(self, event):  # wxGlade: wxp3_frame.<event_handler>
         if self.check_for_node() == False:
