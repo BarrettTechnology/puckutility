@@ -13,7 +13,9 @@ CRUCIAL extra: at the instant the i2t folds the current, is the RPM still CLIMBI
 We command the ceiling, log the whole spin-up->fold trajectory (RPM, iq, i2t, |V|, bus) until the i2t
 accumulator (0x3025:1) plateaus, then extract PEAK, CONTINUOUS, and the RPM slope at fold-back.
 
-Usage:   scripts/top_speed_vitals.py [can_device] [node_id]      (defaults: can0 127)
+Usage:   scripts/top_speed_vitals.py [can_device] [node_id] [--settling <ns>]   (defaults: can0 127)
+         --settling overrides MaxSettlingTime (0x3001:5) for the run, restored on exit, so you can A/B
+         the measured current vs the current-sense settling time (does a low settle inflate iq?).
 Safety:  spins the motor to its velocity CEILING for ~10-20 s; drive idled on exit / Ctrl-C.
 """
 import math
@@ -27,8 +29,18 @@ if ROOT not in sys.path:
 import can_backend
 from canopen_runner import CLEAR_FAULT, SHUTDOWN, OP_ENABLED, MODE_IDLE, MODE_PROFILE_VEL
 
-CAN  = sys.argv[1] if len(sys.argv) > 1 else 'can0'
-NODE = int(sys.argv[2]) if len(sys.argv) > 2 else 127
+# Pull --settling <ns> (or --settling=<ns>) out of argv; the rest are positional can_device / node_id.
+_argv = sys.argv[1:]
+SETTLING = None
+_i = 0
+while _i < len(_argv):
+    if _argv[_i] == '--settling' and _i + 1 < len(_argv):
+        SETTLING = int(_argv[_i + 1]); del _argv[_i:_i + 2]; continue
+    if _argv[_i].startswith('--settling='):
+        SETTLING = int(_argv[_i].split('=', 1)[1]); del _argv[_i]; continue
+    _i += 1
+CAN  = _argv[0] if len(_argv) > 0 else 'can0'
+NODE = int(_argv[1]) if len(_argv) > 1 else 127
 EDS  = os.path.join(ROOT, 'puck4.eds')
 
 SOAK_MAX  = 20.0     # hard cap on the log/soak (i2t should plateau well under this)
@@ -37,6 +49,9 @@ FULL_MOD  = 32000.0  # ud/uq full-scale
 WIN_S     = 1.2      # window for the fold-slope fit + the peak/continuous stats
 COAST_TIMEOUT = 20.0 # max seconds to log the freewheel coast-down
 COAST_FLOOR   = 0.15 # stop the coast log once RPM decays below this fraction of the coast-start speed
+I2T_READY     = 300  # spin up only once the i2t accumulator (0x3025:1) has decayed below this -- a hot
+                     # accumulator left by a recent run folds current immediately and truncates the peak
+I2T_WAIT_MAX  = 60.0 # cap on the i2t bleed-off wait (0x3025:1 is read-only; it only decays with idle time)
 
 
 def _mean(a):
@@ -94,6 +109,10 @@ def vitals(node):
     def _motor_temp():
         return _u(0x3000, 2, signed=True, default=None)
     temp0 = _motor_temp()
+    try:
+        set_ns = node.sdo['Amp']['MaxSettlingTime'].raw           # current-sense settling (ns), applied live
+    except Exception:
+        set_ns = -1
 
     try:
         _code = int(node.sdo[0x1018][2].raw)
@@ -112,6 +131,27 @@ def vitals(node):
         max_vel = int(round(15000.0 / 60.0 * enc_res))
 
     node.sdo['SetModeOfOperation'].raw = MODE_IDLE
+
+    # Bleed off a hot i2t accumulator (leftover from a recent run) before spinning up -- otherwise it
+    # folds current immediately and truncates the peak. 0x3025:1 is read-only, so it only decays with
+    # idle time (~20/s); wait (idle) until it's below I2T_READY or we hit the cap.
+    def _i2t_now():
+        try:
+            return node.sdo[0x3025][1].raw
+        except Exception:
+            return 0
+    i2t_start = _i2t_now()
+    i2t_waited = 0.0
+    if i2t_start > I2T_READY:
+        print("Waiting for i2t to bleed off ({} -> <{}) so the peak isn't truncated...".format(
+            i2t_start, I2T_READY))
+        _wt0 = time.time()
+        while _i2t_now() > I2T_READY and (time.time() - _wt0) < I2T_WAIT_MAX:
+            time.sleep(0.5)
+        i2t_waited = time.time() - _wt0
+        i2t_start = _i2t_now()
+        print("  i2t now {} (waited {:.0f}s)".format(i2t_start, i2t_waited))
+
     for cw in (CLEAR_FAULT, SHUTDOWN, OP_ENABLED):
         node.sdo['ControlWord'].raw = cw
     node.sdo['SetModeOfOperation'].raw = MODE_PROFILE_VEL
@@ -234,9 +274,14 @@ def vitals(node):
     # --- header: model + LagFactor make each run self-identifying for baseline-vs-cal compare ---
     stamp = time.strftime("%Y-%m-%d %H:%M:%S")
     emit("=" * 66)
-    emit("TOP-SPEED VITALS   {}   LagFactor={}   {}".format(
-        model, lag if lag >= 0 else "?", stamp))
+    emit("TOP-SPEED VITALS   {}   LagFactor={}   Settle={}ns   {}".format(
+        model, lag if lag >= 0 else "?", set_ns if set_ns >= 0 else "?", stamp))
     emit("=" * 66)
+    if i2t_start > I2T_READY:
+        emit("  NOTE: started with i2t={} (still hot after {:.0f}s) -- PEAK MAY BE TRUNCATED.".format(
+            i2t_start, i2t_waited))
+    elif i2t_waited > 0:
+        emit("  (waited {:.0f}s for i2t to bleed to {} before spin-up)".format(i2t_waited, i2t_start))
     # --- timeline digest so the spin-up -> peak -> fold shape is visible ---
     emit("TIMELINE   ({} samples, {:.1f} s)".format(len(T), T[-1]))
     emit("   t(s)     RPM   iq(mA)  i2t   %mod")
@@ -345,8 +390,9 @@ def vitals(node):
     # --- write the same block to scripts/velocitytests/<model>_lag<lag>_<timestamp>.log ---
     logdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'velocitytests')
     os.makedirs(logdir, exist_ok=True)
-    fname = "{}_lag{}_{}.log".format(
-        model, lag if lag >= 0 else "NA", time.strftime("%Y%m%d-%H%M%S"))
+    fname = "{}_lag{}_set{}_{}.log".format(
+        model, lag if lag >= 0 else "NA", set_ns if set_ns >= 0 else "NA",
+        time.strftime("%Y%m%d-%H%M%S"))
     fpath = os.path.join(logdir, fname)
     with open(fpath, 'w') as fh:
         fh.write("\n".join(out) + "\n")
@@ -356,9 +402,20 @@ def vitals(node):
 def main():
     net = can_backend.make_network(CAN, bitrate=1_000_000)
     node = None
+    orig_settle = None
     try:
         node = net.add_node(NODE, EDS)
         node.sdo.RESPONSE_TIMEOUT = 1.0
+        if SETTLING is not None:
+            try:
+                node.sdo['SetModeOfOperation'].raw = MODE_IDLE       # MaxSettlingTime applies live while idle
+                orig_settle = node.sdo['Amp']['MaxSettlingTime'].raw
+                node.sdo['Amp']['MaxSettlingTime'].raw = int(SETTLING)
+                _rb = node.sdo['Amp']['MaxSettlingTime'].raw
+                print("MaxSettlingTime override: {} ns applied (was {} ns, readback {} ns) -- restored on exit"
+                      .format(SETTLING, orig_settle, _rb))
+            except Exception as _se:
+                print("Could not set MaxSettlingTime: {}".format(_se))
         vitals(node)
         print("\nDone. Paste this block back.")
         return 0
@@ -367,6 +424,9 @@ def main():
             if node is not None:
                 node.sdo['TargetVelocity'].raw = 0
                 node.sdo["SetModeOfOperation"].raw = MODE_IDLE
+                if orig_settle is not None:
+                    node.sdo['Amp']['MaxSettlingTime'].raw = orig_settle
+                    print("MaxSettlingTime restored to {} ns.".format(orig_settle))
                 print("Puck idled.")
         except Exception:
             pass

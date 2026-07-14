@@ -2352,14 +2352,14 @@ DefaultValue=0
 [3008]
 ParameterName=Alpha
 ObjectType=0x09
-SubNumber=8
+SubNumber=9
 
 [3008sub0]
 ParameterName=NumberOfEntries
 ObjectType=0x07
 DataType=0x0005
 AccessType=ro
-DefaultValue=7
+DefaultValue=8
 
 [3008sub1]
 ParameterName=Raw
@@ -2410,17 +2410,24 @@ DataType=0x0003
 AccessType=rw
 DefaultValue=0
 
+[3008sub8]
+ParameterName=DriveGatedOffset
+ObjectType=0x07
+DataType=0x0003
+AccessType=rw
+DefaultValue=0
+
 [3009]
 ParameterName=Beta
 ObjectType=0x09
-SubNumber=8
+SubNumber=9
 
 [3009sub0]
 ParameterName=NumberOfEntries
 ObjectType=0x07
 DataType=0x0005
 AccessType=ro
-DefaultValue=7
+DefaultValue=8
 
 [3009sub1]
 ParameterName=Raw
@@ -2466,6 +2473,13 @@ DefaultValue=0
 
 [3009sub7]
 ParameterName=Slope
+ObjectType=0x07
+DataType=0x0003
+AccessType=rw
+DefaultValue=0
+
+[3009sub8]
+ParameterName=DriveGatedOffset
 ObjectType=0x07
 DataType=0x0003
 AccessType=rw

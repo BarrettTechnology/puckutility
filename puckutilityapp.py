@@ -1065,6 +1065,38 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             pass
         return False
 
+    def _recover_can_adapter(self, can_device):
+        """USB-reset a wedged CANable and reopen. When the bus power is cycled while the app is
+        open, the CANable's TX queue fills (frames the powered-off puck never ACKed), so every
+        subsequent SEND fails with ENOBUFS — the interface still opens, so can_port's open-failure
+        recovery never fires. A USB re-enumeration is the only thing that flushes that queue.
+        Called from scan_pucks when a rescan hits the TX-buffer error, so the user doesn't have to
+        close/reopen the app. Returns True if the bus reopened. Best-effort, no sudo; CANable only."""
+        if not can_backend.iface_is_candlelight(can_device):
+            return False
+        try:
+            self.network.disconnect()   # stop RX thread before the reset re-enumerates the link
+        except Exception:
+            pass
+        if not self._reset_can_usb(can_device):
+            return False
+        print('USB-resetting CAN adapter (TX buffer wedged after bus power-cycle)…')
+        _deadline = time.monotonic() + 1.5
+        while time.monotonic() < _deadline:
+            try:
+                wx.SafeYield()
+            except Exception:
+                pass
+            time.sleep(0.05)
+        try:
+            self._replace_network(can_device, bitrate=1000000)
+            self.network.scanner.reset()
+            self.network.scanner.search()
+            print('CAN reset recovered the adapter — rescanning…')
+            return True
+        except Exception:
+            return False
+
     def can_port(self,event,skipADC=False,silent=False,auto_reconnect=False):
         self.Rescanning = False
         # Cancel any pending auto-reconnect: this connect attempt supersedes it.
@@ -1316,6 +1348,22 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             #print(str(datetime.datetime.now()) + " Complete!!!")
         except Exception as e:
             if "buffer" in str(e) or "heavy" in str(e):
+                # TX-buffer wedge: the bus was power-cycled while the app was open, so the CANable's
+                # send queue is full and every scan send fails with ENOBUFS. USB-reset the adapter
+                # ONCE and rescan automatically — no app restart needed. Gated to a real TX-buffer
+                # error on a CANable, one retry only (_scan_reset_done) so a dead bus still reports.
+                _cd = self.choice_port.GetStringSelection()
+                if (not getattr(self, '_scan_reset_done', False)
+                        and can_backend.is_tx_buffer_error(e)
+                        and can_backend.iface_is_candlelight(_cd)):
+                    self._scan_reset_done = True
+                    print(f'Scan hit TX-buffer error ({e}) — auto-resetting CANable and rescanning...')
+                    try:
+                        _recovered = self._recover_can_adapter(_cd)
+                    finally:
+                        self._scan_reset_done = False
+                    if _recovered:
+                        return self.scan_pucks(event, selfCALL=selfCALL, skipADC=skipADC)
                 print('No Pucks Found') # Establish error for no pucks
                 # No active puck — clear ID, firmware-version, and the
                 # Select ID dropdown.
@@ -2795,7 +2843,8 @@ def _setup_logging():
 # dispatch to them when CLI flags are present.
 from cli_ops import (
     _cli_connect, _cli_flash, _cli_config, _cli_calibrate_all,
-    _cli_calibrate_cogging, _cli_make_network, _cli_system_config,
+    _cli_calibrate_itiming, _cli_calibrate_slope,
+    _cli_make_network, _cli_system_config,
     _cli_info,
 )
 
@@ -2938,13 +2987,11 @@ Examples:
     ops.add_argument('--config', metavar='CSV',
                      help='Path to motor configuration CSV file')
     ops.add_argument('--calibrate', action='store_true',
-                     help='Run full calibration (test_encoder, ibias, igainfactor, enczero)')
-    ops.add_argument('--calibrate-cogging', action='store_true',
-                     dest='calibrate_cogging',
-                     help='Run cogging torque characterisation sweep (data only; SEND_TO_PUCK=False)')
-    parser.add_argument('--fast', action='store_true',
-                        help='Fast calibration mode: 64 bins, 12 steps/bin (~1.5 min vs ~5 min). '
-                             'For debugging iteration; same accuracy for k=7 cogging.')
+                     help='Run full calibration (test_encoder, ibias, igainfactor, slope, enczero, fold)')
+    ops.add_argument('--calibrate-settling', action='store_true', dest='calibrate_settling',
+                     help='Run ONLY the MaxSettlingTime (ADC settling) calibration')
+    ops.add_argument('--calibrate-slope', action='store_true', dest='calibrate_slope',
+                     help='Run ONLY the Current Sense Slope calibration')
     ops.add_argument('--system-config', metavar='INI', dest='system_config',
                      help='Path to system configuration INI file')
     ops.add_argument('--flash-canable', metavar='FIRMWARE', nargs='?', const='',
@@ -2960,7 +3007,7 @@ Examples:
     # No operation flag → launch GUI. --touchscreen is a GUI-mode flag, so
     # passing it alone (or with nothing else) still falls into this branch.
     if not (args.scan or args.info or args.flash or args.config
-            or args.calibrate or args.calibrate_cogging
+            or args.calibrate or args.calibrate_settling or args.calibrate_slope
             or args.system_config or args.flash_canable is not None):
         MyApp.touchscreen = args.touchscreen
         # Must run before MyApp() creates the first window so the Wayland
@@ -3001,8 +3048,10 @@ Examples:
     # Remaining operations need an explicit target
     if not args.id and not args.all:
         parser.error('specify target nodes with --id or use --all to scan')
-    if not (args.flash or args.config or args.calibrate or args.calibrate_cogging):
-        parser.error('specify an operation: --scan, --flash, --config, --calibrate, --calibrate-cogging, or --system-config')
+    if not (args.flash or args.config or args.calibrate
+            or args.calibrate_settling or args.calibrate_slope):
+        parser.error('specify an operation: --scan, --flash, --config, --calibrate, '
+                     '--calibrate-settling, --calibrate-slope, or --system-config')
 
     # Always scan first so we can validate requested IDs against the live bus
     scan_net, found_ids = _cli_connect(args.can)
@@ -3025,7 +3074,8 @@ Examples:
             sys.exit(1)
 
     # Execute operation across all validated target nodes
-    if args.calibrate or args.calibrate_cogging:
+    _any_cal = args.calibrate or args.calibrate_settling or args.calibrate_slope
+    if _any_cal:
         cal_net = _cli_make_network(args.can)
     for node_id in node_ids:
         print(f"\n--- Node {node_id} ---")
@@ -3036,8 +3086,11 @@ Examples:
         elif args.calibrate:
             cal_node = cal_net.add_node(node_id, 'puck4.eds')
             _cli_calibrate_all(cal_node)
-        elif args.calibrate_cogging:
+        elif args.calibrate_settling:
             cal_node = cal_net.add_node(node_id, 'puck4.eds')
-            _cli_calibrate_cogging(cal_node, fast=getattr(args, 'fast', False))
-    if args.calibrate or args.calibrate_cogging:
+            _cli_calibrate_itiming(cal_node)
+        elif args.calibrate_slope:
+            cal_node = cal_net.add_node(node_id, 'puck4.eds')
+            _cli_calibrate_slope(cal_node)
+    if _any_cal:
         cal_net.disconnect()

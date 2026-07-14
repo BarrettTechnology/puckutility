@@ -107,14 +107,29 @@ def _cli_calibrate_enczero(node, network=None):
         None, calAll=True, _upd=lambda v: None)
 
 
-def _cli_calibrate_cogging(node, network=None, fast=False):
-    return _HeadlessCalibrateAdapter(node, network).cogging_calibrate_auto(
-        None, calAll=True, _upd=lambda v: None, fast=fast)
+def _cli_calibrate_itiming(node, network=None):
+    """Settling-time (MaxSettlingTime) cal. calAll=True so it runs headless: no standalone
+    autochain popup, no interactive firmware-gate dialog. Applies + saves the pick."""
+    return _HeadlessCalibrateAdapter(node, network).calibrate_itiming(None, calAll=True)
+
+
+def _cli_calibrate_slope(node, network=None):
+    """Current Sense Slope cal (calAll=True: skips the interactive fw-gate dialog)."""
+    return _HeadlessCalibrateAdapter(node, network).calibrate_current_slope(None, calAll=True)
 
 
 def _cli_calibrate_all(node, network=None):
     adapter = _HeadlessCalibrateAdapter(node, network)
     print(f"  Running full calibration sequence for node {node.id}...")
+    # Clear the Current Sense Slope up front (mirrors the GUI calibrate_all): Bias/Gain must
+    # measure the RAW offset, not a signal the firmware is already correcting.
+    try:
+        node.sdo[0x3008][7].raw = 0
+        node.sdo[0x3009][7].raw = 0
+        node.sdo['Save']['Single'].raw = ((0x3008 << 8) | 0x07)
+        node.sdo['Save']['Single'].raw = ((0x3009 << 8) | 0x07)
+    except Exception:
+        pass
     if not adapter.test_encoder(None, calAll=True):
         print("  Calibration aborted.")
         return False
@@ -124,12 +139,24 @@ def _cli_calibrate_all(node, network=None):
     if not adapter.calibrate_igainfactor(None, calAll=True, _upd=lambda v: None):
         print("  Calibration aborted.")
         return False
+    # Current Sense Slope: retry once on a transient SYNC/SDO glitch, then continue (a failure
+    # just leaves the slope OFF — safe — since it was cleared above). Skipped on fw < 4.4.0.
+    for _slope_try in (1, 2):
+        try:
+            adapter.calibrate_current_slope(None, calAll=True, force_sdo=(_slope_try == 2))
+            break
+        except Exception as _e:
+            print(f"  Current Sense Slope attempt {_slope_try}/2 failed: {_e}")
+            adapter._slope_stored = False
     # NOTE: calibrate_enczero returns None on success and only False on a
     # user-requested abort, so check `is False` explicitly here — `if not ...`
     # would wrongly treat a successful run as an abort.
     if adapter.calibrate_enczero(None, calAll=True, _upd=lambda v: None) is False:
         print("  Calibration aborted.")
         return False
+    # Baseline fold — ONLY if the slope stored a trustworthy fit (gated on _slope_stored).
+    if getattr(adapter, '_slope_stored', False):
+        adapter.fold_baseline_offset(None, calAll=True)
     print("  Calibration complete!")
     return True
 
