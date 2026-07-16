@@ -3343,7 +3343,11 @@ class calibrate():
             except Exception:
                 BUS_FLOOR = 250
 
-            LAG_HARD_CAP  = 256    # never exceed ~one full 50 us control-cycle of lead (orig ran away ~290)
+            LAG_HARD_CAP  = 450    # FW advance ceiling. Was 256 (=1.0 control-cycle in Q8.8); LagFactor
+                                   # is a FIELD-WEAKENING advance, not a delay fix, and the FW optimum on
+                                   # a fast motor sits well past one cycle -- measured ~370 on the P4-16,
+                                   # stable to 380+. Raised to reach it. (If a high-lag runaway recurs,
+                                   # lower this -- the old 256 was set after an ~290 runaway.)
             LAG_STEP      = 2
             SETTLE        = 0.10
             SPIN_S        = 2.5    # spin-up at commanded max velocity
@@ -4731,7 +4735,10 @@ class calibrate():
                     if _bi < n_upload:
                         _bk_exp  = int(_top_bins[_bi])
                         _bA_exp  = float(amps[_top_bins[_bi]])
-                        _psi_exp = (float(phases[_top_bins[_bi]])
+                        # MUST mirror the upload's psi EXACTLY (line ~4694), including the e_polarity
+                        # factor on the phase -- omitting it sign-flips the expected A_s/A_c on
+                        # e_polarity=-1 (direct-drive) motors and false-alarms every bin as MISMATCH.
+                        _psi_exp = (e_polarity * float(phases[_top_bins[_bi]])
                                     - 2.0 * math.pi * _bk_exp * float(enc_start) / float(enc_resolution))
                         _as_exp  = _clamp_i16( 256.0 * _bA_exp * math.sin(_psi_exp))
                         _ac_exp  = _clamp_i16(-256.0 * _bA_exp * math.cos(_psi_exp))
