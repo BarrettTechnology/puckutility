@@ -298,7 +298,6 @@ def _cli_info(can_device, node_ids=None):
             'model':    _PRODUCT_CODE_MODELS.get(pc, 'unknown') if pc is not None else 'unknown',
             'settling': _sdo('Amp', 'MaxSettlingTime'),
             'enc_on':   _sdo(0x3027, 1),
-            'cog_on':   _sdo(0x3028, 1),
             'bus_v':    _sdo('Amplifier', 'BusVoltage'),
             'temp':     _sdo('Amplifier', 'Temperature'),
         })
@@ -321,7 +320,6 @@ def _cli_info(can_device, node_ids=None):
         print('  ADC settling:  {}'.format(
             '{} ns'.format(info['settling']) if info['settling'] is not None else 'unknown'))
         print('  Enc comp:      {}'.format(_yn(info['enc_on'])))
-        print('  Cogging comp:  {}'.format(_yn(info['cog_on'])))
         print('  Bus voltage:   {}'.format(
             'unknown' if info['bus_v'] is None else '{:.1f} V'.format(info['bus_v'] / 10.0)))
         print('  Temperature:   {}'.format(
