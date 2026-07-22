@@ -586,3 +586,228 @@ class SpinScanner:
     def __exit__(self, *exc):
         self._teardown()
         return False
+
+
+# =====================================================================================
+# FIRMWARE DATA-LOGGER capture (control-rate burst) -- the primitive for the settling cal
+# =====================================================================================
+# The puck's firmware data logger (app/log.c) records ONE record per control cycle
+# (PWM_freq / PWM_PATTERNS_PER_CONTROL_CYCLE = PWM/4, so 4-20 kHz) straight into RAM --
+# far denser and faster than the 2 kHz SYNC-streamed FastPDO, and with NO host in the loop
+# during capture (so no SDO/SYNC collision). Each record is 4x int16:
+#     [alpha_raw(0x3008:1,U16), beta_raw(0x3009:1,U16), theta_e(0x60EA:0,I16), target_trq(0x6071:0,I16)]
+# (log.c logRecord order; the same four OD entries logDump() re-populates on each SYNC.)
+#
+# Protocol (host side):
+#   COLLECT: write the desired record count to 0x2385:2 (0/omit -> firmware default 5000, capped
+#            to the 5000-record RAM buffer), then write 0x2385:1 = EXEC_LOG_COLLECT (2). The firmware
+#            records every control cycle and forces MODE_IDLE + LOG_DUMP once `count` records land.
+#            (EXEC_LOG_STEP_REPONSE (1) is the classic 15 ms-baseline-then-torque-step trace; it
+#            always uses the full buffer and ignores the preset -- left intact for back-compat.)
+#   DUMP:    each SYNC frame, firmware's logDump() writes the next record's 4 values into those OD
+#            entries. Map a SYNCHRONOUS TPDO4 onto the four entries and pump one SYNC per record; the
+#            frame carries that record. Drain `count` records, then TPDO4 is restored.
+#
+# Firmware requirement: EXEC_LOG_COLLECT + the preset count (0x2385:2). `probe_capable()` checks it
+# so a caller can fall back to the FastPDO path on older firmware.
+EXEC_LOG_STEP_REPONSE = 1
+EXEC_LOG_COLLECT      = 2
+LOG_MAX_RECORDS       = 5000
+_LOG_ENTRIES = [(0x3008, 1, 16), (0x3009, 1, 16), (0x60EA, 0, 16), (0x6071, 0, 16)]
+_LOG_FMT = '<HHhh'          # alpha_raw U16, beta_raw U16, theta_e I16, target_trq I16
+_SYNC_COB = 0x80
+
+
+class LoggerCapture:
+    """Control-rate burst capture via the firmware data logger. Reusable primitive: the CALLER owns
+    the drive (mode, ud/theta, MaxSettlingTime, ...) during collection -- LoggerCapture only triggers
+    the collect, waits for the buffer to fill, and drains the dump back to the host.
+
+    Usage:
+        with LoggerCapture(node) as lc:
+            if lc.ok:
+                # caller has already energised + set the operating point (held angle, ud, etc.)
+                recs = lc.collect(n_records=400)     # [(alpha_raw, beta_raw, theta_e, target_trq), ...]
+                # ... optionally change the operating point and collect() again ...
+    Restores TPDO4 (and stops SYNC) on __exit__. Does NOT touch the drive -- the caller idles it.
+    """
+
+    def __init__(self, node, tpdo_n=4):
+        self.node = node
+        self.n = tpdo_n
+        self._cob = None
+        self._orig_map = None
+        self._orig_trans = None
+        self._orig_enabled = None
+        self._cb = {}
+        # notifier-thread capture state (GIL-safe: notifier writes, main thread reads)
+        self._latest = None
+        self._frames = 0
+        self.ok = False
+        self.err = None
+
+    # --- capability probe: does this firmware understand the preset-count collect? ---
+    def probe_capable(self):
+        """True if 0x2385:2 (preset record count) exists -- the marker for EXEC_LOG_COLLECT support.
+        Lets a caller fall back to the FastPDO path on firmware without the logger preset feature."""
+        try:
+            self.node.sdo.upload(0x2385, 2)
+            return True
+        except Exception as e:
+            self.err = e
+            return False
+
+    def __enter__(self):
+        n = self.node
+        try:
+            n.tpdo.read()
+            src = n.tpdo[self.n]
+            self._orig_map = [(v.index, v.subindex, v.length) for v in src.map if v.length]
+            self._orig_trans = src.trans_type
+            self._orig_enabled = src.enabled
+            try:
+                n.network.sync.stop()                      # known SYNC-off state
+            except Exception:
+                pass
+            # Map TPDO4 -> the 4 logged OD entries ONCE (synchronous) and subscribe the raw callback
+            # ONCE. The dump config is identical every collect(), so re-mapping per call (NMT PRE-OP/OP
+            # + SDO round-trips, ~150-250 ms each) was pure overhead across a many-capture sweep.
+            tp = self._map_tpdo(_LOG_ENTRIES, 1, True)
+            self._cob = tp.cob_id
+            if not self._cob:
+                raise RuntimeError("TPDO{} has no COB-ID after dump remap".format(self.n))
+            for i in (1, 2, 3, 4):                          # silence app GUI PdoMap callbacks
+                try:
+                    self._cb[i] = list(n.tpdo[i].callbacks)
+                    n.tpdo[i].callbacks.clear()
+                except Exception:
+                    pass
+            n.network.subscribe(self._cob, self._on_frame)
+            self.ok = True
+        except Exception as e:
+            self.ok = False
+            self.err = e
+        return self
+
+    def _on_frame(self, can_id, data, timestamp):
+        if len(data) < 8:
+            return
+        try:
+            self._latest = struct.unpack_from(_LOG_FMT, data)
+        except struct.error:
+            return
+        self._frames += 1
+
+    # --- PDO (re)map helper (pre-op window; PDO map arrays only writable when not operational) ---
+    def _map_tpdo(self, entries, trans_type, enabled):
+        n = self.node
+        n.nmt.state = 'PRE-OPERATIONAL'
+        n.tpdo.read()
+        tp = n.tpdo[self.n]
+        tp.clear()
+        for idx, sub, length in entries:
+            tp.add_variable(idx, sub, length)
+        tp.trans_type = trans_type
+        tp.enabled = enabled
+        n.tpdo.save()
+        n.tpdo.read()
+        n.nmt.state = 'OPERATIONAL'
+        return n.tpdo[self.n]
+
+    def _mode_display(self):
+        try:
+            return self.node.sdo[0x6061].raw
+        except Exception:
+            return None
+
+    def collect(self, n_records=LOG_MAX_RECORDS, step_response=False, fill_timeout=None):
+        """Trigger a control-rate capture and drain it. The caller must have ALREADY set the operating
+        point (energised, mode, ud/theta, MaxSettlingTime). Returns a list of
+        (alpha_raw, beta_raw, theta_e, target_trq) tuples (len == n_records), or [] on failure.
+
+        step_response=True uses the classic EXEC_LOG_STEP_REPONSE (full-buffer, 15 ms baseline then
+        the firmware torque step); n_records is forced to the full buffer in that case.
+        """
+        if not self.ok:
+            return []
+        n = self.node
+        n_records = LOG_MAX_RECORDS if step_response else max(1, min(int(n_records), LOG_MAX_RECORDS))
+        try:
+            # 1) preset the record count (ignored by the step-response path, which forces full buffer)
+            if not step_response:
+                n.sdo[0x2385][2].raw = n_records
+            # 2) estimate the fill time from the control rate (PWM_freq / 4) to size the wait/timeout
+            try:
+                _pwm_hz = float(n.sdo[0x3001][1].raw)
+            except Exception:
+                _pwm_hz = 20000.0
+            _rec_hz = max(1000.0, _pwm_hz / 4.0)           # records/s = control-cycle rate
+            _fill_s = n_records / _rec_hz
+            if fill_timeout is None:
+                fill_timeout = _fill_s * 3.0 + 0.5         # generous: fill + margin
+
+            # 3) trigger the collect. Firmware records autonomously (no SYNC needed) and forces
+            #    MODE_IDLE + LOG_DUMP once n_records land.
+            self._frames = 0
+            n.sdo[0x2385][1].raw = EXEC_LOG_STEP_REPONSE if step_response else EXEC_LOG_COLLECT
+
+            # 4) wait for the buffer to fill: sleep the bulk of the estimate, then poll MODE_DISPLAY
+            #    for the firmware's forced IDLE (0) as the "collection done" signal.
+            time.sleep(min(_fill_s, fill_timeout))
+            _t0 = time.time()
+            while time.time() - _t0 < fill_timeout:
+                if self._mode_display() == MODE_IDLE:
+                    break
+                time.sleep(0.005)
+
+            # 5) DUMP: TPDO4 is already mapped SYNCHRONOUS onto the four logged OD entries (once, in
+            #    __enter__). Pump one SYNC per record; each SYNC advances logDump() one record and the
+            #    synchronous TPDO4 ships it, captured by the raw callback.
+            recs = []
+            for _ in range(n_records):
+                start = self._frames
+                n.network.send_message(_SYNC_COB, b'')      # one SYNC -> one record shipped
+                # wait for the frame carrying this record (a few control periods max)
+                deadline = time.monotonic() + 0.05
+                while self._frames == start and time.monotonic() < deadline:
+                    time.sleep(0.0002)
+                if self._frames == start:
+                    break                                   # dump stalled -> return what we have
+                if self._latest is not None:
+                    recs.append(self._latest)
+            return recs
+        except Exception as e:
+            self.err = e
+            return []
+
+    def _restore_tpdo(self):
+        n = self.node
+        try:
+            if self._cob is not None:
+                n.network.unsubscribe(self._cob, self._on_frame)
+                self._cob = None
+        except Exception:
+            pass
+        for i, cbs in self._cb.items():
+            try:
+                n.tpdo[i].callbacks.extend(cbs)
+            except Exception:
+                pass
+        self._cb = {}
+
+    def __exit__(self, *exc):
+        try:
+            self.node.network.sync.stop()
+        except Exception:
+            pass
+        if self._orig_map:
+            try:
+                self._map_tpdo(self._orig_map, self._orig_trans, self._orig_enabled)
+            except Exception:
+                try:
+                    self.node.nmt.state = 'OPERATIONAL'
+                except Exception:
+                    pass
+            self._orig_map = None
+        self._restore_tpdo()
+        return False
