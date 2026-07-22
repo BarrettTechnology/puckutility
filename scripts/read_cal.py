@@ -512,22 +512,107 @@ def read_cal(node, model=None, ref_csv=None, save_log=True, node_id=None):
 
 
 # ----------------------------------------------------------------------------- #
+# CAL GATE -- pass/fail "is this cal usable?" for the puckutility post-flash flow,
+# so a forced re-cal only happens when the cal is ACTUALLY invalid.
+# ----------------------------------------------------------------------------- #
+
+# DEFAULT (blank/0) on these is EXPECTED and does NOT require a full re-cal -- they
+# are optional refinements/tuning the puck runs fine without. DEFAULT on anything
+# ELSE means a critical value is uncalibrated -> Cal Needed.
+_OPTIONAL_DEFAULTS = {
+    (0x3008, 7), (0x3008, 8),   # current-sense slope / drive-gated offset (new-fw refinements)
+    (0x3009, 7), (0x3009, 8),
+    (0x3013, 2), (0x3013, 3),   # user encoder zero / polarity
+    (0x3013, 5),                # lag factor (field-weakening tuning)
+    (0x3024, 2), (0x3024, 3),   # control gain factor / zeta
+    (0x3025, 2),                # i2t filter cutoff
+}
+
+CAL_IDLE_MAX_MA = 200   # idle |I| (drive OFF) above this => current-sense zero is off
+
+
+def _read_idle_current_mA(node, samples=8):
+    """Average |I| = sqrt(id^2 + iq^2) in mA at idle (drive OFF, passive). None if unreadable."""
+    try:
+        i_peak = node.sdo['Calibration']['i_peak'].raw
+    except Exception:
+        try:
+            i_peak = _read_int(node, 0x3011, 9, False)
+        except Exception:
+            i_peak = None
+    if not i_peak:
+        return None
+    acc = 0.0
+    n = 0
+    for _ in range(samples):
+        try:
+            idc = node.sdo['Motor']['id'].raw / 1000.0 * i_peak
+            iq  = node.sdo['CurrentFeedback'].raw / 1000.0 * i_peak
+        except Exception:
+            continue
+        acc += (idc * idc + iq * iq) ** 0.5
+        n += 1
+    return (acc / n) if n else None
+
+
+def cal_gate(node, model=None, ref_csv=None, node_id=None):
+    """Non-destructive 'Cal Needed?' gate for the puckutility post-flash flow.
+
+    Runs the full read_cal audit (present + in-range + fw-version-format-aware) plus a
+    live idle-current sanity check, and decides whether the stored cal is usable.
+
+    Returns (ok, issues, report):
+      ok=True  -> cal is valid; SKIP the forced re-cal.
+      ok=False -> issues[] are the human reasons to show as 'Cal Needed'.
+
+    CONSERVATIVE by design: any SUSPECT / MISSING / critical-DEFAULT / bad idle current
+    fails the gate. A false 'Cal Needed' only costs a re-cal; a false 'OK' ships a bad
+    cal -- so when in doubt, fail.
+    """
+    report = read_cal(node, model=model, ref_csv=ref_csv, save_log=False, node_id=node_id)
+    issues = []
+    for e in report["entries"]:
+        st = e.get("status")
+        if st in (SUSPECT, MISSING):
+            issues.append("{} (0x{:04X}:{}): {}".format(
+                e["name"], e["idx"], e["sub"], e.get("why") or st))
+        elif st == DEFAULT and (e["idx"], e["sub"]) not in _OPTIONAL_DEFAULTS:
+            issues.append("{} (0x{:04X}:{}): {}".format(
+                e["name"], e["idx"], e["sub"], e.get("why") or "uncalibrated"))
+    # live current-sense zero sanity (drive off): confirms the stored bias actually
+    # produces ~0, not just that it is present / in-range.
+    try:
+        i_idle = _read_idle_current_mA(node)
+        if i_idle is not None and i_idle > CAL_IDLE_MAX_MA:
+            issues.append("idle current {:.0f} mA (drive off, should be ~0) -- current-sense "
+                          "zero is off".format(i_idle))
+    except Exception as ex:
+        issues.append("idle-current check could not run: {}".format(ex))
+    return (len(issues) == 0), issues, report
+
+
+# ----------------------------------------------------------------------------- #
 # CLI (thin wrapper: parse args, connect, call read_cal, print)
 # ----------------------------------------------------------------------------- #
 def _parse_argv(argv):
     model = ref = None
     can = node = None
+    gate = False
     pos = []
     i = 0
     while i < len(argv):
         a = argv[i]
         if a in ("-h", "--help"):
-            print("Usage: read_cal.py [--can can0] [--node 127] [--model P4-16] [--ref <config.csv>]\n"
+            print("Usage: read_cal.py [--can can0] [--node 127] [--model P4-16] [--ref <config.csv>] [--gate]\n"
                   "  Reads all cal/config values off a puck and flags anomalies vs a baseline.\n"
                   "  --ref <known-good.csv>  point at a REAL config to enable the R/L doubled-value check\n"
                   "                          (the blank templates carry only placeholder R/L).\n"
+                  "  --gate                  run the pass/fail Cal-Needed gate (audit + live idle current)\n"
+                  "                          instead of the full report; exit 0 = cal OK, 1 = Cal Needed.\n"
                   "  Positional [can] [node] also accepted (e.g. read_cal.py can0 127).")
             sys.exit(0)
+        if a == "--gate":
+            gate = True; i += 1; continue
         if a in ("--can", "--dev") and i + 1 < len(argv):
             can = argv[i + 1]; i += 2; continue
         if a.startswith("--can="):
@@ -549,14 +634,22 @@ def _parse_argv(argv):
         can = pos[0] if len(pos) > 0 else "can0"
     if node is None:
         node = int(pos[1]) if len(pos) > 1 else 127
-    return can, node, model, ref
+    return can, node, model, ref, gate
 
 
 def main():
-    can, node_id, model, ref = _parse_argv(sys.argv[1:])
+    can, node_id, model, ref, gate = _parse_argv(sys.argv[1:])
     net = can_backend.make_network(can, bitrate=1_000_000)
     try:
         node = net.add_node(node_id, EDS)
+        if gate:
+            ok, issues, report = cal_gate(node, model=model, ref_csv=ref, node_id=node_id)
+            print("CAL GATE  node {}  fw {}  ->  {}".format(
+                node_id, report.get("sw_version", "?"),
+                "PASS -- cal valid, no re-cal needed" if ok else "FAIL -- Cal Needed"))
+            for it in issues:
+                print("  - {}".format(it))
+            return 0 if ok else 1
         report = read_cal(node, model=model, ref_csv=ref, save_log=True, node_id=node_id)
         print("\n".join(report["lines"]))
         if report["log_path"]:
