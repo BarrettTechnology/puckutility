@@ -79,6 +79,38 @@ import csv
 import flashp4
 import logging
 
+# Puck-specific EMCY fault descriptions (from firmware app/faults.c codes[]). The canopen
+# library's get_desc() only knows generic CiA ranges -- e.g. it renders 0x2311 as just
+# "Current", which hides what actually tripped. Map the puck's real meanings (+ a remedy for
+# the ones a user can act on) and fall back to get_desc() for anything not listed here.
+PUCK_FAULT_DESC = {
+    0x2310: "current limited (i2t / current-limit active) -- self-recovers",
+    0x2311: ("MAGNET DEMAG protection -- reverse d-axis current (-id) exceeded the "
+             "temperature-derated safe limit, so the drive stopped to protect the motor "
+             "magnets. Trips when driving hard at high speed while the magnet is HOT "
+             "(natural field-weakening drives -id negative). REMEDY: let the motor cool, "
+             "then clear the fault. This is protection working, not a hardware failure."),
+    0x2320: "SHORT CIRCUIT (output stage) -- blown FET / phase short",
+    0x3210: "bus OVER-voltage",
+    0x3220: "bus UNDER-voltage",
+    0x4210: "AMPLIFIER over-temperature",
+    0x4310: "MOTOR over-temperature",
+    0x7122: "phasing (commutation / encoder alignment)",
+    0x7320: "position sensor",
+    0x7321: "encoder magnet distance",
+    0x8411: "velocity tracking warning",
+    0x8414: "velocity tracking fault",
+    0x8418: "velocity limit",
+    0x8611: "position tracking warning",
+    0x8613: "position tracking",
+    0x8614: "position tracking fault",
+}
+
+
+def puck_fault_desc(emcy_error):
+    """Puck-specific description for an EMCY, falling back to the library's generic text."""
+    return PUCK_FAULT_DESC.get(emcy_error.code, emcy_error.get_desc())
+
 # Give the app its own Application User Model ID so Windows groups the
 # taskbar entry under our icon instead of the generic python.exe icon.
 # Must run before the frame is shown for Windows to honour it.
@@ -291,6 +323,11 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         # Extra Safety Flags
         self.requireCal = False
         self.requireConfig = False
+        # Re-entrancy guard: True while a firmware flash or config upload is in flight. The upload
+        # loops call wx.Yield (to keep the UI alive), which lets a second dropped file / task start
+        # CONCURRENTLY and collide on the CAN bus -> both fail with SDO aborts. Any task must hold off
+        # until the in-flight upload finishes. Set/cleared in browse_fw and file_to_p4.
+        self._upload_busy = False
 
         # Barrett colors
         self.blue = '#253B92'
@@ -720,7 +757,28 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         except Exception:
             pass
 
+    def _busy_reject(self, what="operation"):
+        """Return True (and warn) when a firmware flash or config upload is in flight. Callers bail
+        so NO task runs concurrently with an upload -- the upload loops call wx.Yield, so a button/
+        menu/drop can otherwise re-enter mid-upload and collide on the CAN bus (FLASH_FAILED / SDO
+        aborts, then a cal against a half-written puck)."""
+        if getattr(self, '_upload_busy', False):
+            print("Upload in progress — {} deferred until it finishes.".format(what))
+            try:
+                dlg = wx.MessageDialog(None,
+                                       "An upload is in progress.\n\nWait for it to finish before "
+                                       "starting another operation.",
+                                       "Upload in progress", wx.OK | wx.ICON_INFORMATION)
+                dlg.ShowModal(); dlg.Destroy()
+            except Exception:
+                pass
+            return True
+        return False
+
     def ProcessDroppedFile(self,filepath):
+        # HOLD OFF: never start a new upload/task while a flash or config upload is already in flight.
+        if self._busy_reject("dropped file '{}'".format(os.path.basename(filepath))):
+            return
         # print(filepath)
         root, extension = os.path.splitext(filepath)
         # print(extension)
@@ -986,7 +1044,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         # means a real fault that requires the drive to stop.
         is_fault = (register != 0x00) and (code not in WARNING_CODES)
         prefix    = "Fault" if is_fault else "Warning"
-        error_msg = f"{prefix} {hex(code)}: {emcy_error.get_desc()}"
+        error_msg = f"{prefix} {hex(code)}: {puck_fault_desc(emcy_error)}"
 
         print(error_msg)
         if emcy_error.data:
@@ -1642,6 +1700,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
     def browse_fw(self, event, path=False):  # wxGlade: wxp3_frame.<event_handler>
         #print("Event handler 'browse_fw'")
+        if self._busy_reject("firmware flash"):
+            return
         if self.check_for_node() == False:
             return
         if self.choice_id.GetSelection() == wx.NOT_FOUND:
@@ -1710,52 +1770,60 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         # the event loop so paints/focus changes still flow even though
         # we're inside this synchronous polling block (the previous version
         # froze the gauge whenever the window lost focus).
-        result = None
-        while result is None:
-            latest = None
-            try:
-                while True:
-                    item = self.update_queue.get_nowait()
-                    self.update.append(item)
-                    if item == "Pass" or item == "Fail" or item == "Done":
-                        result = item
-                        break
-                    latest = item
-            except multiprocessing.queues.Empty:
-                pass
-            if latest is not None:
-                self.UpdateUI(latest)
-            if result is None:
-                wx.YieldIfNeeded()
-                time.sleep(0.05)
-
-        process.terminate()
-        process.join()
-        self.OnTaskComplete()
-
-        print(result)
-
-        self.requireCal = True
-        self.requireConfig = True
-
-        # Reconnect, then send NMT Reset Node to the flashed puck so it exits
-        # the flashloader and boots application firmware. flashp4 only sends
-        # LAUNCH and disconnects — without this reset the puck stays in the
-        # flashloader.
-        self.can_port(None, True)
+        # HOLD OFF other tasks/drops for the whole flash + recovery. Without this, a config file
+        # dropped mid-flash re-enters (the drain loop calls wx.Yield) and collides on the CAN bus,
+        # which is exactly the FLASH_FAILED + SDO-abort cascade seen when a flash and config overlap.
+        # try/finally guarantees the flag clears even if the reconnect/rescan throws.
+        self._upload_busy = True
         try:
-            print("Sending NMT reset to node {} ...".format(node_id))
-            self.network.send_message(0x0, [0x81, int(node_id)])
-        except Exception as _nmt_e:
-            print("WARNING: NMT reset failed: {}".format(_nmt_e))
-        time.sleep(0.5)
+            result = None
+            while result is None:
+                latest = None
+                try:
+                    while True:
+                        item = self.update_queue.get_nowait()
+                        self.update.append(item)
+                        if item == "Pass" or item == "Fail" or item == "Done":
+                            result = item
+                            break
+                        latest = item
+                except multiprocessing.queues.Empty:
+                    pass
+                if latest is not None:
+                    self.UpdateUI(latest)
+                if result is None:
+                    wx.YieldIfNeeded()
+                    time.sleep(0.05)
 
-        # Re-scan
-        self.scan_pucks(None, False, True)
-        self.frame_statusbar.SetStatusText("Ready", 1)
+            process.terminate()
+            process.join()
+            self.OnTaskComplete()
 
-        if self.adcWasON == True:
-            self.on_off_adc(self)
+            print(result)
+
+            self.requireCal = True
+            self.requireConfig = True
+
+            # Reconnect, then send NMT Reset Node to the flashed puck so it exits
+            # the flashloader and boots application firmware. flashp4 only sends
+            # LAUNCH and disconnects — without this reset the puck stays in the
+            # flashloader.
+            self.can_port(None, True)
+            try:
+                print("Sending NMT reset to node {} ...".format(node_id))
+                self.network.send_message(0x0, [0x81, int(node_id)])
+            except Exception as _nmt_e:
+                print("WARNING: NMT reset failed: {}".format(_nmt_e))
+            time.sleep(0.5)
+
+            # Re-scan
+            self.scan_pucks(None, False, True)
+            self.frame_statusbar.SetStatusText("Ready", 1)
+
+            if self.adcWasON == True:
+                self.on_off_adc(self)
+        finally:
+            self._upload_busy = False
 
     # Mapping of CANopen 0x1018 sub-2 product codes to Puck model names.
     # Shared resolver handles both legacy numeric codes and the newer
@@ -1788,6 +1856,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         return None
 
     def file_to_p4(self, event, path=False):  # wxGlade: wxp3_frame.<event_handler>
+        if self._busy_reject("config upload"):
+            return
         if self.check_for_node() == False:
             return
         #print("Event handler 'file_to_p4'")
@@ -1884,72 +1954,90 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
         # Drain-and-pump pattern: see the matching loop in browse_fw for the
         # rationale (focus-loss freeze + flicker avoidance).
-        result = None
-        while result is None:
-            latest = None
-            try:
-                while True:
-                    item = self.update_queue.get_nowait()
-                    self.update.append(item)
-                    if item == "Pass" or item == "Fail":
-                        result = item
-                        break
-                    latest = item
-            except multiprocessing.queues.Empty:
-                pass
-            if latest is not None:
-                self.UpdateUI(latest)
-            if result is None:
-                wx.YieldIfNeeded()
-                time.sleep(0.05)
+        # HOLD OFF other tasks/drops for the ENTIRE upload+configure. The drain loop below calls
+        # wx.Yield, so without this a second dropped file re-enters mid-upload and collides on the CAN
+        # bus. The try/finally guarantees the flag clears even if an SDO abort escapes configure_Puck.
+        self._upload_busy = True
+        try:
+            result = None
+            while result is None:
+                latest = None
+                try:
+                    while True:
+                        item = self.update_queue.get_nowait()
+                        self.update.append(item)
+                        if item == "Pass" or item == "Fail":
+                            result = item
+                            break
+                        latest = item
+                except multiprocessing.queues.Empty:
+                    pass
+                if latest is not None:
+                    self.UpdateUI(latest)
+                if result is None:
+                    wx.YieldIfNeeded()
+                    time.sleep(0.05)
 
-        process.terminate()
-        process.join()
-        self.OnTaskComplete()
+            process.terminate()
+            process.join()
+            self.OnTaskComplete()
 
-        print(result)
-        
-        if result == "Pass":
-          print("Success!")
-        else:
-          print("Configuration file failed to upload...")
-          msg = "Configuration file failed to upload..." \
-          "\n\nDebug:" \
-          "\n-Verify proper configuration file formatting" \
-          "\n-Verify correct version of config file" \
-          "\n-View terminal log for additional details"
-          dlg = wx.MessageDialog(None,msg)
-          dlg.ShowModal()
-          dlg.Destroy()
+            print(result)
 
-        self.requireCal = True
-        self.requireConfig = False
+            if result != "Pass":
+                # FAILED upload -> the puck may be half-written. Do NOT save/reboot/configure or run
+                # a calibration against it (that is exactly what threw the SDO aborts / cal fault).
+                # Reconnect so the app isn't left with a dead network handle, flag config-still-needed,
+                # and bail -- the user must fix the file/comms and retry.
+                print("Configuration file failed to upload...")
+                msg = "Configuration file failed to upload..." \
+                "\n\nDebug:" \
+                "\n-Verify proper configuration file formatting" \
+                "\n-Verify correct version of config file" \
+                "\n-View terminal log for additional details"
+                dlg = wx.MessageDialog(None,msg)
+                dlg.ShowModal()
+                dlg.Destroy()
+                try:
+                    self._replace_network(can_device, bitrate=1000000)
+                    self.node = self.network.add_node(int(node_id), 'puck4.eds')
+                except Exception as _e:
+                    print("  (could not re-establish network after failed upload: {})".format(_e))
+                self.requireConfig = True   # config NOT applied; block driving/cal until a good upload
+                self.frame_statusbar.SetStatusText("Config upload FAILED — not calibrating", 1)
+                if self.adcWasON == True:
+                    self.on_off_adc(self)
+                    self.adcWasON = False
+                return
 
-        # THIS SEEMS LIKE IT SHOULDN'T HAPPEN HERE, use can_port / scan_pucks??
+            print("Success!")
 
-        print("Establishing a new network...")
-        self._replace_network(can_device, bitrate=1000000)
-        self.node = self.network.add_node(int(node_id), 'puck4.eds')
-        
-        # Save all OD entries to EEPROM (takes about 0.55 sec)
-        print("Saving OD entries")
-        default_timeout = canopen.sdo.SdoClient.RESPONSE_TIMEOUT
-        canopen.sdo.SdoClient.RESPONSE_TIMEOUT = 1.0
-        self.node.sdo['Save']['All'].raw = 0x65766173 # Key = 'SAVE'
-        canopen.sdo.SdoClient.RESPONSE_TIMEOUT = default_timeout
+            self.requireCal = True
+            self.requireConfig = False
 
-        # Transmit an NMT reboot command to this node
-        print("Rebooting puck")
-        self.network.send_message(0x0, [0x81, int(node_id)])
-        time.sleep(0.5) # wait for puck to reboot (avoids loss of communication)
-        # self.network.send_message(0x4, [self.LAUNCH, int(node_id)])
-        # cansend can0 67F#2F.11.34.01.04.00.00.00
-        self.configure_Puck()
-        self.frame_statusbar.SetStatusText("Ready", 1)
+            print("Establishing a new network...")
+            self._replace_network(can_device, bitrate=1000000)
+            self.node = self.network.add_node(int(node_id), 'puck4.eds')
 
-        if self.adcWasON == True:
-            self.on_off_adc(self)
-            self.adcWasON = False
+            # Save all OD entries to EEPROM (takes about 0.55 sec)
+            print("Saving OD entries")
+            default_timeout = canopen.sdo.SdoClient.RESPONSE_TIMEOUT
+            canopen.sdo.SdoClient.RESPONSE_TIMEOUT = 1.0
+            self.node.sdo['Save']['All'].raw = 0x65766173 # Key = 'SAVE'
+            canopen.sdo.SdoClient.RESPONSE_TIMEOUT = default_timeout
+
+            # Transmit an NMT reboot command to this node
+            print("Rebooting puck")
+            self.network.send_message(0x0, [0x81, int(node_id)])
+            time.sleep(0.5) # wait for puck to reboot (avoids loss of communication)
+            self.configure_Puck()
+            self.frame_statusbar.SetStatusText("Ready", 1)
+
+            if self.adcWasON == True:
+                self.on_off_adc(self)
+                self.adcWasON = False
+        finally:
+            self._upload_busy = False
 
     def _cal_params_sane(self):
         """Sanity-check the active puck's iSense calibration before enabling a drive mode.
@@ -1985,6 +2073,9 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
     def select_test(self, event):  # wxGlade: wxp3_frame.<event_handler>
         if getattr(self, '_emcy_selection', False):
+            return
+        if self._busy_reject("drive/test"):
+            self.choice_test.SetSelection(0)
             return
 
         if self.ADC_ON == True:
@@ -2102,7 +2193,16 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             print("Drive is ENABLED and ready.")
         else:
             print(f"Drive NOT enabled. StatusWord: {hex(status)}")
-            # We are not actually stopping functionality here, rather using this as a debug tool
+            # DS402 bit 3 = FAULT. A drive mode CANNOT be set while faulted -- the firmware
+            # rejects SetModeOfOperation with SDO abort 0x05040001, which used to crash this
+            # handler with a traceback. Abort cleanly with an actionable message instead.
+            if status & 0x08:
+                print("  Drive is FAULTED -- clear the fault before starting a test.")
+                print("  (If this was a 0x2311 magnet-demag / thermal trip, let the motor "
+                      "COOL first, then clear. That fault is protection working, not damage.)")
+                self.button_6.SetBackgroundColour(self.orange)
+                return
+            # Not faulted, just not yet enabled -- continue (used as a debug tool).
 
         if quick_test == 1:  # Torque
             print("Setting Mode = TORQUE")
@@ -2167,6 +2267,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.node.network.sync.start()
 
     def run_test(self, event):  # wxGlade: wxp3_frame.<event_handler>
+        if self._busy_reject("drive command"):
+            return
         if len(self.network.scanner.nodes) == 0:
             print('No active node!')
             dlg = wx.MessageDialog(None, 'No active node!')
