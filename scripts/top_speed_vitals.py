@@ -104,6 +104,7 @@ def vitals(node):
     lt_raw  = _u(0x3011, 6)                 # inductance (raw OD units)
     j_raw   = _u(0x3011, 7)                 # rotor inertia (raw OD units)
     no_load = _u(0x3024, 6)                 # NoLoadSpeed (RPM) -- the puck's own top-speed spec
+    pwm_hz  = _u(0x3001, 1)                 # PWM freq (Hz) -- verify forced/tuned rate took effect
     pole_pairs = (poles // 2) if poles else 0
 
     def _motor_temp():
@@ -145,9 +146,48 @@ def vitals(node):
     if i2t_start > I2T_READY:
         print("Waiting for i2t to bleed off ({} -> <{}) so the peak isn't truncated...".format(
             i2t_start, I2T_READY))
+        print("  (i2t models WINDING COOLING -- decays only while idle, ~20/s. A high start here"
+              " usually means the puck was just driven hard, e.g. an enc-comp hunt.)")
         _wt0 = time.time()
-        while _i2t_now() > I2T_READY and (time.time() - _wt0) < I2T_WAIT_MAX:
-            time.sleep(0.5)
+        _last = None; _last_t = None
+        while (time.time() - _wt0) < I2T_WAIT_MAX:
+            _v = _i2t_now()
+            if _v <= I2T_READY:
+                break
+            _el = time.time() - _wt0
+            # live countdown with an ETA from the observed decay rate, so a STUCK accumulator (rate ~0
+            # = not cooling) is obvious rather than looking like a hang.
+            _rate = ((_last - _v) / (_el - _last_t)) if (_last is not None and _el > _last_t) else 0.0
+            _eta = ((_v - I2T_READY) / _rate) if _rate > 0.1 else float('inf')
+            print("  i2t = {:>5}  ({:.0f}s elapsed, {:.0f}/s{})".format(
+                _v, _el, _rate,
+                ", ~{:.0f}s left".format(_eta) if _eta != float('inf') else " -- NOT decaying?!"))
+            # ABORT if it's not bleeding after ~10 s (flat or RISING). A rising accumulator at IDLE
+            # means the firmware sees current > i_cont with the motor OFF -- a PHANTOM idle current from
+            # an incomplete current-sense cal. i2t will never bleed, and it FALSELY current-limits the
+            # motor, so a run now would be capped/invalid (peak folded to i_cont). Stop and say why.
+            if _el >= 10.0 and _v >= i2t_start - 3:
+                # MEASURE the idle current to confirm/quantify the phantom (motor is idle, so |I| must
+                # be ~0). A large idle |I| is the smoking gun: a bad current-sense zero (bias/offset).
+                try:
+                    _idle_id = node.sdo['Motor']['id'].raw / 1000.0 * i_peak
+                    _idle_iq = node.sdo['CurrentFeedback'].raw / 1000.0 * i_peak
+                    _idle_i = (_idle_id * _idle_id + _idle_iq * _idle_iq) ** 0.5
+                except Exception:
+                    _idle_i = float('nan')
+                print("\n  !! i2t is NOT bleeding (idle) -- flat/RISING. The firmware senses current > "
+                      "i_cont ({} mA) with the motor OFF: a PHANTOM idle current.".format(i_cont))
+                print("     measured idle |I| = {:.0f} mA  (should be ~0)  <-- bad current-sense zero "
+                      "(bias/offset).".format(_idle_i))
+                print("     The motor is NOT hot; this falsely trips i2t and current-limits the motor, "
+                      "so top speed would be capped at CONTINUOUS, not the real peak. A run now is invalid.")
+                print("     FIX: re-run the full current-sense calibration until idle |I| (0x3010:6 / "
+                      "0x6078) reads ~0. Aborting.")
+                node.sdo['TargetVelocity'].raw = 0
+                node.sdo['SetModeOfOperation'].raw = MODE_IDLE
+                raise SystemExit(1)
+            _last, _last_t = _v, _el
+            time.sleep(2.0)
         i2t_waited = time.time() - _wt0
         i2t_start = _i2t_now()
         print("  i2t now {} (waited {:.0f}s)".format(i2t_start, i2t_waited))
@@ -274,8 +314,9 @@ def vitals(node):
     # --- header: model + LagFactor make each run self-identifying for baseline-vs-cal compare ---
     stamp = time.strftime("%Y-%m-%d %H:%M:%S")
     emit("=" * 66)
-    emit("TOP-SPEED VITALS   {}   LagFactor={}   Settle={}ns   {}".format(
-        model, lag if lag >= 0 else "?", set_ns if set_ns >= 0 else "?", stamp))
+    emit("TOP-SPEED VITALS   {}   PWM={}kHz   LagFactor={}   Settle={}ns   {}".format(
+        model, pwm_hz // 1000 if pwm_hz else "?", lag if lag >= 0 else "?",
+        set_ns if set_ns >= 0 else "?", stamp))
     emit("=" * 66)
     if i2t_start > I2T_READY:
         emit("  NOTE: started with i2t={} (still hot after {:.0f}s) -- PEAK MAY BE TRUNCATED.".format(
