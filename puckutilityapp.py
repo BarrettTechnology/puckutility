@@ -588,6 +588,15 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 self.choice_port.SetStringSelection(_saved_port)
             except Exception:
                 pass
+        # --can DEVICE (hidden dev): make the requested interface (e.g. vcan0 for the SIL) selectable
+        # + selected even if it isn't auto-enumerated. Takes precedence over the saved port.
+        if MyApp.can_arg:
+            try:
+                if self.choice_port.FindString(MyApp.can_arg) == wx.NOT_FOUND:
+                    self.choice_port.Append(MyApp.can_arg)
+                self.choice_port.SetStringSelection(MyApp.can_arg)
+            except Exception:
+                pass
         self.button_1.SetToolTip('Scan to find all Pucks on the CAN bus')
         self.choice_id.SetToolTip('Select active Puck')
         self.text_version.SetToolTip('Firmware version of active Puck')
@@ -1184,6 +1193,32 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
         print("Establishing a new network...")
         can_device = self.choice_port.GetStringSelection()
+
+        # Pre-flight the interface BEFORE we bring up our own master. On SocketCAN
+        # the bus is shareable, so two masters don't error on connect -- they collide
+        # mid-transfer (the SDO aborts we used to only catch after the fact). We gate
+        # ONLY the 'in_use' case (another master already on the bus); 'down'/'missing'
+        # fall through to the existing connect + USB-reset recovery + no-device dialog
+        # below, which handle them better than an early return would.
+        _ready, _state, _msg, _counts = can_backend.probe_interface(can_device)
+        if _state == 'in_use':
+            print('CAN pre-flight: {} -- {}'.format(_state, _msg))
+            self.network = None
+            self.progress.Hide()
+            self.frame_statusbar.SetStatusText('CAN busy: another master is on the bus', 1)
+            self.frame_statusbar.Refresh()
+            self.frame_statusbar.Update()
+            if not silent and not auto_reconnect:
+                dlg = wx.MessageDialog(None, _msg + '\n\nRescan once it is free.',
+                                       'CAN interface unavailable', wx.OK | wx.ICON_WARNING)
+                dlg.ShowModal()
+                dlg.Destroy()
+            self.node = None
+            self.choice_id.SetItems([])
+            self.choice_id.SetSelection(wx.NOT_FOUND)
+            self.text_id.ChangeValue('')
+            self.text_version.ChangeValue('')
+            return False
 
         try:
             self._replace_network(can_device, bitrate=1000000)
@@ -2717,6 +2752,9 @@ class MyApp(wx.App):
 
     # Set by __main__ before instantiation when --touchscreen is passed.
     touchscreen = False
+    # Set by __main__ from --can: inject a device (e.g. vcan0 for the SIL simulator) into the
+    # port dropdown even if it isn't auto-listed. Hidden dev use -- only when --can is passed.
+    can_arg = None
 
     def OnInit(self):
         #self.SetTopWindow(self.frame)
@@ -3112,6 +3150,7 @@ Examples:
             or args.calibrate or args.calibrate_settling or args.calibrate_slope
             or args.system_config or args.flash_canable is not None):
         MyApp.touchscreen = args.touchscreen
+        MyApp.can_arg = args.can        # e.g. --can vcan0 -> preselect the sim's virtual bus
         # Must run before MyApp() creates the first window so the Wayland
         # app_id is set when the toplevel is mapped.
         _setup_linux_desktop_integration('PuckUtilityApp', 'Puck Utility')

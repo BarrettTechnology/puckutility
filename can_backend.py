@@ -16,6 +16,9 @@ without a restart.
 
 import platform
 import os
+import socket
+import struct
+import time
 import canopen
 
 
@@ -98,6 +101,109 @@ def list_can_interfaces():
     except OSError:
         pass
     return names
+
+
+class CanBusUnavailable(RuntimeError):
+    """The CAN interface can't be brought up cleanly. `state` is one of:
+      'missing' -- interface not present (adapter unplugged / driver not loaded)
+      'down'    -- interface exists but is administratively DOWN
+      'in_use'  -- another CANopen master is already driving the bus (two masters
+                   would collide -> SDO aborts). See `message` for a user string.
+    Callers should surface `message` and NOT bring up their own master; re-probe on
+    the next scan and proceed once the bus is free."""
+    def __init__(self, state, message, counts=None):
+        super().__init__(message)
+        self.state = state
+        self.message = message
+        self.counts = counts or {}
+
+
+def _iface_up(dev):
+    """True/False if the SocketCAN interface is administratively UP (IFF_UP), or None
+    if that can't be read. CAN links usually report operstate 'unknown' even when up,
+    so we read the IFF_UP flag directly rather than operstate."""
+    try:
+        with open('/sys/class/net/{}/flags'.format(dev)) as f:
+            return bool(int(f.read().strip(), 16) & 0x1)   # IFF_UP = 0x1
+    except (OSError, ValueError):
+        return None
+
+
+def probe_interface(can_device, listen_s=0.30):
+    """Pre-flight a SocketCAN interface BEFORE bringing up our own CANopen master.
+
+    Returns (ready, state, message, counts):
+      ready True  -> safe to connect ('ok').
+      ready False -> state in {'missing','down','in_use'} with a human `message`.
+    Non-Linux / non-SocketCAN paths return (True,'ok','',{}) -- nothing to probe.
+
+    'in_use' is detected by PASSIVELY listening (~`listen_s`) for another master's
+    traffic -- SYNC (0x80) or SDO (0x580-0x67F) -- before we transmit anything. On
+    SocketCAN the bus is shareable, so two masters don't error on connect; they just
+    collide mid-transfer (the SDO aborts we keep catching). Catching it here, up
+    front, lets the app pause and wait for the bus to free instead. Fails OPEN: any
+    probe error returns ready -> we never falsely block a good bus."""
+    if platform.system() != 'Linux':
+        return True, 'ok', '', {}          # PCAN / CandleLight: nothing to sniff here
+    dev = str(can_device)
+    if dev not in list_can_interfaces():
+        return (False, 'missing',
+                "CAN interface '{}' not found -- adapter unplugged, driver not loaded, or the "
+                "interface was never created.".format(dev), {})
+    if _iface_up(dev) is False:
+        return (False, 'down',
+                "CAN interface '{}' is DOWN. Bring it up first, e.g.:\n"
+                "    sudo ip link set {} up type can bitrate 1000000".format(dev, dev), {})
+
+    # Passive listen for another master's traffic. Raw AF_CAN receiver -- receive-only,
+    # so it can't disturb an innocent bus; multiple listeners are fine on SocketCAN.
+    try:
+        s = socket.socket(socket.PF_CAN, socket.SOCK_RAW, socket.CAN_RAW)
+        s.bind((dev,))
+        s.settimeout(0.05)
+    except OSError:
+        return True, 'ok', '', {}          # can't open a listener -> fail open, let connect try
+    sync = sdo = pdo = 0
+    t0 = time.time()
+    try:
+        while time.time() - t0 < listen_s:
+            try:
+                frame = s.recv(16)         # struct can_frame: id(4) dlc(1) pad(3) data(8)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            if len(frame) < 8:
+                continue
+            can_id = struct.unpack('<I', frame[:4])[0]
+            if can_id & 0x80000000:        # extended (29-bit) frame -> not 11-bit CANopen
+                continue
+            cob = can_id & 0x7FF
+            if cob == 0x80:                        # SYNC -> a master is running a SYNC producer
+                sync += 1
+            elif 0x580 <= cob <= 0x67F:            # SDO response (0x580+) / request (0x600+)
+                sdo += 1
+            elif 0x180 <= cob <= 0x57F:            # PDO -- only flows while a SYNC master drives
+                pdo += 1
+    finally:
+        try:
+            s.close()
+        except OSError:
+            pass
+
+    # Node heartbeats/bootup (0x700+) and EMCY (0x81-0xFF) are node-originated and DON'T mean another
+    # app is present, so they're ignored -- only master activity (SYNC/SDO/PDO) trips 'in_use'.
+    if sync or sdo or pdo:
+        seen = ", ".join(p for p in (
+            "{} SYNC".format(sync) if sync else "",
+            "{} SDO".format(sdo) if sdo else "",
+            "{} PDO".format(pdo) if pdo else "") if p)
+        return (False, 'in_use',
+                "CAN interface '{}' is already being driven by another CANopen master ({} in "
+                "{:.0f} ms). Another Puck Utility / pucktuner window or a script is likely running "
+                "-- close it, then rescan.".format(dev, seen, listen_s * 1000),
+                {'sync': sync, 'sdo': sdo, 'pdo': pdo})
+    return True, 'ok', '', {'sync': 0, 'sdo': 0, 'pdo': 0}
 
 
 def is_tx_buffer_error(exc):

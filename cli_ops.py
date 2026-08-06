@@ -297,6 +297,7 @@ def _cli_info(can_device, node_ids=None):
             'pc':       pc,
             'model':    _PRODUCT_CODE_MODELS.get(pc, 'unknown') if pc is not None else 'unknown',
             'settling': _sdo('Amp', 'MaxSettlingTime'),
+            'pwm_hz':   _sdo(0x3001, 1),
             'enc_on':   _sdo(0x3027, 1),
             'bus_v':    _sdo('Amplifier', 'BusVoltage'),
             'temp':     _sdo('Amplifier', 'Temperature'),
@@ -317,6 +318,8 @@ def _cli_info(can_device, node_ids=None):
         print('  Flashloader:   {}'.format(info['fl_str']))
         print('  Model:         {}  (product code {})'.format(
             info['model'], pc if pc is not None else '?'))
+        print('  PWM freq:      {}'.format(
+            'unknown' if info['pwm_hz'] is None else '{:.1f} kHz'.format(info['pwm_hz'] / 1000.0)))
         print('  ADC settling:  {}'.format(
             '{} ns'.format(info['settling']) if info['settling'] is not None else 'unknown'))
         print('  Enc comp:      {}'.format(_yn(info['enc_on'])))
