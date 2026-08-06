@@ -191,19 +191,22 @@ def probe_interface(can_device, listen_s=0.30):
         except OSError:
             pass
 
-    # Node heartbeats/bootup (0x700+) and EMCY (0x81-0xFF) are node-originated and DON'T mean another
-    # app is present, so they're ignored -- only master activity (SYNC/SDO/PDO) trips 'in_use'.
-    if sync or sdo or pdo:
+    # Only MASTER-originated traffic proves another app is driving the bus. Node-originated frames do
+    # NOT: heartbeats/bootup (0x700+), EMCY (0x81-0xFF), AND async/event-driven PDOs (0x180-0x57F) --
+    # e.g. a left-on ADC-monitor stream keeps the PUCK emitting PDOs with no master present. Counting
+    # PDO as "another master" false-blocked the connect (the puck's own stream). So trip 'in_use' only
+    # on SYNC (0x80) or SDO (0x580-0x67F), which cannot occur without a second master. PDO is kept for
+    # diagnostics only.
+    if sync or sdo:
         seen = ", ".join(p for p in (
             "{} SYNC".format(sync) if sync else "",
-            "{} SDO".format(sdo) if sdo else "",
-            "{} PDO".format(pdo) if pdo else "") if p)
+            "{} SDO".format(sdo) if sdo else "") if p)
         return (False, 'in_use',
                 "CAN interface '{}' is already being driven by another CANopen master ({} in "
                 "{:.0f} ms). Another Puck Utility / pucktuner window or a script is likely running "
                 "-- close it, then rescan.".format(dev, seen, listen_s * 1000),
                 {'sync': sync, 'sdo': sdo, 'pdo': pdo})
-    return True, 'ok', '', {'sync': 0, 'sdo': 0, 'pdo': 0}
+    return True, 'ok', '', {'sync': 0, 'sdo': 0, 'pdo': pdo}
 
 
 def is_tx_buffer_error(exc):
