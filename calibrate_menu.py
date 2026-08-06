@@ -542,6 +542,10 @@ class calibrate():
         if getattr(self, 'requireConfig', False):
             print("Calibration blocked: configuration required after firmware "
                   "update — apply configuration before calibrating.")
+            wx.MessageBox(
+                "Configuration is required after a firmware update before you can calibrate.\n\n"
+                "Apply the puck configuration first, then run calibration.",
+                "Configuration Required", wx.OK | wx.ICON_WARNING)
             return False
         if self.check_for_node() == False:
             # print("No active puck")
@@ -835,7 +839,9 @@ class calibrate():
         wx.Yield()
 
         try:
-            # Set Alpha & Beta gainfactors to 1.0 in Q4.12
+            # Set Alpha & Beta gainfactors to 1.0 in Q4.12 (keep the pre-cal values to restore on reject)
+            _orig_a_gf = self.node.sdo['Alpha']['Gainfactor'].raw
+            _orig_b_gf = self.node.sdo['Beta']['Gainfactor'].raw
             self.node.sdo['Alpha']['Gainfactor'].raw = 4096
             self.node.sdo['Beta']['Gainfactor'].raw = 4096
 
@@ -897,122 +903,55 @@ class calibrate():
                 time.sleep(0.05)
                 wx.Yield() # keep wx event loop alive so Windows doesn't mark the app "Not Responding"
 
-            _N_IGAIN_AVG  = 100
-            _HOLD_TOL_A   = 2.0   # mA — acceptable current error at each hold position
-            _HOLD_MAX_S   = 5.0   # s  — max time for closed-loop hold
-            _sleep_responsive(1) # Wait for filter to settle after ramp
-
-            # Closed-loop hold at Alpha peak: fine-tune motor_ud so id == calibration_current
-            _hold_t0 = time.time()
-            while time.time() - _hold_t0 < _HOLD_MAX_S:
-                _id_now = self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak
-                _err = calibration_current - _id_now
-                _upd(30 + int(min(1.0, (time.time() - _hold_t0) / _HOLD_MAX_S) * 15))  # 30→45%
-                if abs(_err) < _HOLD_TOL_A:
-                    break
-                if _id_now > 0:
-                    _correction = int(motor_ud * _err / _id_now / 8)
-                else:
-                    _correction = 100 if _err > 0 else -100
-                _correction = max(-300, min(300, _correction))
-                motor_ud = max(0, min(32000, motor_ud + _correction))
-                self.node.sdo['Motor']['ud'].raw = motor_ud
-                time.sleep(0.05)
+            # --- Rotating-vector fundamental fit (drift-immune gain measurement) ---
+            # The old 2-angle method stalled at Theta_e=+pi (alpha) and -pi/2 (beta); if the
+            # current-sense ZERO drifts between the two reads -- the alpha-channel thermal drift
+            # at 100 kHz -- the alpha/beta ratio is biased -> "Beta Gainfactor out of bounds".
+            # Instead ROTATE the current vector through whole electrical revolutions and fit the
+            # FUNDAMENTAL amplitude of each channel:  Alpha ~ bias_a + A*cos(theta),
+            # Beta ~ bias_b + B*sin(theta);  gainfactor = 4096*|A|/|B|.  The DC bias/phantom/drift
+            # cancels (sum(cos)=sum(sin)=0 over whole revs) and the 2x-electrical term is
+            # orthogonal to the fundamental -> immune to BOTH. Validated hot @100 kHz (stock cal
+            # -> 6635 out-of-bounds; this -> 3886/3878/3889 stable). See scripts/gain_rotating.py.
+            _ROT_STEPS = 24
+            _ROT_REVS  = 3
+            _M   = _ROT_STEPS * _ROT_REVS
+            _Ac = _As = _Bc = _Bs = 0.0
+            _ids = []
+            for _k in range(_M):
+                _au  = (_k * 65536 // _ROT_STEPS) & 0xFFFF
+                _ang = _au if _au < 32768 else _au - 65536
+                self.node.sdo['Theta_e'].raw = _ang
+                time.sleep(0.12)
+                _th = 2.0 * math.pi * _k / _ROT_STEPS
+                _a  = float(self.node.sdo['Alpha']['Filtered'].raw)
+                _b  = float(self.node.sdo['Beta']['Filtered'].raw)
+                _Ac += _a * math.cos(_th);  _As += _a * math.sin(_th)
+                _Bc += _b * math.cos(_th);  _Bs += _b * math.sin(_th)
+                _ids.append(self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak)
+                _upd(30 + int(65 * _k / _M))   # 30 -> 95%
                 wx.Yield()
-            _id_now_a = self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak
-            print("  Alpha hold: id={:.1f} mA  ud={}  target={:.1f} mA".format(
-                _id_now_a, motor_ud, calibration_current))
-
-            _sum_a = _sum_id_a = 0
-            for _i in range(_N_IGAIN_AVG):
-                _upd(45 + _i * 12 // _N_IGAIN_AVG)  # 45→57%
-                _sum_a    += self.node.sdo['Alpha']['Filtered'].raw
-                _sum_id_a += self.node.sdo['Motor']['id'].raw
-                wx.Yield()
-            _q12_4 = self._fw_at_least(4, 4, 0)
-            a_filt_f = _sum_a / _N_IGAIN_AVG if _q12_4 else _sum_a / _N_IGAIN_AVG / 16.0
-            _id_at_a = (_sum_id_a / _N_IGAIN_AVG) / 1000.0 * i_peak
-            print("Peak Alpha = {0:.3f}  id={1:.1f} mA  theta_e={2:.2f} rad  ({3}-sample avg)".format(
-                a_filt_f, _id_at_a,
-                self.node.sdo['Theta_e'].raw / 32768.0 * 3.14159, _N_IGAIN_AVG))
-
-            self.node.sdo['Theta_e'].raw = -0x4000 # Stall @ Beta Peak (-pi/2)
-            _sleep_responsive(1) # Wait for current to settle after theta_e change
-            _upd(60)
-
-            # Closed-loop hold at Beta peak: re-tune motor_ud so id == calibration_current
-            _hold_t0 = time.time()
-            while time.time() - _hold_t0 < _HOLD_MAX_S:
-                _id_now = self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak
-                _err = calibration_current - _id_now
-                _upd(60 + int(min(1.0, (time.time() - _hold_t0) / _HOLD_MAX_S) * 15))  # 60→75%
-                if abs(_err) < _HOLD_TOL_A:
-                    break
-                if _id_now > 0:
-                    _correction = int(motor_ud * _err / _id_now / 8)
-                else:
-                    _correction = 100 if _err > 0 else -100
-                _correction = max(-300, min(300, _correction))
-                motor_ud = max(0, min(32000, motor_ud + _correction))
-                self.node.sdo['Motor']['ud'].raw = motor_ud
-                time.sleep(0.05)
-                wx.Yield()
-            _id_now_b = self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak
-            print("  Beta hold:  id={:.1f} mA  ud={}  target={:.1f} mA".format(
-                _id_now_b, motor_ud, calibration_current))
-
-            _sum_b = _sum_id_b = 0
-            for _i in range(_N_IGAIN_AVG):
-                _upd(75 + _i * 20 // _N_IGAIN_AVG)  # 75→95%
-                _sum_b    += self.node.sdo['Beta']['Filtered'].raw
-                _sum_id_b += self.node.sdo['Motor']['id'].raw
-                wx.Yield()
-            b_filt_f = _sum_b / _N_IGAIN_AVG if _q12_4 else _sum_b / _N_IGAIN_AVG / 16.0
-            _id_at_b = (_sum_id_b / _N_IGAIN_AVG) / 1000.0 * i_peak
-            print("Peak Beta  = {0:.3f}  id={1:.1f} mA  theta_e={2:.2f} rad  ({3}-sample avg)".format(
-                b_filt_f, _id_at_b,
-                self.node.sdo['Theta_e'].raw / 32768.0 * 3.14159, _N_IGAIN_AVG))
-
             self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
 
-            # Use high-precision bias from ibias (same session) if available;
-            # fall back to the OD value, which fw stores in the same scale it reads.
-            if hasattr(self, '_alpha_bias_f') and hasattr(self, '_beta_bias_f'):
-                abias_f = self._alpha_bias_f
-                bbias_f = self._beta_bias_f
-            else:
-                abias_f = float(self.node.sdo['Alpha']['Bias'].raw)
-                bbias_f = float(self.node.sdo['Beta']['Bias'].raw)
+            _Aamp   = math.hypot(_Ac, _As) * 2.0 / _M
+            _Bamp   = math.hypot(_Bc, _Bs) * 2.0 / _M
+            _id_med = sorted(_ids)[len(_ids) // 2] if _ids else 0.0
+            print("Rotating gain fit: |A|={:.1f}  |B|={:.1f}  ({} rev x {} steps, id~{:.0f} mA)".format(
+                _Aamp, _Bamp, _ROT_REVS, _ROT_STEPS, _id_med))
 
-            # Compute gainfactor in full float precision; round only for firmware write.
-            # Normalize each channel's ADC deflection by the actual current at that
-            # measurement position — makes the result correct even when the closed-loop
-            # hold converges to different currents for Alpha vs Beta.
-            a_delta = a_filt_f - abias_f
-            b_delta = b_filt_f - bbias_f
-            # Guard: the gainfactor divide needs real current AND real ADC deflection
-            # on BOTH channels. If the hold produced no measurable current (id ~ 0)
-            # or the ADC never moved off its bias (delta ~ 0), abort with a clear
-            # message instead of a "float division by zero" crash.
-            _min_id = 0.3 * calibration_current    # need >= 30% of target current
-            if (abs(_id_at_a) < _min_id or abs(_id_at_b) < _min_id
-                    or abs(a_delta) < 1.0 or abs(b_delta) < 1.0):
+            # Guard: need a real, measurable fundamental on BOTH channels.
+            if (_Aamp < 30.0 or _Bamp < 30.0 or _id_med < 0.3 * calibration_current):
                 raise RuntimeError(
-                    "iSense gain cal ABORTED: hold produced no measurable current "
-                    "(Alpha id={:.1f} mA, Beta id={:.1f} mA, target {:.0f} mA; "
-                    "ADC delta alpha={:.1f} beta={:.1f} cts). Rotor holds but the "
-                    "current sense reads ~0 -- check that this build updates Motor.id "
-                    "and triggers the iSense ADC in VOLTAGE mode.".format(
-                        _id_at_a, _id_at_b, calibration_current, a_delta, b_delta))
-            gainfactor = 4096.0 * (a_delta / _id_at_a) / (b_delta / _id_at_b)
-            gainfactor = round(gainfactor)
-            self.node.sdo['Beta']['Gainfactor'].raw = gainfactor
-            print("New Beta Gainfactor = {0}  (a_sens={1:.5f}  b_sens={2:.5f}  counts/mA)".format(
-                gainfactor, a_delta / _id_at_a, b_delta / _id_at_b))
+                    "iSense gain cal ABORTED: no measurable rotating current "
+                    "(|A|={:.1f} |B|={:.1f} cts, id~{:.0f} mA, target {:.0f} mA). Check that the "
+                    "build updates Motor.id and triggers the iSense ADC in VOLTAGE mode.".format(
+                        _Aamp, _Bamp, _id_med, calibration_current))
+            gainfactor = round(4096.0 * _Aamp / _Bamp)
+            print("New Beta Gainfactor = {0}  (a_sens/b_sens = {1:.5f})".format(
+                gainfactor, _Aamp / _Bamp))
 
-            # Check Bounds for error!! Can increase to 10% if needed
+            # Check Bounds -- VALIDATE BEFORE WRITING so a rejected value never reaches the OD.
             error = 0.10 # 10%
-
             out_of_bounds = gainfactor > round(4096 * (1 + error)) or gainfactor < round(4096 * (1 - error))
             if out_of_bounds:
                 print('Beta Gainfactor out of bounds!')
@@ -1024,8 +963,13 @@ class calibrate():
                     "\n\nWould you like to continue calibration?".format(
                         gainfactor, round(4096*(1-error)), round(4096*(1+error)))
                 if not self._prompt('Warning!', msg):
+                    # leave the pre-cal gainfactors intact (4096 was set only to measure)
+                    self.node.sdo['Alpha']['Gainfactor'].raw = _orig_a_gf
+                    self.node.sdo['Beta']['Gainfactor'].raw = _orig_b_gf
                     return False
 
+            # In-bounds (or user confirmed): NOW write to the OD and persist.
+            self.node.sdo['Beta']['Gainfactor'].raw = gainfactor
             self.node.sdo['Save']['Single'].raw = ((0x3008 << 8) | 0x06) # Save Alpha gainfactor to EE
             self.node.sdo['Save']['Single'].raw = ((0x3009 << 8) | 0x06) # Save Beta gainfactor to EE
 
