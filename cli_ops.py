@@ -219,6 +219,7 @@ def _cli_flash(can_device, node_id, fw_path):
 
 def _cli_config(can_device, node_id, csv_path):
     print(f"Uploading config to node {node_id} from {csv_path}...")
+    _cfg_t0 = time.time()
     canopen_runner.start(can_device, node_id, 'puck4.eds', csv_path, CLIProgress())
     # Mirror file_to_p4: save all OD entries to EEPROM then reboot
     save_net = _cli_make_network(can_device)
@@ -236,6 +237,72 @@ def _cli_config(can_device, node_id, csv_path):
     save_net.send_message(0x0, [0x81, node_id])
     time.sleep(0.5)
     save_net.disconnect()
+    print("Configuration complete for node {} — Time elapsed: {} seconds".format(
+        node_id, round(time.time() - _cfg_t0, 2)))
+
+
+def _cli_wait_for_node(node, timeout=8.0):
+    """Poll one cheap SDO read until the node answers (after a reboot / ID change).
+    Mirrors the GUI's MyApp._wait_for_node."""
+    saved = canopen.sdo.SdoClient.RESPONSE_TIMEOUT
+    canopen.sdo.SdoClient.RESPONSE_TIMEOUT = 0.2
+    try:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                node.sdo.upload(0x1000, 0)   # device type -- always present
+                return True
+            except Exception:
+                time.sleep(0.1)
+        return False
+    finally:
+        canopen.sdo.SdoClient.RESPONSE_TIMEOUT = saved
+
+
+def _cli_set_id(can_device, old_id, new_id):
+    """Change a puck's CAN node ID (old_id -> new_id) and remap its PDO COB-IDs to
+    match -- the headless equivalent of the GUI Set-ID button. Writes NetCfg,
+    NMT-resets the puck onto the new ID, then remap_pdo_cob_ids(save=True) so the
+    RPDO/TPDO COB-IDs follow the ID (the firmware does not re-derive them; a bare
+    NetCfg change would leave them on the old ID). Returns True on success."""
+    if not (1 <= new_id <= 127):
+        print(f"Error: new node ID must be 1..127 (got {new_id}).")
+        return False
+    if new_id == old_id:
+        print(f"Node {old_id} is already at ID {new_id}; nothing to do.")
+        return True
+    net = _cli_make_network(can_device)
+    try:
+        net.scanner.reset()
+        net.scanner.search()
+        time.sleep(0.5)
+        found = list(net.scanner.nodes)
+        if old_id not in found:
+            print(f"Error: node {old_id} not found on the bus (found {found}).")
+            return False
+        if new_id in found:
+            print(f"Error: node {new_id} is already in use on the bus.")
+            return False
+        node = net.add_node(old_id, 'puck4.eds')
+        _t0 = time.time()
+        print(f"Setting node ID {old_id} -> {new_id}...")
+        node.sdo['NetCfg'].raw = new_id
+        net.send_message(0x0, [0x81, old_id])   # NMT reset -> reboot onto the new ID
+        time.sleep(0.5)
+        new_node = net.add_node(new_id, 'puck4.eds')
+        if not _cli_wait_for_node(new_node):
+            print(f"Warning: node {new_id} did not respond after the ID change.")
+        ok, _res = canopen_runner.remap_pdo_cob_ids(
+            new_node, new_id, old_id=old_id, save=True, verify=True)
+        if ok:
+            print(f"PDO COB-IDs remapped to node {new_id} and saved to NV.")
+        else:
+            print("WARNING: PDO remap did not fully verify -- run --config to repair.")
+        print("Set node ID {} -> {} complete! Time elapsed: {} seconds".format(
+            old_id, new_id, round(time.time() - _t0, 2)))
+        return ok
+    finally:
+        net.disconnect()
 
 
 import can_backend

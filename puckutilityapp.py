@@ -1670,16 +1670,19 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             dlg.ShowModal()
             dlg.Destroy()
             return
-        if int(self.text_id.GetValue()) < 1: # or int(self.text_id.GetValue()) > 127: # Try to stop 127 loop
-            # Error message - resets ID to active if error
+        if int(self.text_id.GetValue()) < 1 or int(self.text_id.GetValue()) > 127:
+            # CAN node IDs are 7-bit (1..127). Enforcing the upper bound is now
+            # load-bearing: PDO COB-IDs are derived from the node ID below, and an
+            # out-of-range ID would produce invalid COB-IDs.
             indexID = self.network.scanner.nodes.index(self.getID())
             self.text_id.ChangeValue(str(self.getID()))
-            msg = ('Invalid CAN ID!')
+            msg = ('Invalid CAN ID (must be 1-127)!')
             dlg = wx.MessageDialog(None,msg)
             dlg.ShowModal()
             dlg.Destroy()
             return
         self.settingID = True
+        _sid_t0 = time.time()
         old_id = self.getID()
         node_id = int(self.text_id.GetValue())
 
@@ -1712,6 +1715,32 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         # polls only the new node -- one small SDO read per try.
         if not self._wait_for_node(node_id):
             print('Warning: node {} did not respond after the ID change.'.format(node_id))
+        else:
+            # Sync the PDO COB-IDs to the new node ID. A bare NetCfg change leaves all 8
+            # RPDO/TPDO COB-IDs at base|old_id -- the firmware does NOT re-derive them --
+            # so the puck would transmit/listen on the OLD id's slots, colliding with
+            # whatever owns old_id. remap_pdo_cob_ids writes base|new_id and Saves to NV
+            # (a plain write is RAM-only and reverts on reboot). Evidence + mechanism:
+            # scripts/pdo_persistence_probe.py.
+            try:
+                remap_node = (self.network[node_id] if node_id in self.network
+                              else self.network.add_node(node_id, 'puck4.eds'))
+                ok, _res = canopen_runner.remap_pdo_cob_ids(
+                    remap_node, node_id, old_id=old_id, save=True, verify=True)
+                if ok:
+                    print('PDO COB-IDs remapped to node {} and saved to NV.'.format(node_id))
+                else:
+                    raise RuntimeError('one or more PDO COB-IDs did not verify / save')
+            except Exception as e:
+                print('PDO remap after ID change failed: {}'.format(e))
+                dlg = wx.MessageDialog(
+                    None,
+                    'Node ID changed to {}, but updating the PDO COB-IDs failed:\n{}\n\n'
+                    'The puck may transmit/receive on the OLD ID. Run Configure to fix.'
+                    .format(node_id, e),
+                    'PDO remap incomplete', wx.OK | wx.ICON_WARNING)
+                dlg.ShowModal()
+                dlg.Destroy()
 
         # One re-scan to refresh the dropdown / node list.
         self.scan_pucks(None)
@@ -1721,17 +1750,12 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         if self.adcWasON == True:
             self.on_off_adc(self)
 
-        # We could also add something to set_id to automatically reload cob ids, but for now this is how we ensure IDs get updated
         self.choice_test.SetSelection(0)
-        # Should tell user calibration is required, and ask to perform 'calibrate all'
-        msg = "Configuration is required after changing ID.\nWould you like to configure the active Puck?"
-        dlg = wx.MessageDialog(None,msg,'Warning!',wx.YES_NO | wx.ICON_WARNING)
-        answer = dlg.ShowModal()
-        if answer == wx.ID_YES:
-            self.file_to_p4(None)
-        else:
-            pass
-        dlg.Destroy()
+        # PDO COB-IDs are now remapped + saved above, so a Set-ID no longer leaves the
+        # puck needing a full Configure -- the old "Configuration is required after
+        # changing ID" prompt has been removed.
+        print('Set node ID {} -> {} complete! Time elapsed: {} seconds'.format(
+            old_id, node_id, round(time.time() - _sid_t0, 2)))
 
     def browse_fw(self, event, path=False):  # wxGlade: wxp3_frame.<event_handler>
         #print("Event handler 'browse_fw'")
@@ -1977,6 +2001,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         node_id = self.choice_id.GetString(self.choice_id.GetSelection())
 
         print("Writing OD entries...")
+        _cfg_t0 = time.time()
         self.network.disconnect()
 
         # Using multithreading!
@@ -2073,6 +2098,9 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 self.adcWasON = False
         finally:
             self._upload_busy = False
+            print('Configuration {} — Time elapsed: {} seconds'.format(
+                'complete' if result == 'Pass' else 'ended (not applied)',
+                round(time.time() - _cfg_t0, 2)))
 
     def _cal_params_sane(self):
         """Sanity-check the active puck's iSense calibration before enabling a drive mode.
@@ -2985,7 +3013,7 @@ from cli_ops import (
     _cli_connect, _cli_flash, _cli_config, _cli_calibrate_all,
     _cli_calibrate_itiming, _cli_calibrate_slope,
     _cli_make_network, _cli_system_config,
-    _cli_info,
+    _cli_info, _cli_set_id,
 )
 
 
@@ -3134,6 +3162,9 @@ Examples:
                      help='Run ONLY the Current Sense Slope calibration')
     ops.add_argument('--system-config', metavar='INI', dest='system_config',
                      help='Path to system configuration INI file')
+    ops.add_argument('--set-id', metavar='NEW_ID', type=int, dest='set_id',
+                     help='Change the target puck (--id CURRENT_ID) CAN node ID to '
+                          'NEW_ID (1..127) and remap its PDO COB-IDs to match')
     ops.add_argument('--flash-canable', metavar='FIRMWARE', nargs='?', const='',
                      dest='flash_canable',
                      help='Flash CandleLight Multiboard firmware via USB DFU '
@@ -3148,7 +3179,8 @@ Examples:
     # passing it alone (or with nothing else) still falls into this branch.
     if not (args.scan or args.info or args.flash or args.config
             or args.calibrate or args.calibrate_settling or args.calibrate_slope
-            or args.system_config or args.flash_canable is not None):
+            or args.system_config or args.set_id is not None
+            or args.flash_canable is not None):
         MyApp.touchscreen = args.touchscreen
         MyApp.can_arg = args.can        # e.g. --can vcan0 -> preselect the sim's virtual bus
         # Must run before MyApp() creates the first window so the Wayland
@@ -3185,6 +3217,14 @@ Examples:
     if args.system_config:
         _cli_system_config(args.can, args.system_config)
         sys.exit(0)
+
+    # --set-id changes exactly one puck's node ID, so it needs a single --id
+    # (the CURRENT id) and does not use --all.
+    if args.set_id is not None:
+        if not args.id or len(args.id) != 1:
+            parser.error('--set-id requires exactly one --id <current_node_id>')
+        ok = _cli_set_id(args.can, args.id[0], args.set_id)
+        sys.exit(0 if ok else 1)
 
     # Remaining operations need an explicit target
     if not args.id and not args.all:

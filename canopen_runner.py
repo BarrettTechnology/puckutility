@@ -270,6 +270,87 @@ def math_eval(node):
 ############################### MAIN FUNCTIONS ################################
 ###############################################################################
 
+# --- Approach A: standalone PDO COB-ID remap ---------------------------------
+# The predefined connection set -- the SAME mapping the config CSV templates as
+# `<base> | $ID` (RPDO1-4 @ 0x1400-0x1403:1, TPDO1-4 @ 0x1800-0x1803:1). Keeping
+# it here makes canopen_runner the single source of truth for node_id -> COB-ID,
+# so the Set-ID button and a full Configure can't drift apart.
+PDO_COB_BASES = {
+    0x1400: 0x200, 0x1401: 0x300, 0x1402: 0x400, 0x1403: 0x500,   # RPDO1-4
+    0x1800: 0x180, 0x1801: 0x280, 0x1802: 0x380, 0x1803: 0x480,   # TPDO1-4
+}
+_PDO_VALID_BIT = 0x80000000    # bit31: 1 = PDO invalid/disabled
+_SAVE_SIGNATURE = 0x65766173   # "save" (CiA-301 0x1010:1)
+
+
+def remap_pdo_cob_ids(node, new_id, old_id=None, save=True, verify=True, log=print):
+    """Rewrite a node's 8 PDO comm-param COB-IDs to match `new_id` -- the standalone
+    equivalent of the config CSV's `<base> | $ID` templating, for use right after a
+    Set-ID change (this does NOT change the node ID itself).
+
+    Grounded in scripts/pdo_persistence_probe.py findings on P4 firmware:
+      * A bare Set-ID (NetCfg + reset) leaves all 8 COB-IDs at `base | old_id` -- the
+        firmware does NOT re-derive them from the node id -- so this remap is required.
+      * sub1 is writable DIRECTLY while the PDO is valid (no CiA-301 disable/bit31 dance
+        needed); a disable->write->enable fallback is kept in case a verify misses on
+        other firmware/PDO states.
+      * A plain write is RAM-only and reverts on reboot, so an explicit Save
+        (0x1010:1 = "save") IS REQUIRED to commit to NV -- hence save=True default.
+
+    Reads each entry and preserves its high bits, so it self-corrects and tolerates any
+    PDO layout. Only remaps PDOs currently keyed to `old_id` (when given), leaving any
+    deliberately cross-linked PDO untouched.
+
+    Returns (ok, results) where results is a list of (index, target_or_None, readback).
+    """
+    def _readback(index, base):
+        rb = int.from_bytes(node.sdo.upload(index, 1), 'little', signed=False)
+        return rb, (rb & 0x7FF) == (base | (new_id & 0x7F))
+
+    results = []
+    ok = True
+    for index, base in sorted(PDO_COB_BASES.items()):
+        try:
+            cur = int.from_bytes(node.sdo.upload(index, 1), 'little', signed=False)
+        except Exception as e:
+            log("  remap {:#06x}: read failed ({})".format(index, e))
+            ok = False; results.append((index, None, None)); continue
+        if old_id is not None and (cur & 0x7F) != (old_id & 0x7F):
+            log("  remap {:#06x}: node field 0x{:02X} != old id 0x{:02X}; leaving alone"
+                .format(index, cur & 0x7F, old_id & 0x7F))
+            results.append((index, None, cur)); continue
+        target = (cur & ~0x7FF) | base | (new_id & 0x7F)   # keep valid/RTR bits, set func+node
+        rb = None
+        try:
+            node.sdo.download(index, 1, target.to_bytes(4, 'little'))   # direct write (confirmed OK)
+            if verify:
+                rb, good = _readback(index, base)
+                if not good:
+                    log("  remap {:#06x}: direct verify miss (0x{:03X}); disable->write->enable"
+                        .format(index, rb & 0x7FF))
+                    node.sdo.download(index, 1, (cur | _PDO_VALID_BIT).to_bytes(4, 'little'))
+                    node.sdo.download(index, 1, (target | _PDO_VALID_BIT).to_bytes(4, 'little'))
+                    node.sdo.download(index, 1, (target & ~_PDO_VALID_BIT).to_bytes(4, 'little'))
+                    rb, good = _readback(index, base)
+                    if not good:
+                        log("  remap {:#06x}: VERIFY MISMATCH wrote cob 0x{:03X} read 0x{:03X}"
+                            .format(index, base | (new_id & 0x7F), rb & 0x7FF))
+                        ok = False
+        except Exception as e:
+            log("  remap {:#06x}: write failed ({})".format(index, e))
+            ok = False; results.append((index, target, rb)); continue
+        results.append((index, target, rb))
+
+    if save:
+        try:
+            node.sdo.download(0x1010, 1, _SAVE_SIGNATURE.to_bytes(4, 'little'))   # commit RAM -> NV
+        except Exception as e:
+            log("  remap save (0x1010:1) FAILED ({}) -- COB-IDs are in RAM only and will "
+                "revert on reboot".format(e))
+            ok = False
+    return ok, results
+
+
 def canopen_runner(csvfile, replace_id, start_id, edsfile, v, force,
                    no_warnings, progress=None, rowcount=None):
     """
