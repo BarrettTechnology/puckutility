@@ -139,8 +139,17 @@ fi
 # them with a placeholder that the runtime hook swaps for sys._MEIPASS at
 # launch time. This avoids depending on the target system's loader paths.
 if [ "$(uname)" = "Linux" ]; then
-    LOADERS_DIR=$(find /usr/lib -name 'libpixbufloader-png.so' 2>/dev/null | head -1 | xargs dirname 2>/dev/null)
-    [ -z "$LOADERS_DIR" ] && LOADERS_DIR=$(find /usr/lib -path "*/gdk-pixbuf-2.0/*/loaders" -type d 2>/dev/null | head -1)
+    # Locate the gdk-pixbuf loaders DIRECTORY. Newer gdk-pixbuf (>= ~2.42) compiles the
+    # PNG loader INTO libgdk-pixbuf, so libpixbufloader-png.so may not exist as a
+    # separate file -- search for the loaders dir directly rather than via that file.
+    # (The old "find ... libpixbufloader-png.so | xargs dirname" aborted the WHOLE build
+    # under `set -e`: when the file was absent, empty input made `xargs` run `dirname`
+    # with no argument -> exit 123 -> build died right here, before PyInstaller.)
+    LOADERS_DIR=$(find /usr/lib /usr/lib64 -path '*/gdk-pixbuf-2.0/*/loaders' -type d 2>/dev/null | head -1)
+    if [ -z "$LOADERS_DIR" ]; then
+        _loader=$(find /usr/lib /usr/lib64 -name 'libpixbufloader-*.so' 2>/dev/null | head -1)
+        [ -n "$_loader" ] && LOADERS_DIR=$(dirname "$_loader")
+    fi
     GDK_QUERY=$(command -v gdk-pixbuf-query-loaders 2>/dev/null || \
         find /usr/lib -name 'gdk-pixbuf-query-loaders' 2>/dev/null | head -1)
     if [ -n "$LOADERS_DIR" ] && [ -n "$GDK_QUERY" ]; then
