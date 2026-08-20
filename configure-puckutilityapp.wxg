@@ -53,14 +53,28 @@
                         <help_str>---</help_str>
                         <handler>---</handler>
                     </item>
-                    <item>
-                        <label>Calibrate Active Puck	Ctrl+C</label>
-                        <handler>calibrate_all</handler>
-                    </item>
-                    <item>
-                        <label>Calibrate All Active Pucks</label>
-                        <handler>calibrate_all_pucks</handler>
-                    </item>
+                    <menu label="Calibrate" name="">
+                        <menu label="Quick" name="">
+                            <item>
+                                <label>Active Puck (~25 s)</label>
+                                <handler>calibrate_quick</handler>
+                            </item>
+                            <item>
+                                <label>All Pucks (~25 s × N)</label>
+                                <handler>calibrate_quick_all_pucks</handler>
+                            </item>
+                        </menu>
+                        <menu label="Thorough" name="">
+                            <item>
+                                <label>Active Puck (~37 s)	Ctrl+C</label>
+                                <handler>calibrate_all</handler>
+                            </item>
+                            <item>
+                                <label>All Pucks (~37 s × N)</label>
+                                <handler>calibrate_all_pucks</handler>
+                            </item>
+                        </menu>
+                    </menu>
                     <item>
                         <label>---</label>
                         <id>---</id>

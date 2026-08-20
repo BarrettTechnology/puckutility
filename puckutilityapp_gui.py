@@ -34,10 +34,20 @@ class puckutilityapp_frame(wx.Frame):
         item = wxglade_tmp_menu.Append(wx.ID_ANY, "ON/OFF ADC Monitor\tCtrl+P", "")
         self.Bind(wx.EVT_MENU, self.on_off_adc, item)
         wxglade_tmp_menu.AppendSeparator()
-        item = wxglade_tmp_menu.Append(wx.ID_ANY, "Calibrate Active Puck\tCtrl+C", "")
+        wxglade_tmp_menu_cal = wx.Menu()
+        wxglade_tmp_menu_cal_quick = wx.Menu()
+        item = wxglade_tmp_menu_cal_quick.Append(wx.ID_ANY, "Active Puck (~25 s)", "")
+        self.Bind(wx.EVT_MENU, self.calibrate_quick, item)
+        item = wxglade_tmp_menu_cal_quick.Append(wx.ID_ANY, "All Pucks (~25 s × N)", "")
+        self.Bind(wx.EVT_MENU, self.calibrate_quick_all_pucks, item)
+        wxglade_tmp_menu_cal.Append(wx.ID_ANY, "Quick", wxglade_tmp_menu_cal_quick, "")
+        wxglade_tmp_menu_cal_thorough = wx.Menu()
+        item = wxglade_tmp_menu_cal_thorough.Append(wx.ID_ANY, "Active Puck (~37 s)\tCtrl+C", "")
         self.Bind(wx.EVT_MENU, self.calibrate_all, item)
-        item = wxglade_tmp_menu.Append(wx.ID_ANY, "Calibrate All Active Pucks", "")
+        item = wxglade_tmp_menu_cal_thorough.Append(wx.ID_ANY, "All Pucks (~37 s × N)", "")
         self.Bind(wx.EVT_MENU, self.calibrate_all_pucks, item)
+        wxglade_tmp_menu_cal.Append(wx.ID_ANY, "Thorough", wxglade_tmp_menu_cal_thorough, "")
+        wxglade_tmp_menu.Append(wx.ID_ANY, "Calibrate", wxglade_tmp_menu_cal, "")
         wxglade_tmp_menu.AppendSeparator()
         item = wxglade_tmp_menu.Append(wx.ID_ANY, "Test Magnetic Encoder", "")
         self.Bind(wx.EVT_MENU, self.test_encoder, item)
@@ -284,6 +294,14 @@ class puckutilityapp_frame(wx.Frame):
 
     def on_off_adc(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
         print("Event handler 'on_off_adc' not implemented!")
+        event.Skip()
+
+    def calibrate_quick(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
+        print("Event handler 'calibrate_quick' not implemented!")
+        event.Skip()
+
+    def calibrate_quick_all_pucks(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
+        print("Event handler 'calibrate_quick_all_pucks' not implemented!")
         event.Skip()
 
     def calibrate_all(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>

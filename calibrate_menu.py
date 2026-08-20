@@ -660,7 +660,173 @@ class calibrate():
             self.Enable()
         #event.Skip()
 
-    def calibrate_ibias(self, event, calAll=False, _upd=None):  # wxGlade: wxp3_frame.<event_handler>
+    def calibrate_quick_all_pucks(self, event):
+        # QUICK cal across every scanned puck — mirrors calibrate_all_pucks but drives the fast
+        # calibrate_quick per node instead of the Thorough calibrate_all.
+        if getattr(self, 'requireConfig', False):
+            msg = ("Configuration is required after a firmware update.\n"
+                   "Apply configuration before calibrating.\n\n"
+                   "Would you like to configure the active Puck now?")
+            dlg = wx.MessageDialog(None, msg, 'Warning!', wx.YES_NO | wx.ICON_WARNING)
+            answer = dlg.ShowModal()
+            dlg.Destroy()
+            if answer == wx.ID_YES:
+                self.file_to_p4(None)
+            return False
+        print(self.network.scanner.nodes)
+        starting_id = self.getID()
+        if self.check_for_node() == False:
+            return False
+        self._menu_idle_takeover()   # standalone menu entry: take the drive over cleanly before the sweep
+        for i in self.network.scanner.nodes:
+            print(i)
+            indexID = self.network.scanner.nodes.index(i)
+            self.choice_id.SetSelection(indexID)   # Move to next ID for calibration
+            self.select_id(None)
+            self.calibrate_quick(None)
+
+        indexID = self.network.scanner.nodes.index(starting_id)
+        self.choice_id.SetSelection(indexID)       # Return to starting ID after completion
+        self.select_id(None)
+
+    def calibrate_quick(self, event):
+        # QUICK calibration (~25 s/puck vs the Thorough calibrate_all's ~35 s, measured on a P4-16).
+        #
+        # Same OD writes / same registers / same values as calibrate_all — the sole intended
+        # accuracy trade is the spiral-gated enczero (calibrate_enczero(quick=True)): a coarser
+        # spin-through that AUTO-FALLS-BACK to the fine kinetic sweep if its fwd/rev spread is
+        # unreliable. Everything else runs the identical Thorough step so Quick and Thorough
+        # produce equivalent stored cal within tolerance.
+        #
+        # FOLDS EVALUATED BUT NOT APPLIED (correctness over speed, per design):
+        #   * Shared drive session across ibias/gain/slope: each step function independently arms
+        #     (CLEAR_FAULT/SHUTDOWN/OP_ENABLED) and drops to MODE_IDLE, and interleaves mode-specific
+        #     ramps/settles. Threading one energised session through them safely needs an invasive
+        #     refactor of the Thorough-path functions (untestable here) — the fold was NOT safe, so
+        #     the steps are called as-is (identical OD writes, drive re-armed per step).
+        #   * Gain folded into the slope's top level: the gain fit REQUIRES gainfactor=4096 (unity)
+        #     and reads Alpha/Beta fundamentals, while the slope step REQUIRES the calibrated
+        #     gainfactor already in effect and reads id/iq offsets at detented angles — conflicting
+        #     preconditions. Sharing one rotation would corrupt BOTH cals (worst case: resets gain to
+        #     unity). NOT safe to fold without firmware-internal confirmation + hardware validation,
+        #     so gain and slope run as separate Thorough steps.
+        # The realized Quick speedup comes from three SAFE, quick-gated trims (Thorough untouched):
+        #   * calibrate_current_slope(quick=True): the 18.5 s sweep drops 7->4 (weighted-low) current
+        #     levels — the dominant saving (~8 s). Same writes/model/gates; per-level offset quality
+        #     (N angles, M samples, fwd+rev hysteresis cancel) is identical, only the level COUNT falls.
+        #   * calibrate_ibias(quick=True): the pre-average iSense settle 0.5 s -> 0.35 s (~0.15 s).
+        #   * calibrate_enczero(quick=True): coarser spiral-gated spin (auto-falls-back to the fine sweep).
+        if getattr(self, 'requireConfig', False):
+            print("Calibration blocked: configuration required after firmware "
+                  "update — apply configuration before calibrating.")
+            wx.MessageBox(
+                "Configuration is required after a firmware update before you can calibrate.\n\n"
+                "Apply the puck configuration first, then run calibration.",
+                "Configuration Required", wx.OK | wx.ICON_WARNING)
+            return False
+        if self.check_for_node() == False:
+            return False
+        self._menu_idle_takeover()   # standalone menu entry: take the drive over cleanly before the sequence
+        print("Running QUICK calibration for Puck {}".format(self.getID()))
+        _cal_t0 = time.time()
+
+        self.frame_statusbar.SetStatusText("Progress: 0%", 1)
+        self.progress.Show()
+        self.GetStatusBar().Refresh()
+        self.GetStatusBar().Update()
+
+        _cog_was_active = False
+        try:
+            try:
+                _cog_was_active = bool(self.node.sdo[0x3028][1].raw)
+                if _cog_was_active:
+                    self.node.sdo[0x3028][1].raw = 0
+                    print("  Cogging compensation disabled for calibration sequence.")
+            except Exception:
+                pass
+
+            # Clear the Current Sense Slope for the whole sequence (same as calibrate_all): a stale
+            # slope distorts raw alpha/beta and poisons Bias/Gain. The Slope step re-measures it.
+            try:
+                self.node.sdo[0x3008][7].raw = 0
+                self.node.sdo[0x3009][7].raw = 0
+                self.node.sdo['Save']['Single'].raw = ((0x3008 << 8) | 0x07)
+                self.node.sdo['Save']['Single'].raw = ((0x3009 << 8) | 0x07)
+            except Exception:
+                pass
+            self._clear_offset_reg()   # v3+: clear drive-gated offset so Bias/Gain/Slope measure RAW current
+
+            continueCal = self.test_encoder(None, True)
+            self.Disable()
+            if continueCal == False:
+                print('Ending calibration...')
+                self.OnTaskComplete()
+                self.Enable()
+                return
+
+            self.UpdateUI(5)
+            continueCal = self.calibrate_ibias(None, True, quick=True,
+                              _upd=lambda v: self.UpdateUI(5 + v * 15 // 100))
+            if continueCal == False:
+                print('Ending calibration...')
+                self.OnTaskComplete()
+                self.Enable()
+                return
+
+            self.UpdateUI(20)
+            continueCal = self.calibrate_igainfactor(None, True,
+                              _upd=lambda v: self.UpdateUI(20 + v * 52 // 100))
+            if continueCal == False:
+                print('Ending calibration...')
+                self.OnTaskComplete()
+                self.Enable()
+                return
+
+            self.UpdateUI(72)
+            # Current Sense Slope — same robustness (retry once, continue if it can't store).
+            # quick=True trims the sweep to 4 (weighted-low) current levels; same writes/model/gates.
+            for _slope_try in (1, 2):
+                try:
+                    self.calibrate_current_slope(None, True, force_sdo=(_slope_try == 2), quick=True)
+                    break
+                except Exception as _slope_err:
+                    print("  Current Sense Slope attempt {}/2 failed: {}".format(_slope_try, _slope_err))
+                    try:
+                        self.node.sdo['Motor']['ud'].raw = 0
+                        self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
+                        self.node.sdo["ControlWord"].raw = CLEAR_FAULT
+                    except Exception:
+                        pass
+                    if _slope_try == 2:
+                        print("  Slope left OFF (not stored); continuing the calibration.")
+                        self._slope_stored = False
+
+            self.UpdateUI(85)
+            # QUICK enczero: spiral-gated, auto-falls-back to the fine kinetic sweep on a bad spread.
+            self.calibrate_enczero(None, True, quick=True,
+                              _upd=lambda v: self.UpdateUI(85 + v * 15 // 100))
+
+            # Same final baseline fold as Thorough (only on a trustworthy geared slope fit).
+            if getattr(self, '_slope_stored', False):
+                self.fold_baseline_offset(None, calAll=True)
+            else:
+                print("Baseline fold skipped (slope not stored — direct-drive / untrustworthy fit).")
+
+            self.OnTaskComplete()
+            self.requireCal = False
+        except Exception as e:
+            self._cal_fault(e)
+        finally:
+            print("Quick calibration finished in {:.1f} s.".format(time.time() - _cal_t0))
+            if _cog_was_active:
+                try:
+                    self.node.sdo[0x3028][1].raw = 1
+                    print("  Cogging compensation restored (ON).")
+                except Exception:
+                    pass
+            self.Enable()
+
+    def calibrate_ibias(self, event, calAll=False, _upd=None, quick=False):  # wxGlade: wxp3_frame.<event_handler>
         # print("Event handler 'calibrate_ibias'")
         if calAll==False:
           if self.check_for_node() == False:
@@ -717,7 +883,12 @@ class calibrate():
             # The mean converges much faster than the noise floor — reduce _SETTLE if
             # ibias results are consistent (5–10× the firmware filter time constant).
             _N_AVG  = 100
-            _SETTLE = 0.5
+            # QUICK shortens the fixed pre-average settle from 0.5 s to 0.35 s. 0.5 s is 5-10x the
+            # firmware filter TC (see note above); 0.35 s stays ~3.5-7x, still well past the mean's
+            # convergence (the mean settles far faster than the noise floor, which the 100-sample
+            # average handles). Conservative on purpose: this is the 0-A reference every downstream
+            # step subtracts, so we do NOT trim it hard. Thorough (quick=False) keeps 0.5 s.
+            _SETTLE = 0.35 if quick else 0.5
             print("Waiting {:.0f} ms for iSense filters to settle...".format(_SETTLE * 1000))
             _settle_end = time.time() + _SETTLE
             while time.time() < _settle_end:
@@ -913,8 +1084,15 @@ class calibrate():
             # cancels (sum(cos)=sum(sin)=0 over whole revs) and the 2x-electrical term is
             # orthogonal to the fundamental -> immune to BOTH. Validated hot @100 kHz (stock cal
             # -> 6635 out-of-bounds; this -> 3886/3878/3889 stable). See scripts/gain_rotating.py.
-            _ROT_STEPS = 24
-            _ROT_REVS  = 3
+            # ROTATION REDUCTION (2026-08-20): 1 whole electrical rev, densely sampled. The DC-bias/
+            # drift AND 2x-electrical cancellation only need a WHOLE rev (sum cos/sin = 0), not three —
+            # the extra revs were only noise-averaging. 1 rev x 48 keeps 48 samples (pucktuner's proven
+            # count) so accuracy holds, cuts the rotor motion to 1/3 (3 elec rev -> 1; e.g. 14-pole:
+            # ~154deg -> ~51deg mech), and is FASTER (48 vs 72 steps). Shorter sweep also accumulates
+            # less thermal drift within the cal -> cleaner cancellation. Bump to 60-72 (still 1 rev) if
+            # a motor ever looks noisy. See git note / firmware-state for the in-system-rotation table.
+            _ROT_STEPS = 48
+            _ROT_REVS  = 1
             _M   = _ROT_STEPS * _ROT_REVS
             _Ac = _As = _Bc = _Bs = 0.0
             _ids = []
@@ -2408,7 +2586,7 @@ class calibrate():
             self.Enable()
             return False
 
-    def calibrate_current_slope(self, event, calAll=False, force_sdo=False):  # wxGlade: puckutilityapp_frame.<event_handler>
+    def calibrate_current_slope(self, event, calAll=False, force_sdo=False, quick=False):  # wxGlade: puckutilityapp_frame.<event_handler>
         """Calibrate the current-PROPORTIONAL alpha/beta current-sense offset (Current Sense Slope).
 
         With Bias (0 A) and Gain (counts/mA) already calibrated, the P4-16 still shows a residual
@@ -2631,8 +2809,16 @@ class calibrate():
             # point, and driving past i_cal just burns I^2*R (a big low-KV winding is watts). Weighted LOW
             # (3 levels below 0.35x) to pin the |I|=0 baseline the fold consumes.
             _i_top = int(i_cal)   # HARD ceiling on the sweep current -- never drive above the operating pt
-            _levels = sorted(set(max(20, int(i_cal * _f))
-                                 for _f in (0.1, 0.2, 0.32, 0.5, 0.7, 0.85, 1.0)))
+            # QUICK trims the sweep to 4 levels (still weighted LOW: two points <=0.35*i_cal pin the a0
+            # intercept the baseline fold consumes, one mid + top define the slope). A degree-1 fit stays
+            # well-determined at 4 points and every downstream write/model/gate is unchanged — the ONLY
+            # difference is level COUNT (per-level offset quality: same N angles, same M samples, same
+            # fwd+rev hysteresis cancellation as Thorough). Dropping ~3 levels is where the ~18.5 s sweep's
+            # time lives (per-level ramp + settles). Thorough (quick=False) keeps the full 7-level set,
+            # byte-identical to before. beta R^2 is intrinsically noisy, so we do NOT trim below 4.
+            _slope_fracs = ((0.12, 0.3, 0.6, 1.0) if quick
+                            else (0.1, 0.2, 0.32, 0.5, 0.7, 0.85, 1.0))
+            _levels = sorted(set(max(20, int(i_cal * _f)) for _f in _slope_fracs))
             _rows = []   # (meanI, off_alpha, off_beta) per level
             _ud = 500
             for _lvl in _levels:
@@ -3009,8 +3195,17 @@ class calibrate():
         print("Event handler 'calibrate_islope' not implemented!")
         event.Skip()
 
-    def calibrate_enczero(self, event, calAll=False, _upd=None):  # wxGlade: wxp3_frame.<event_handler>
+    def calibrate_enczero(self, event, calAll=False, _upd=None, quick=False):  # wxGlade: wxp3_frame.<event_handler>
         # SPIN-THROUGH electrical-zero calibration.
+        #
+        # QUICK MODE (quick=True, used by calibrate_quick): the SAME spin-through, but coarser
+        # (fewer FINE_STEPS, shorter DWELL) so it lands the zero from the spiral in less time. It
+        # is GATED on the fwd/rev crossing spread: if the spread is tight the coarse spiral zero is
+        # stored as-is; if it's coarse/unreliable (or a crossing was missed) it AUTO-FALLS-BACK to
+        # the full fine kinetic sweep before storing (see the `if quick and _need_fallback` block
+        # below). Every OD write is identical to the Thorough path — the only trade is spin
+        # resolution, backstopped by the fallback. quick=False (default) = the fine kinetic method,
+        # byte-identical to before this feature.
         #
         # The previous method stepped Theta_e to 0 from -22.5 deg and +22.5 deg and read the
         # RawPosition after the rotor PARKED at each end. Parking stops the rotor THROUGH static
@@ -3099,9 +3294,12 @@ class calibrate():
             time.sleep(0.05); wx.Yield()
 
           # ---- spin-through helper: sweep Theta_e lo->hi, interpolate RawPosition at Theta_e=0 ----
-          FINE_STEPS = 128                         # finer crossing resolution (~64 F16/step)
+          # Quick mode uses a coarser spin (48 steps, shorter dwell) to save the fine sweep's time;
+          # Thorough keeps the fine 128-step / 0.02 s kinetic sweep. The quick spread-gate below
+          # promotes a coarse/unreliable quick result back to the fine sweep before storing.
+          FINE_STEPS = 48 if quick else 128        # finer crossing resolution (~64 F16/step)
           SWEEP_LO, SWEEP_HI = -0x1000, 0x1000     # +/- 22.5 deg electrical
-          DWELL = 0.02                             # keep the rotor MOVING (kinetic) between reads
+          DWELL = 0.015 if quick else 0.02         # keep the rotor MOVING (kinetic) between reads
           RD_AVG = 2                               # RawPosition reads averaged per step (denoise)
           REPEAT_CTS = 15                          # abs fwd/rev-crossing disagreement -> re-seat flag
 
@@ -3143,6 +3341,30 @@ class calibrate():
           _upd(70)
           cross_r, r0, r1 = _sweep_through_zero(SWEEP_HI, SWEEP_LO)   # reverse (+22.5 -> -22.5)
           _upd(90)
+
+          # QUICK spiral spread-gate + auto-fallback. The fwd/rev crossing spread is the same
+          # repeatability proxy the store step warns on (friction hysteresis; asymmetry scales as
+          # sin(2*e_zero_error)). If the coarse quick spin lands a TIGHT spread, keep it. If it's
+          # coarse/unreliable (spread over the electrical-cycle % or absolute-count thresholds, or a
+          # crossing was missed), re-run the sweeps at FULL fine resolution while the drive is STILL
+          # energised, then store from those — identical to the Thorough path. Only runs in quick mode;
+          # Thorough is untouched.
+          if quick:
+              _need_fallback = (cross_f is None or cross_r is None)
+              if not _need_fallback:
+                  _qf, _qr = cross_f, cross_r
+                  if abs(_qf - _qr) > encoder_resolution / 2.0:
+                      if _qf > _qr: _qr += encoder_resolution
+                      else:         _qf += encoder_resolution
+                  _qspread = abs(_qf - _qr)
+                  _need_fallback = (_qspread / cts_per_elec_cyc * 100.0 > 10.0) or (_qspread > REPEAT_CTS)
+              if _need_fallback:
+                  print("  Quick spiral enczero spread coarse/unreliable -> fine kinetic fallback sweep.")
+                  FINE_STEPS = 128        # promote the closure to full resolution for the re-sweep
+                  DWELL = 0.02
+                  cross_f, f0, f1 = _sweep_through_zero(SWEEP_LO, SWEEP_HI)
+                  cross_r, r0, r1 = _sweep_through_zero(SWEEP_HI, SWEEP_LO)
+
           self.node.sdo['Motor']['ud'].raw = 0
           self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
 

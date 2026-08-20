@@ -84,12 +84,31 @@ import logging
 # "Current", which hides what actually tripped. Map the puck's real meanings (+ a remedy for
 # the ones a user can act on) and fall back to get_desc() for anything not listed here.
 PUCK_FAULT_DESC = {
-    0x2310: "current limited (i2t / current-limit active) -- self-recovers",
+    0x2310: ("CURRENT LIMIT ACTIVE -- i2t / current limiting is holding the current at the safe "
+             "level. This is a WARNING, not a latched fault: it self-recovers when the load eases. "
+             "REMEDY: reduce the mechanical load / command if you need more headroom. "
+             "(Read the i2t level from 0x3025:1.)"),
     0x2311: ("MAGNET DEMAG protection -- reverse d-axis current (-id) exceeded the "
              "temperature-derated safe limit, so the drive stopped to protect the motor "
              "magnets. Trips when driving hard at high speed while the magnet is HOT "
              "(natural field-weakening drives -id negative). REMEDY: let the motor cool, "
              "then clear the fault. This is protection working, not a hardware failure."),
+    0x2312: ("POSITIVE-ID CONTROL FAULT -- sustained POSITIVE d-axis current (magnetizing id). "
+             "Positive id only heats the motor and makes no torque, so the drive stopped it. "
+             "Usually a commutation / encoder-alignment or control-loop problem. "
+             "REMEDY: re-check encoder zero / phasing, then clear the fault."),
+    0x2313: ("HARD OVER-CURRENT trip -- total current |I| exceeded the absolute ceiling (a fast, "
+             "hard limit above i2t). Latched to protect the hardware. "
+             "REMEDY: remove the mechanical overload / reduce the command, then clear the fault."),
+    0x2314: ("BUS OVER-VOLTAGE backstop -- the DC bus rose past the safe band (~52V) and the bus "
+             "governor could not hold it (regen / braking energy pumped the bus up). Absolute trip. "
+             "REMEDY: slow the deceleration / add a bus-dump resistor, or check the supply, then "
+             "clear the fault."),
+    0x2315: ("BUS UNDER-VOLTAGE backstop -- the DC bus COLLAPSED past the safe band (below ~26V) "
+             "and the bus governor could not hold it. Commonly the SUPPLY BROWNING OUT: commanding "
+             "a speed past what the bus can sustain draws max current, the supply hits its current "
+             "limit and folds its voltage down. REMEDY: reduce the commanded velocity, or raise the "
+             "PSU current limit / use a stiffer supply, then clear the fault."),
     0x2320: "SHORT CIRCUIT (output stage) -- blown FET / phase short",
     0x3210: "bus OVER-voltage",
     0x3220: "bus UNDER-voltage",
@@ -3010,7 +3029,7 @@ def _setup_logging():
 # Moved to cli_ops.py (no wx dependency). Imported here only so __main__ can
 # dispatch to them when CLI flags are present.
 from cli_ops import (
-    _cli_connect, _cli_flash, _cli_config, _cli_calibrate_all,
+    _cli_connect, _cli_flash, _cli_config, _cli_calibrate_all, _cli_calibrate_quick,
     _cli_calibrate_itiming, _cli_calibrate_slope,
     _cli_make_network, _cli_system_config,
     _cli_info, _cli_set_id,
@@ -3156,6 +3175,9 @@ Examples:
                      help='Path to motor configuration CSV file')
     ops.add_argument('--calibrate', action='store_true',
                      help='Run full calibration (test_encoder, ibias, igainfactor, slope, enczero, fold)')
+    parser.add_argument('--quick', action='store_true',
+                        help='With --calibrate: run the fast Quick sequence (spiral-gated enczero) '
+                             'instead of the Thorough full calibration')
     ops.add_argument('--calibrate-settling', action='store_true', dest='calibrate_settling',
                      help='Run ONLY the MaxSettlingTime (ADC settling) calibration')
     ops.add_argument('--calibrate-slope', action='store_true', dest='calibrate_slope',
@@ -3266,7 +3288,10 @@ Examples:
             _cli_config(args.can, node_id, args.config)
         elif args.calibrate:
             cal_node = cal_net.add_node(node_id, 'puck4.eds')
-            _cli_calibrate_all(cal_node)
+            if args.quick:
+                _cli_calibrate_quick(cal_node)
+            else:
+                _cli_calibrate_all(cal_node)
         elif args.calibrate_settling:
             cal_node = cal_net.add_node(node_id, 'puck4.eds')
             _cli_calibrate_itiming(cal_node)

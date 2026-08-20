@@ -120,6 +120,7 @@ def _cli_calibrate_slope(node, network=None):
 
 def _cli_calibrate_all(node, network=None):
     adapter = _HeadlessCalibrateAdapter(node, network)
+    _t0 = time.time()
     print(f"  Running full calibration sequence for node {node.id}...")
     # Clear the Current Sense Slope up front (mirrors the GUI calibrate_all): Bias/Gain must
     # measure the RAW offset, not a signal the firmware is already correcting.
@@ -157,7 +158,49 @@ def _cli_calibrate_all(node, network=None):
     # Baseline fold — ONLY if the slope stored a trustworthy fit (gated on _slope_stored).
     if getattr(adapter, '_slope_stored', False):
         adapter.fold_baseline_offset(None, calAll=True)
-    print("  Calibration complete!")
+    print("  Calibration complete — Time elapsed: {} seconds".format(round(time.time() - _t0, 1)))
+    return True
+
+
+def _cli_calibrate_quick(node, network=None):
+    """QUICK calibration sequence — mirrors _cli_calibrate_all but uses the spiral-gated enczero
+    (calibrate_enczero(quick=True), which auto-falls-back to the fine kinetic sweep on a bad
+    fwd/rev spread). ibias settle + the slope-sweep current levels are ALSO trimmed in quick mode
+    (quick=True); every stored value/model matches Thorough within tolerance — the only trades are
+    the coarser enczero and the 4-level (vs 7) slope fit."""
+    adapter = _HeadlessCalibrateAdapter(node, network)
+    _t0 = time.time()
+    print(f"  Running QUICK calibration sequence for node {node.id}...")
+    try:
+        node.sdo[0x3008][7].raw = 0
+        node.sdo[0x3009][7].raw = 0
+        node.sdo['Save']['Single'].raw = ((0x3008 << 8) | 0x07)
+        node.sdo['Save']['Single'].raw = ((0x3009 << 8) | 0x07)
+    except Exception:
+        pass
+    if not adapter.test_encoder(None, calAll=True):
+        print("  Calibration aborted.")
+        return False
+    if not adapter.calibrate_ibias(None, calAll=True, quick=True, _upd=lambda v: None):
+        print("  Calibration aborted.")
+        return False
+    if not adapter.calibrate_igainfactor(None, calAll=True, _upd=lambda v: None):
+        print("  Calibration aborted.")
+        return False
+    for _slope_try in (1, 2):
+        try:
+            adapter.calibrate_current_slope(None, calAll=True, force_sdo=(_slope_try == 2), quick=True)
+            break
+        except Exception as _e:
+            print(f"  Current Sense Slope attempt {_slope_try}/2 failed: {_e}")
+            adapter._slope_stored = False
+    # calibrate_enczero returns None on success, False only on a user-requested abort.
+    if adapter.calibrate_enczero(None, calAll=True, _upd=lambda v: None, quick=True) is False:
+        print("  Calibration aborted.")
+        return False
+    if getattr(adapter, '_slope_stored', False):
+        adapter.fold_baseline_offset(None, calAll=True)
+    print("  Quick calibration complete — Time elapsed: {} seconds".format(round(time.time() - _t0, 1)))
     return True
 
 
