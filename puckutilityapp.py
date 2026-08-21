@@ -265,25 +265,23 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         except Exception:
             pass
 
-        # ── Cogging compensation greyed out in the menu (2026-06-17) ─────────────
-        # Cogging comp is blocked on the noisy velocity-feedback estimate (the FF
-        # measured against that loop validates net neutral-to-harmful — see the
-        # cogging-comp investigation). DISABLE both menu-0 "Cogging Error Compensation"
-        # entries — (a) the ON/OFF submenu (dropdown) and (b) the bare calibration
-        # item — so they're greyed and inert until the velocity feedback is fixed.
+        # ── Cogging compensation RE-ENABLED in the menu ──────────────────────────
+        # Previously greyed out (2026-06-17) while cogging comp was blocked on the noisy
+        # velocity-feedback estimate. The cogging cal now validates against a robust
+        # dwell-histogram velocity-ripple metric at a speed-scaled COG_LEAD_Q8 sweep
+        # (not Iq ripple at 43 RPM), so both menu-0 "Cogging Error Compensation" entries
+        # — (a) the ON/OFF submenu (dropdown) and (b) the bare calibration item — are
+        # re-enabled.
         #
-        # We DISABLE rather than Remove(): the submenu's ON/OFF radio items are cached
+        # Enable(True) (NOT Remove()): the submenu's ON/OFF radio items are cached
         # (frame_menubar.COG_ON/COG_OFF) and referenced in ~10 places. Remove() detaches
         # then GC-destroys them, leaving those refs dangling → use-after-free segfault on
-        # the next menu interaction. Enable(False) keeps the items alive (no dangling),
-        # greys them, and prevents the submenu from opening. Fully reversible: comment
-        # out this block and relaunch to re-enable. (Underlying calibrate_menu.py
-        # cogging_* functions are untouched.)
+        # the next menu interaction. Enable() keeps the items alive (no dangling).
         try:
             _cog_menu0 = self.frame_menubar.GetMenu(0)
             for _cog_it in list(_cog_menu0.GetMenuItems()):
                 if _cog_it.GetItemLabel() == "Cogging Error Compensation":
-                    _cog_it.Enable(False)
+                    _cog_it.Enable(True)
         except Exception:
             pass
 

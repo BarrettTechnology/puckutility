@@ -4672,7 +4672,10 @@ class calibrate():
                 print("  FFT JSON → {}".format(fft_path))
 
                 # ── Upload significant harmonic bins to Puck (0x3027) ────────
-                N_BINS = 10
+                # Firmware 0x3027 now holds 5 bins (subindex 1 = active, bins 0-4 at
+                # subindices 2..16). Subindices 17..31 no longer exist — a 6th bin
+                # SDO-aborts "object does not exist". Cap uploads at 5.
+                N_BINS = 5
                 # AC harmonics by amplitude (k≥1). DC offset is not uploaded to the puck;
                 # it is subtracted from the retest plots for display only.
                 #
@@ -4928,9 +4931,9 @@ class calibrate():
                 else:
                     print("  WARNING: one or more bins did not readback correctly.")
 
-                # Save all 31 NV subindices of 0x3027 to EEPROM
+                # Save all 16 NV subindices of 0x3027 to EEPROM (1=active, 2..16=5 bins)
                 print("\n  Saving 0x3027 to EEPROM ...")
-                for _si in range(1, 32):
+                for _si in range(1, 17):
                     self.node.sdo['Save']['Single'].raw = ((0x3027 << 8) | _si)
                 print("  Saved.")
 
@@ -5173,7 +5176,7 @@ class calibrate():
                             self.node.sdo[0x3027][2 + _bi * 3].raw = 0   # A_s
                             self.node.sdo[0x3027][3 + _bi * 3].raw = 0   # k
                             self.node.sdo[0x3027][4 + _bi * 3].raw = 0   # A_c
-                        for _si in range(1, 32):                     # persist the OFF/cleared state
+                        for _si in range(1, 17):                     # persist the OFF/cleared state (1..16)
                             self.node.sdo['Save']['Single'].raw = ((0x3027 << 8) | _si)
                         try:
                             self.frame_menubar.ON.Check(False)
@@ -5766,7 +5769,10 @@ class calibrate():
             # that made enc comp repeatable, but with current (not position) feedback in a
             # current-controlled mode. FLAG OFF restores the original continuous-spin path.
             # NOTE: first hardware draft — verify settle behaviour and holding-iq sign.
-            STEPPED_MEASURE = True
+            STEPPED_MEASURE = False   # stepped PROFILE_POS path drives via RPDO, which the post-reboot
+                                      # configure_pdos=False leaves unmapped -> no current, no motion (HW
+                                      # 2026-08-21). Velocity path uses SDO TargetVelocity (proven to spin
+                                      # + draw current after the reboot), so use it for the amplitude sweep.
             N_STEP          = N_BINS   # positions/rev (Nyquist 64 > k=42)
             STEP_SETTLE_S   = 0.30     # settle after each PP move before measuring
             N_AVG_STEP      = 8        # holding-iq reads averaged per held position
@@ -5790,7 +5796,9 @@ class calibrate():
             # makes the profile repeatable, the variability was random noise (fixed); if it
             # still swings, the contamination is systematic (position-locked inertial surge)
             # and needs the quasi-static method instead. Costs sweep time (~1 min/pass here).
-            SAMPLES_PER_BIN = 20
+            SAMPLES_PER_BIN = 8    # was 20 (46 revs / ~137s — over-averaged). k=42 (the dominant
+                                   # 6x-elec cogging line) has huge SNR, so 8 (~18 revs / ~60s) pins
+                                   # it solidly; minor siblings are noisier but they're ~10x smaller.
             N_REVS       = max(2, int(math.ceil(
                 SAMPLES_PER_BIN * N_BINS * SAMPLE_S * TARGET_RPM / 60.0)))
             N_HARMONICS  = 16    # Fourier harmonics to fit
@@ -6401,7 +6409,10 @@ class calibrate():
             #   a_s = -A·sin(φ)  (sin Fourier coefficient of measured Iq profile)
             #   a_c = +A·cos(φ)  (cos Fourier coefficient of measured Iq profile)
             #   verify: √(a_s²+a_c²) = A;  φ = atan2(-a_s, a_c)
-            N_COG_BINS = 10
+            # Firmware 0x3028 now holds 5 bins (subindex 1 = active, bins 0-4 at
+            # subindices 2..16, COG_LEAD_Q8 at 17). A 6th bin's a_s would land on
+            # subindex 17 and clobber COG_LEAD_Q8 (then abort at 18). Cap at 5.
+            N_COG_BINS = 5
             _upload_ok = False
             try:
                 def _clamp_i16_cog(v):
@@ -6569,24 +6580,113 @@ class calibrate():
             except Exception as _cog_exc:
                 print("\n  WARNING: Cogging upload failed: {}".format(_cog_exc))
 
+            # ── enc-comp FFT cross-check (free sanity gate) ─────────────────────
+            # The cogging sweep and the enc-comp sweep both decompose error vs the SAME
+            # raw-encoder angle. enc-comp DEFERS pole-pair multiples (k = n·pp) to cogging
+            # comp, so a genuine cogging line should be strong here but small in the
+            # encoder table. If the enc-comp cal ALSO parked large amplitude at the cogging
+            # dominant k, one of the two runs is suspect (the same physical ripple got
+            # double-counted — usually enc-comp calibrated with cogging comp still ON).
+            # NOTE: absolute spatial-PHASE reconciliation across the two runs is NOT done —
+            # the sweeps use different start anchors (enc_start) and the saved enc-comp JSON
+            # does not persist a shared absolute frame, so a phase delta would be dominated
+            # by the anchor offset, not a real disagreement. Amplitude-presence at the shared
+            # k is the reliable free check.
+            try:
+                import glob as _xglob, json as _xjson
+                _dom_cog_k = next((k for k in sorted_ks
+                                   if k > 0 and k % pole_pairs == 0 and k <= N_BINS // 2), 0)
+                if _dom_cog_k:
+                    _enc_files = sorted(_xglob.glob(session_path(
+                        'encoder/data/{}enc_correction_harmonics_*.json'.format(_file_pfx))))
+                    if _enc_files:
+                        with open(_enc_files[-1]) as _ef:
+                            _ejson = _xjson.load(_ef)
+                        _eh = {int(h['k']): h
+                               for h in _ejson.get('harmonics_by_amplitude', [])}
+                        _cog_amp_mA = float(amps[_dom_cog_k])
+                        if _dom_cog_k in _eh:
+                            _enc_amp_ct = float(_eh[_dom_cog_k].get('amplitude', 0.0))
+                            _enc_phi    = float(_eh[_dom_cog_k].get('phase_rad', 0.0))
+                            print("\n  Enc-comp cross-check @ k={}: cogging {:.1f} mA, "
+                                  "enc-comp {:.2f} ct @ phi={:.2f} rad (file {}).".format(
+                                      _dom_cog_k, _cog_amp_mA, _enc_amp_ct, _enc_phi,
+                                      os.path.basename(_enc_files[-1])))
+                            if _enc_amp_ct > 1.0:
+                                print("    WARNING: enc-comp holds {:.2f} ct at cogging line "
+                                      "k={} (pole-pair multiple). Suspect cal: cogging fed into "
+                                      "the encoder table. Re-run enc-comp with cogging comp "
+                                      "DISABLED and confirm this line drops.".format(
+                                          _enc_amp_ct, _dom_cog_k))
+                        else:
+                            print("\n  Enc-comp cross-check @ k={}: no enc-comp harmonic at "
+                                  "this order (good — cogging line not in encoder "
+                                  "table).".format(_dom_cog_k))
+                    else:
+                        print("\n  Enc-comp cross-check: no enc-comp harmonics JSON for this "
+                              "node — skipped.")
+            except Exception as _xc_exc:
+                print("\n  Enc-comp cross-check skipped: {}".format(_xc_exc))
+
             if STEPPED_MEASURE:
                 print("\n  Stepped (quasi-static) measurement complete — comp uploaded"
                       + (" + saved." if _upload_ok else " (upload may have failed)."))
 
-                # ── VALIDATION (A): harmonic-resolved velocity ripple, comp OFF vs ON ──
-                # Spin at the cal speed and FFT the enc-comp-CORRECTED velocity vs angle.
-                # Cogging-induced velocity ripple lives at k=pole_pairs and 2× — broadband
-                # RMS was swamped by surge+noise, so we read ONLY those harmonics. A drop
-                # ON-vs-OFF = cogging comp is reducing the cogging-frequency ripple.
-                # Reboot before each spin so the velocity integrator starts from zero
-                # (stale windup would let the OFF run "pre-cancel" and bias the comparison).
+                # ── VALIDATION (B): speed-scaled COG_LEAD_Q8 sweep ──────────────────
+                # WHY this replaces the old fixed-count-shift "TEST A": that test spun at
+                # the cal speed (~43 RPM) where the FF-to-effect loop lag is ≈0 control
+                # cycles, so the feedforward phase-lead scalar (COG_LEAD_Q8) has no
+                # observable effect — the very bug it exists to fix is invisible there.
+                # It also keyed on Iq ripple (a category error: Iq IS the feedforward we
+                # inject, not the residual disturbance). Here instead we:
+                #   1. Spin at an intermediate-HIGH speed where the cogging temporal
+                #      frequency is a meaningful fraction of the control rate, so the loop
+                #      lag is real and COG_LEAD_Q8 measurably rotates the FF.
+                #   2. Sweep COG_LEAD_Q8 (0x3028:17, Q8 control-cycles) and pick the value
+                #      that MINIMISES velocity ripple at the cogging lines k=pp and k≈6·pp
+                #      (dominant slot cogging), measured with the robust dwell-histogram
+                #      metric (velocity ripple, NOT Iq).
                 try:
                     import numpy as _np_va
+
+                    # ---- validation speed (motor-agnostic) --------------------------------
+                    # f_cog(k) = k·RPM/60 [Hz]. Put the fundamental (k=pp) well ABOVE the
+                    # ~1 kHz velocity loop's rejection band (so the loop can't hide the
+                    # ripple) yet keep the dominant harmonic (≈6·pp) safely below a
+                    # conservative current-loop Nyquist. control_hz = pwm_freq / patterns;
+                    # patterns=5 (K64, the LOWER control rate) is used so STM32 (4) stays safe.
+                    try:
+                        _pwm_hz = float(self.node.sdo['Amp']['Frequency'].raw)
+                    except Exception:
+                        _pwm_hz = 40000.0
+                    _ctrl_hz = max(_pwm_hz / 5.0, 1000.0)
+                    # dominant cogging order for the metric + Nyquist sizing: 6·pp stepped
+                    # down by pp until it is resolvable (< N_BINS//2) so high-pole motors work.
+                    _k1  = pole_pairs
+                    _k2  = 6 * pole_pairs
+                    while _k2 >= N_BINS // 2 and _k2 > pole_pairs:
+                        _k2 -= pole_pairs
+                    # Nyquist cap: keep the dominant harmonic below 1/6 of the control
+                    # Nyquist (very conservative anti-alias margin).
+                    _rpm_nyq   = (_ctrl_hz / 2.0 / 6.0) * 60.0 / max(_k2, 1)
+                    # Floor: fundamental cogging ≥ ~40 Hz (above velocity-loop rejection).
+                    _rpm_floor = 40.0 * 60.0 / max(pole_pairs, 1)
+                    VAL_RPM = max(TARGET_RPM, _rpm_floor)
+                    VAL_RPM = max(150.0, min(VAL_RPM, 1500.0))   # intended few-hundred..~1.5k band
+                    VAL_RPM = min(VAL_RPM, _rpm_nyq)             # Nyquist always wins
+                    val_vel_cts = int(round(VAL_RPM / 60.0 * enc_resolution))
+                    _mean_v = val_vel_cts / enc_resolution * 360.0   # deg/s, motor mech
+                    print("\n  Validation speed: {:.0f} RPM (k={} at {:.0f} Hz, k={} at {:.0f} Hz; "
+                          "ctrl≈{:.0f} Hz, Nyquist-capped {:.0f} RPM).".format(
+                              VAL_RPM, _k1, _k1 * VAL_RPM / 60.0, _k2, _k2 * VAL_RPM / 60.0,
+                              _ctrl_hz, _rpm_nyq))
+
+                    # ---- enc-comp correction LUT (corrected position for the dwell metric) --
                     _va_lut = [0.0] * enc_resolution
                     try:
                         if int(self.node.sdo[0x3027][1].raw) == 1:
                             _vb_list = []
-                            for _vbi in range(10):
+                            for _vbi in range(5):   # 0x3027 holds 5 bins (subs 2..16)
                                 _vas = int(self.node.sdo[0x3027][2 + _vbi * 3].raw)
                                 _vk  = int(self.node.sdo[0x3027][3 + _vbi * 3].raw)
                                 _vac = int(self.node.sdo[0x3027][4 + _vbi * 3].raw)
@@ -6600,53 +6700,22 @@ class calibrate():
                     except Exception:
                         pass
 
-                    # Metric: SAMPLE-DWELL ripple (no differentiation → no finite-difference
-                    # quantization noise). samples-per-angle-bin ∝ time-in-bin ∝ 1/velocity,
-                    # so the dwell histogram's cogging-harmonic content IS the velocity ripple
-                    # (×mean velocity → deg/s). Derived from OUR position samples, so it is
-                    # INDEPENDENT of the puck's (known-noisy) velocity-feedback estimate.
-                    #
-                    # TEST A: comp-ON at FF position shifts {0, ±24 cts}. A constant offset Δ
-                    # between FF measurement and application rotates harmonic k by k·2πΔ/N, so
-                    # k=42's error is 2× k=21's — matching "k=42 consistently worse". If a
-                    # shift turns the increase into a reduction → offset is real and found. If
-                    # NO shift helps → the FF source itself is noise-limited (velocity-feedback
-                    # bug corrupting the measured profile) and phase-shifting can't save it.
-                    SAMPLE_S  = 0.0125    # ~80 Hz (#2)
-                    n_samples = 4000      # ~16 revs coherent averaging (#1), 4 spins
-                    _mean_v   = vel_cts_per_sec / enc_resolution * 360.0   # deg/s, motor mech
+                    # Is COG_LEAD_Q8 (0x3028:17) present? Older FW → skip the sweep and just
+                    # do a single OFF-vs-ON check at the validation speed.
+                    _has_lead = True
+                    try:
+                        _ = int(self.node.sdo[0x3028][17].raw)
+                    except Exception:
+                        _has_lead = False
 
-                    _base_bins = []
-                    for _bi in range(10):
-                        _ba = int(self.node.sdo[0x3028][2 + _bi * 3].raw)
-                        _bk = int(self.node.sdo[0x3028][3 + _bi * 3].raw)
-                        _bc = int(self.node.sdo[0x3028][4 + _bi * 3].raw)
-                        if (_ba | _bc) == 0: break
-                        _base_bins.append((_ba, _bk, _bc))
-
-                    def _shifted_bins(shift):
-                        _out = []
-                        for (_ba, _bk, _bc) in _base_bins:
-                            _kd = 2.0 * math.pi * _bk * shift / enc_resolution
-                            _cs, _sn = math.cos(_kd), math.sin(_kd)
-                            _out.append((max(-32768, min(32767, int(round( _ba*_cs + _bc*_sn)))),
-                                         _bk,
-                                         max(-32768, min(32767, int(round(-_ba*_sn + _bc*_cs))))))
-                        return _out
-
-                    def _write_bins(bins):
-                        for _i in range(10):
-                            _na, _bk, _nc = bins[_i] if _i < len(bins) else (0, 0, 0)
-                            self.node.sdo[0x3028][2 + _i * 3].raw = _na
-                            self.node.sdo[0x3028][3 + _i * 3].raw = _bk
-                            self.node.sdo[0x3028][4 + _i * 3].raw = _nc
-
-                    def _cog_dwell(comp_on, label, shift_cts=None):
+                    def _val_dwell(comp_on, lead_q8, label):
+                        # Reboot each measurement so the velocity integrator starts from zero
+                        # (stale windup lets an OFF run "pre-cancel" and biases the comparison).
                         self.network.send_message(0x0, [0x81, int(node_id)])
                         _sleep_responsive(1.5)
                         self.configure_Puck(configure_pdos=False)
-                        if comp_on and shift_cts:
-                            try: _write_bins(_shifted_bins(shift_cts))
+                        if _has_lead and lead_q8 is not None:
+                            try: self.node.sdo[0x3028][17].raw = int(lead_q8)
                             except Exception: pass
                         for _ in range(3):
                             try:
@@ -6661,10 +6730,13 @@ class calibrate():
                         self.node.sdo["ControlWord"].raw = OP_ENABLED
                         self.node.sdo["SetModeOfOperation"].raw = MODE_PROFILE_VEL
                         print("  validation spin [{}] ...".format(label))
-                        _s = _sample_pass(+vel_cts_per_sec, label, 5, 95)
+                        _s = _sample_pass(+val_vel_cts, label, 5, 95)
                         self.node.sdo['TargetVelocity'].raw = 0
                         _sleep_responsive(1.0)
                         self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
+                        # Dwell histogram: samples-per-angle-bin ∝ time-in-bin ∝ 1/velocity,
+                        # so its cogging-harmonic content IS the velocity ripple (×mean vel →
+                        # deg/s). Independent of the puck's noisy velocity-feedback estimate.
                         _cnt = [0] * N_BINS
                         for (_deg, _iq) in _s:
                             _raw  = int(round(_deg / 360.0 * enc_resolution)) % enc_resolution
@@ -6675,38 +6747,51 @@ class calibrate():
                             return (0.0, 0.0)
                         _frac = [(_c - _m) / _m for _c in _cnt]
                         _av = 2.0 * _np_va.abs(_np_va.fft.rfft(_np_va.array(_frac))) / N_BINS
-                        _k1, _k2 = pole_pairs, 2 * pole_pairs
                         return (float(_av[_k1]) * _mean_v if _k1 < len(_av) else 0.0,
                                 float(_av[_k2]) * _mean_v if _k2 < len(_av) else 0.0)
 
-                    _off = _cog_dwell(False, 'comp OFF')
+                    # ---- baseline: comp OFF at the validation speed ----
+                    _off = _val_dwell(False, None, 'comp OFF')
                     _off_mag = (_off[0] ** 2 + _off[1] ** 2) ** 0.5
+
+                    # ---- sweep COG_LEAD_Q8: 0..768 Q8 (≈0..3 control cycles), step 64 ----
+                    _lead_list = list(range(0, 769, 64)) if _has_lead else [None]
                     _rows = []; _best = None
-                    for _sh in [0, -24, 24]:
-                        _r = _cog_dwell(True, 'comp ON shift {:+d}'.format(_sh), shift_cts=_sh)
+                    for _lead in _lead_list:
+                        _lbl = ('comp ON lead {} Q8'.format(_lead) if _has_lead
+                                else 'comp ON')
+                        _r   = _val_dwell(True, _lead, _lbl)
                         _mag = (_r[0] ** 2 + _r[1] ** 2) ** 0.5
-                        _rows.append((_sh, _r[0], _r[1], _mag))
+                        _rows.append((_lead, _r[0], _r[1], _mag))
                         if _best is None or _mag < _best[3]:
-                            _best = (_sh, _r[0], _r[1], _mag)
-                    try:   # leave the best FF active + saved
-                        _write_bins(_shifted_bins(_best[0]))
+                            _best = (_lead, _r[0], _r[1], _mag)
+
+                    # ---- persist the best lead (default 128 if sweep unavailable) + comp ON ----
+                    _best_lead = _best[0] if (_best and _best[0] is not None) else 128
+                    try:
+                        if _has_lead:
+                            self.node.sdo[0x3028][17].raw = int(_best_lead)
                         self.node.sdo[0x3028][1].raw = 1
-                        for _si in range(1, 2 + max(1, len(_base_bins)) * 3):
+                        # Save cogging bins (1..16) + COG_LEAD_Q8 (17) to EEPROM.
+                        for _si in range(1, 18):
                             self.node.sdo['Save']['Single'].raw = ((0x3028 << 8) | _si)
                     except Exception:
                         pass
-                    print("\n  TEST A — FF position-shift validation (dwell metric, deg/s):")
+
+                    print("\n  VALIDATION (B) — COG_LEAD_Q8 sweep (dwell velocity ripple, deg/s):")
                     print("    comp OFF baseline:  k={}={:.2f}  k={}={:.2f}  (mag {:.2f})".format(
-                        pole_pairs, _off[0], 2 * pole_pairs, _off[1], _off_mag))
-                    for (_sh, _r1, _r2, _mag) in _rows:
+                        _k1, _off[0], _k2, _off[1], _off_mag))
+                    for (_lead, _r1, _r2, _mag) in _rows:
                         _pc  = (_mag - _off_mag) / _off_mag * 100.0 if _off_mag else 0.0
-                        _tag = "  <-- best" if _best and _sh == _best[0] else ""
-                        print("    shift {:>+4d}:  k={}={:6.2f}  k={}={:6.2f}  mag={:6.2f}  ({:+.0f}% vs OFF){}".format(
-                            _sh, pole_pairs, _r1, 2 * pole_pairs, _r2, _mag, _pc, _tag))
+                        _tag = "  <-- best" if _best and _lead == _best[0] else ""
+                        _ls  = "{:>4}".format(_lead) if _lead is not None else "  --"
+                        print("    lead {} Q8:  k={}={:6.2f}  k={}={:6.2f}  mag={:6.2f}  "
+                              "({:+.0f}% vs OFF){}".format(
+                                  _ls, _k1, _r1, _k2, _r2, _mag, _pc, _tag))
                     if _best:
                         _bpc = (_best[3] - _off_mag) / _off_mag * 100.0 if _off_mag else 0.0
-                        print("    BEST shift {:+d} → {:+.0f}% vs comp-OFF (negative = improvement). Saved.".format(
-                            _best[0], _bpc))
+                        print("    BEST COG_LEAD_Q8={} → {:+.0f}% vs comp-OFF "
+                              "(negative = ripple reduction). Saved.".format(_best_lead, _bpc))
                 except Exception as _va_exc:
                     print("\n  Validation skipped (error): {}".format(_va_exc))
 
@@ -6804,7 +6889,7 @@ class calibrate():
                     try:
                         if int(self.node.sdo[0x3027][1].raw) == 1:   # enc comp active
                             _ec_bins = []
-                            for _eb in range(10):
+                            for _eb in range(5):   # 0x3027 holds 5 bins (subs 2..16)
                                 _eas = int(self.node.sdo[0x3027][2 + _eb * 3].raw)
                                 _ek  = int(self.node.sdo[0x3027][3 + _eb * 3].raw)
                                 _eac = int(self.node.sdo[0x3027][4 + _eb * 3].raw)
@@ -7091,7 +7176,7 @@ class calibrate():
             # Applies equally to calibration and retest passes.
             N_BINS      = 64  if fast else 128   # k_max=32/64; k=7 well-resolved either way
             N_HARMONICS = 16
-            N_COG_BINS  = 10
+            N_COG_BINS  = 5      # firmware 0x3028 holds 5 bins (2..16); 17 = COG_LEAD_Q8
             UPDATE_S    = 0.005   # position controller period (200 Hz over SDO)
             POS_KP      = 80      # P gain: cts/s per count error (stable @ 200 Hz)
             MAX_VEL     = 2048    # velocity limit during hold (30 RPM)
@@ -7999,6 +8084,9 @@ class calibrate():
                         if _k_v < 42:
                             print("  skip  {:>6d}  (k<42, enc-error dominated)".format(_k_v))
                             continue
+                        if _n_cog_wb >= 5:   # 0x3028 holds 5 bins; bin 5 would clobber COG_LEAD_Q8 (sub 17)
+                            print("  NOTE: 5-bin cap reached — remaining harmonics not uploaded.")
+                            break
                         try:
                             self.node.sdo[0x3028][2 + _n_cog_wb * 3].raw = _as_v
                             self.node.sdo[0x3028][3 + _n_cog_wb * 3].raw = _k_v
@@ -8164,6 +8252,9 @@ class calibrate():
                 if _k < 42:
                     print("  skip  {:>6d}  (k<42, enc-error dominated)".format(_k))
                     continue
+                if _n_written >= 5:   # 0x3028 holds 5 bins; bin 5 would clobber COG_LEAD_Q8 (sub 17)
+                    print("  NOTE: 5-bin cap reached — remaining harmonics not uploaded.")
+                    break
                 try:
                     self.node.sdo[0x3028][2 + _n_written * 3].raw = _as
                     self.node.sdo[0x3028][3 + _n_written * 3].raw = _k
