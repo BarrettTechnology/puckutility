@@ -18,6 +18,31 @@ import time
 import canopen
 import numpy
 
+
+def _tolerate_tx_backpressure(network, timeout=0.5):
+    """Give outgoing frames a real send timeout.
+
+    canopen's Network.send_message calls bus.send(msg) with no timeout, so
+    python-can's socketcan backend falls back to timeout=0 and polls the socket
+    with select(..., 0). The first moment of TX backpressure then raises
+    "Transmit buffer full" -- and the gs_usb TX URB pool is shallow enough that
+    a burst of frames (e.g. scanner.search()'s 127) overruns it. Waiting briefly
+    for queue space costs nothing on a healthy bus.
+    """
+    bus = getattr(network, "bus", None)
+    if bus is None:
+        return
+    _orig_send = bus.send
+
+    def _send_waiting(msg, *args, **kwargs):
+        # Only fill in a timeout the caller didn't supply -- a positional
+        # timeout would collide with the keyword.
+        if not args and kwargs.get("timeout") is None:
+            kwargs["timeout"] = timeout
+        return _orig_send(msg, *args, **kwargs)
+
+    bus.send = _send_waiting
+
 # Number of records logged during step response
 RECORDS = 5000 
 
@@ -96,8 +121,10 @@ if __name__ == "__main__":
 
       if platform.system() == "Windows":
         network.connect(bustype='pcan', channel='PCAN_USBBUS'+str(int(can_device[-1:])+1), bitrate=1000000)
+        _tolerate_tx_backpressure(network)
       elif platform.system() == "Linux":
         network.connect(bustype='socketcan', channel=can_device, bitrate=1000000)
+        _tolerate_tx_backpressure(network)
 
       print("Connection succeeded, adding CANopen node...")
       # Add our canopen node along with its object dictionary (for parsing)

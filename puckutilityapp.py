@@ -1474,7 +1474,22 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                         self._scan_reset_done = False
                     if _recovered:
                         return self.scan_pucks(event, selfCALL=selfCALL, skipADC=skipADC)
-                print('No Pucks Found') # Establish error for no pucks
+                # A TX-buffer error means the scan could not SEND -- the adapter
+                # backed up, which says nothing about whether pucks are present.
+                # Reporting it as "No Pucks Found" sent users off checking power
+                # and wiring that were never the problem, so name it honestly.
+                _tx_wedged = can_backend.is_tx_buffer_error(e)
+                if _tx_wedged:
+                    print(f'CAN adapter transmit buffer full ({e}) — scan could not send')
+                    status_msg = 'CAN adapter TX buffer full'
+                    msg = ('CAN adapter transmit buffer full — the scan could not be sent.'
+                           '\n\nThis is adapter/driver backpressure, NOT necessarily an '
+                           'empty bus.\n\nRetry the scan. If it persists, replug the CAN '
+                           'adapter.')
+                else:
+                    print('No Pucks Found') # Establish error for no pucks
+                    status_msg = 'No Pucks Found'
+                    msg = 'No Pucks Found! \nDebug:\nPower Connection\nCAN Connection\n\nVerify Connection and Retry'
                 # No active puck — clear ID, firmware-version, and the
                 # Select ID dropdown.
                 self.text_id.ChangeValue('')
@@ -1483,10 +1498,9 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 self.choice_id.SetSelection(wx.NOT_FOUND)
                 self._scan_error = True
                 self.progress.Hide()
-                self.frame_statusbar.SetStatusText('No Pucks Found', 1)
+                self.frame_statusbar.SetStatusText(status_msg, 1)
                 self.frame_statusbar.Refresh()
                 self.frame_statusbar.Update()
-                msg = 'No Pucks Found! \nDebug:\nPower Connection\nCAN Connection\n\nVerify Connection and Retry'
                 dlg = wx.MessageDialog(None,msg)
                 dlg.ShowModal()
                 dlg.Destroy()

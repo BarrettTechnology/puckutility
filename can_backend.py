@@ -388,6 +388,7 @@ def make_network(can_device, bitrate=1_000_000, fd=False, data_bitrate=None):
 
     if fd:
         _enable_fd_frames(network)
+    _tolerate_tx_backpressure(network)
     return network
 
 
@@ -410,3 +411,33 @@ def _enable_fd_frames(network):
         return _orig_send(msg, *args, **kwargs)
 
     bus.send = _send_fd
+
+
+def _tolerate_tx_backpressure(network, timeout=0.5):
+    """Give outgoing frames a real send timeout.
+
+    canopen's Network.send_message calls ``bus.send(msg)`` with no timeout, so
+    python-can's socketcan backend falls back to ``timeout=0`` and polls the
+    socket with ``select(..., 0)``. The first moment of TX backpressure then
+    raises "Transmit buffer full" -- and the gs_usb TX URB pool is shallow
+    enough that the 127-frame burst from ``scanner.search()`` overruns it, so
+    the scan dies outright and the app reports it as "No Pucks Found". Waiting
+    briefly for queue space costs nothing on a healthy bus.
+
+    Wrapped outermost (after _enable_fd_frames) so the two compose: canopen
+    calls this with no timeout, this injects one, then the FD wrapper flags the
+    message and forwards the timeout to the real send. The in-tree CandleLight
+    driver blocks on its own USB write timeout and returns before this point,
+    so it is unaffected.
+    """
+    bus = network.bus
+    _orig_send = bus.send
+
+    def _send_waiting(msg, *args, **kwargs):
+        # Only fill in a timeout the caller didn't supply -- a positional
+        # timeout would collide with the keyword.
+        if not args and kwargs.get("timeout") is None:
+            kwargs["timeout"] = timeout
+        return _orig_send(msg, *args, **kwargs)
+
+    bus.send = _send_waiting
