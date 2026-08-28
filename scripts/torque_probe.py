@@ -69,6 +69,15 @@ POS_ABORT     = 8192     # cts from start (~2 motor rev). Catches slow creep the
                          # would not -- a small net torque offset integrates quietly.
 IQ_ABORT_FRAC = 0.20
 ID_ABORT_FRAC = 0.10
+# Soft-clamp ("electronic clamp") gains. A ~1 Hz position trim added to the torque command
+# holds the average position so the free rotor cannot drift or run away, which is what forced
+# the tiny amplitudes and the >=50 Hz floor on the first attempt. Deliberately feeble: at a
+# 9-count injection swing this contributes ~0.05 per-mille against an injection of 4-15, so it
+# is transparent in the 25-130 Hz band under test. Do NOT raise these into a real position
+# loop -- that reintroduces the very controller whose absence is the point of CST.
+TRIM_KP       = 0.004    # per-mille per count of error
+TRIM_KI       = 2.0e-5   # per-mille per count per sample
+TRIM_CAP      = 40       # per-mille ceiling on the trim contribution
 FREQ_REF      = 100.0    # Hz at which --amp is the literal amplitude; see the constant-velocity
                          # note in the sweep loop for why amplitude tracks frequency.
 
@@ -85,6 +94,24 @@ def _drop(node):
             pass
 
 
+def _dump(csv_dir, tag, st):
+    """Write the burst so it can be re-examined offline -- for self-excitation at 57-86 Hz that
+    was not at the drive frequency, or to tell a real response from a settling transient."""
+    if not st['T']:
+        return None
+    try:
+        os.makedirs(csv_dir, exist_ok=True)
+        path = os.path.join(csv_dir, "torque_{}_{}.csv".format(
+            tag, time.strftime("%Y%m%d-%H%M%S")))
+        with open(path, 'w') as fh:
+            fh.write("t_s,pos_cts,vel_cts_s,iq_mA,trq_cmd\n")
+            for row in zip(st['T'], st['POS'], st['VEL'], st['IQ'], st['TRQ']):
+                fh.write("{:.6f},{},{},{:.1f},{:.3f}\n".format(*row))
+        return path
+    except Exception:
+        return None
+
+
 def _lockin(t, y, f):
     """Single-bin DFT at f: returns (amplitude, phase_rad). A lock-in rather than a full FFT so
     the estimate is unaffected by the drive frequency falling between FFT bins."""
@@ -93,15 +120,19 @@ def _lockin(t, y, f):
     return 2.0 * abs(c), np.angle(c)
 
 
-def run(can_device='can0', node_id=127, rate_hz=750.0, amp=25, freqs=None, dc=None,
-        secs=3.0, cycles=40, settle_frac=0.4, csv_dir='twitchtests', verbose=True):
+def run(can_device='can0', node_id=127, rate_hz=1000.0, amp=25, freqs=None, dc=None,
+        secs=3.0, cycles=40, settle_frac=0.4, csv_dir='twitchtests', vel_abort=None,
+        amp_exp=2.0, verbose=True):
     net = canopen.Network()
     net.connect(bustype='socketcan', channel=can_device)
     node = net.add_node(node_id, fw.EDS)
     st = {'cap': False, 'trq': 0.0, 'phase': 0.0, 'dphase': 0.0, 'gain': 0.0,
           'T': [], 'POS': [], 'VEL': [], 'IQ': [], 'TRQ': [], 'start': 0.0,
-          'abort': '', 'p0': 0}
+          'abort': '', 'p0': 0, 'trim_on': False, 'ierr': 0.0, 'trim': 0.0}
     results = []
+    global VEL_ABORT
+    if vel_abort:
+        VEL_ABORT = int(vel_abort)
     try:
         i_peak = node.sdo['Calibration']['i_peak'].raw
         max_trq = struct.unpack('<I', node.sdo.upload(0x6076, 0))[0]
@@ -123,8 +154,19 @@ def run(can_device='can0', node_id=127, rate_hz=750.0, amp=25, freqs=None, dc=No
             # SYNC-driven: advance the sine and publish the new torque, then latch a sample.
             try:
                 st['phase'] += st['dphase']
-                trq = st['gain'] * (st['trq'] if st['dphase'] == 0.0
-                                    else st['trq'] * np.sin(st['phase']))
+                drive = st['gain'] * (st['trq'] if st['dphase'] == 0.0
+                                      else st['trq'] * np.sin(st['phase']))
+                # Soft clamp: slow position trim so the free rotor holds station. Runs on the
+                # RAW position error, which is dominated by drift -- the injected oscillation is
+                # only a few counts and the loop is far too slow to answer it.
+                trim = 0.0
+                if st['trim_on']:
+                    err = st['p0'] - (st['POS'][-1] if st['POS'] else st['p0'])
+                    st['ierr'] += err
+                    trim = TRIM_KP * err + TRIM_KI * st['ierr']
+                    trim = max(-TRIM_CAP, min(TRIM_CAP, trim))
+                    st['trim'] = trim
+                trq = drive + trim
                 node.rpdo[1]['TargetTorque'].raw = int(round(trq))
                 # Guard HERE, in the SYNC callback, not in the burst loop. CST has no speed
                 # limit, so a DC offset accelerates hard: a 200 Hz polling loop overshot an
@@ -145,7 +187,7 @@ def run(can_device='can0', node_id=127, rate_hz=750.0, amp=25, freqs=None, dc=No
                     st['POS'].append(node.tpdo[1]['PositionFeedback'].raw)
                     st['VEL'].append(node.tpdo[2]['VelocityFeedback'].raw)
                     st['IQ'].append(node.tpdo[2]['CurrentFeedback'].raw / 1000.0 * i_peak)
-                    st['TRQ'].append(trq)
+                    st['TRQ'].append(drive)
             except Exception:
                 pass
 
@@ -154,8 +196,15 @@ def run(can_device='can0', node_id=127, rate_hz=750.0, amp=25, freqs=None, dc=No
         node.sdo['ControlWord'].raw = fw.CW_FAULTRESET
         node.sdo['ControlWord'].raw = fw.CW_SHUTDOWN
         node.sdo['ControlWord'].raw = fw.CW_ENABLE
+        # InterpolationPeriod is whole milliseconds (scale -3). If 1/rate is not an integer
+        # ms the firmware interpolates CST torque against the wrong period -- at 750 Hz it was
+        # told 1 ms while SYNC arrived every 1.333 ms, over-extrapolating every cycle.
+        per_ms = 1000.0 / rate_hz
+        if abs(per_ms - round(per_ms)) > 1e-6:
+            print("# WARNING: {:.0f} Hz = {:.3f} ms is not a whole number of milliseconds; "
+                  "CST interpolation will be wrong. Use 1000 or 500 Hz.".format(rate_hz, per_ms))
         try:
-            node.sdo['Cyclic']['InterpolationPeriod'].raw = int(1.0 / rate_hz * 1000)
+            node.sdo['Cyclic']['InterpolationPeriod'].raw = int(round(per_ms))
             node.sdo['Cyclic']['InterpolationScale'].raw = -3
         except Exception:
             pass
@@ -163,6 +212,9 @@ def run(can_device='can0', node_id=127, rate_hz=750.0, amp=25, freqs=None, dc=No
         node.rpdo[1]['SetModeOfOperation'].raw = MODE_CYCLIC_SYNC_TRQ
         node.rpdo[1]['TargetTorque'].raw = 0
         st['p0'] = node.sdo['PositionFeedback'].raw
+        if verbose:
+            print("# soft clamp: ~1 Hz position trim (Kp {:.3g}, Ki {:.3g}, cap {} per-mille) "
+                  "holds station without a mechanical clamp".format(TRIM_KP, TRIM_KI, TRIM_CAP))
         node.rpdo[1].start(1.0 / rate_hz)
         net.sync.start(1.0 / rate_hz)
         time.sleep(0.4)
@@ -173,6 +225,7 @@ def run(can_device='can0', node_id=127, rate_hz=750.0, amp=25, freqs=None, dc=No
             st['phase'], st['dphase'] = 0.0, (2 * np.pi * f / rate_hz if f else 0.0)
             st['trq'], st['gain'] = float(amp_f if amp_f else amp), 0.0
             st['abort'] = ''
+            st['ierr'] = 0.0                      # fresh integral each burst
             st['start'] = timer(); st['cap'] = True
             t0 = time.time(); ramp = min(0.15, dur * 0.2)
             k = 0
@@ -221,7 +274,9 @@ def run(can_device='can0', node_id=127, rate_hz=750.0, amp=25, freqs=None, dc=No
                 print("\n# DC probe: constant torque {} per-mille for {:.1f}s. No velocity or "
                       "position loop is closed.".format(int(st['trq']), secs))
             amp = int(abs(st['trq'])) or 1
+            st['trim_on'] = False          # a trim would fight the very torque under test
             if _burst(0.0, secs, 'DC probe'):
+                _dump(csv_dir, "dc{}".format(int(st['trq'])), st)
                 v = np.asarray(st['VEL'], float); t = np.asarray(st['T'], float)
                 dt = np.median(np.diff(t)) if t.size > 2 else 1.0 / rate_hz
                 V = np.abs(np.fft.rfft((v - v.mean()) * np.hanning(v.size)))
@@ -242,7 +297,10 @@ def run(can_device='can0', node_id=127, rate_hz=750.0, amp=25, freqs=None, dc=No
 
         # ---------------- stepped-sine sweep: the resonance Bode ----------------
         if freqs:
+            fref = max(freqs)
             if verbose:
+                print("\n# amplitude scales as (f/{:.0f})^{:.1f}; --amp is the value at {:.0f} Hz"
+                      .format(fref, amp_exp, fref))
                 print("\n#   f Hz   amp   pos amp   |acc|/trq   phase deg   vel amp")
             for f in freqs:
                 dur = max(cycles / f, 1.0)
@@ -253,9 +311,17 @@ def run(can_device='can0', node_id=127, rate_hz=750.0, amp=25, freqs=None, dc=No
                 # every point inside the envelope AND improves SNR at the top end. The measured
                 # quantity is the RATIO |vel|/torque, so this does not distort the transfer
                 # function as long as the amplitude actually used is the one divided out.
-                amp_f = int(max(1, min(TRQ_AMP_CAP, round(amp * f / FREQ_REF))))
+                # CONSTANT-POSITION excitation: position amplitude goes as T/(J*omega^2), so
+                # amplitude must scale as f^2 to keep it flat. The earlier f^1 (constant-
+                # velocity) rule starved the top end -- 130 Hz returned 0.4 counts, at the
+                # encoder's 1-count resolution, which is why those points were noise. --amp is
+                # the amplitude at the TOP of the sweep, where the plant needs the most drive.
+                amp_f = int(max(1, min(TRQ_AMP_CAP, round(amp * (f / fref) ** amp_exp))))
+                st['trim_on'] = True
                 if not _burst(f, dur, "{:.0f} Hz".format(f), amp_f=amp_f):
+                    _dump(csv_dir, "f{:.0f}_ABORT".format(f), st)
                     break
+                trace = _dump(csv_dir, "f{:.0f}".format(f), st)
                 t = np.asarray(st['T'], float)
                 n0 = int(len(t) * settle_frac)                 # drop ramp-in + transient
                 t, v = t[n0:], np.asarray(st['VEL'], float)[n0:]
@@ -279,7 +345,7 @@ def run(can_device='can0', node_id=127, rate_hz=750.0, amp=25, freqs=None, dc=No
                 acc = (2 * np.pi * f) ** 2 * pa / max(amp_f, 1)
                 results.append({'mode': 'sweep', 'f': f, 'amp': amp_f, 'pos_amp': pa,
                                 'vel_amp': va, 'resp': acc, 'phase_deg': np.degrees(pp),
-                                'iq_amp': ia})
+                                'iq_amp': ia, 'trace': trace})
                 if verbose:
                     print("  {:>6.1f}  {:>4d}   {:>8.1f}   {:>9.3g}   {:>9.1f}   {:>7.0f}".format(
                         f, amp_f, pa, acc, np.degrees(pp), va))
@@ -308,7 +374,11 @@ def main():
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--can', default='can0')
     ap.add_argument('--node', type=int, default=127)
-    ap.add_argument('--rate', type=float, default=750.0, help='SYNC/PDO rate Hz (default 750)')
+    ap.add_argument('--rate', type=float, default=1000.0,
+                    help='SYNC/PDO rate Hz (default 1000). MUST divide evenly into whole '
+                         'milliseconds: InterpolationPeriod is an integer ms field, so 750 Hz '
+                         '(1.333 ms) is written as 1 ms and the firmware then interpolates CST '
+                         'torque against the wrong period. Use 1000 (1 ms) or 500 (2 ms).')
     ap.add_argument('--amp', type=int, default=25,
                     help='sine torque amplitude at {:.0f} Hz, per-mille of rated (default 25 '
                          '~= 1.0 A peak). Scaled proportional to frequency to hold the velocity '
@@ -322,6 +392,14 @@ def main():
     ap.add_argument('--cycles', type=int, default=40,
                     help='drive cycles per sweep point (default 40)')
     ap.add_argument('--csv-dir', default='twitchtests')
+    ap.add_argument('--amp-exp', type=float, default=2.0,
+                    help='amplitude scales as (f/f_top)^EXP (default 2.0 = constant position '
+                         'amplitude). Use 1.0 for constant velocity, 0 for constant torque.')
+    ap.add_argument('--vel-abort', type=int, default=None,
+                    help='velocity ceiling cts/s (default {}). The sweep is zero-mean and soft-'
+                         'clamped so it cannot run away; raising this is what lets the sweep '
+                         'reach below ~45 Hz, where a free rotor swings hardest. For scale, the '
+                         'twitch harness tolerates 30000 and a normal twitch peaks ~5000.'.format(VEL_ABORT))
     args = ap.parse_args()
 
     freqs = None
@@ -332,7 +410,8 @@ def main():
         print("nothing to do: pass --sweep or --dc"); return 2
 
     res, st = run(args.can, args.node, rate_hz=args.rate, amp=args.amp, freqs=freqs,
-                  dc=args.dc, secs=args.secs, cycles=args.cycles, csv_dir=args.csv_dir)
+                  dc=args.dc, secs=args.secs, cycles=args.cycles, csv_dir=args.csv_dir,
+                  vel_abort=args.vel_abort, amp_exp=args.amp_exp)
 
     sw = [r for r in res if r.get('mode') == 'sweep']
     if len(sw) >= 3:
@@ -349,7 +428,10 @@ def main():
                 hi = f[i]; break
         print("\n==== RESONANCE ====")
         print("peak |accel|/torque at {:.1f} Hz  (gain {:.3g})".format(fpk, gpk))
-        if hi > lo and (lo > f[0] or hi < f[-1]):
+        if ipk == 0 or ipk == len(f) - 1:
+            print("peak sits on the EDGE of the swept range -- the resonance is outside it. "
+                  "No Q reported; widen --sweep past {:.0f} Hz.".format(fpk))
+        elif hi > lo and lo > f[0] and hi < f[-1]:
             Q = fpk / (hi - lo)
             print("-3dB width {:.1f}-{:.1f} Hz -> Q ~ {:.1f}, damping ratio ~ {:.3f}".format(
                 lo, hi, Q, 1.0 / (2 * Q)))
