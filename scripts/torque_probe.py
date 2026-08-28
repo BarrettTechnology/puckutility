@@ -112,6 +112,61 @@ def _dump(csv_dir, tag, st):
         return None
 
 
+def _ringdown_fit(t, y, fmin=25.0, fmax=170.0):
+    """Damping from a free-decay trace. Returns (f_d, zeta, Q, n_peaks, r2) or None.
+
+    Band-pass first: after an impulse the rotor also coasts, and that rigid-body ramp swamps
+    the oscillation. Then fit an exponential to the envelope by log-linear regression through
+    the successive peak magnitudes -- no scipy on this box, so no Hilbert transform.
+    """
+    t = np.asarray(t, float); y = np.asarray(y, float)
+    n = y.size
+    if n < 64:
+        return None
+    dt = float(np.median(np.diff(t)))
+    Y = np.fft.rfft(y - y.mean()); fr = np.fft.rfftfreq(n, dt)
+    keep = (fr >= fmin) & (fr <= fmax)
+    if not keep.any():
+        return None
+    fd = float(fr[keep][np.abs(Y[keep]).argmax()])       # dominant decay frequency
+    Yf = np.where(keep, Y, 0)
+    yb = np.fft.irfft(Yf, n)                             # band-passed oscillation
+
+    # successive |peaks| of the band-passed signal = the decay envelope
+    pk_t, pk_v = [], []
+    for i in range(1, n - 1):
+        if abs(yb[i]) >= abs(yb[i - 1]) and abs(yb[i]) > abs(yb[i + 1]) and abs(yb[i]) > 0:
+            pk_t.append(t[i]); pk_v.append(abs(yb[i]))
+    if len(pk_t) < 4:
+        return None
+    pk_t = np.array(pk_t); pk_v = np.array(pk_v)
+    # Truncate at the noise floor, CONTIGUOUSLY. Once the ring decays into noise the peaks stop
+    # shrinking, and including them flattens the log-linear slope and under-reports damping
+    # badly (validated: true zeta 0.05 came back as 0.004). Start at the largest peak and stop
+    # at the first one that falls under the floor -- do not keep later peaks that poke back up.
+    noise = float(np.median(np.abs(yb[int(n * 0.8):]))) if n > 32 else 0.0
+    i0 = int(pk_v.argmax())
+    floor = max(noise * 5.0, pk_v[i0] * 0.08)
+    sel = [i0]
+    for i in range(i0 + 1, len(pk_v)):
+        if pk_v[i] < floor:
+            break
+        sel.append(i)
+    pk_t, pk_v = pk_t[sel], pk_v[sel]
+    if len(pk_t) < 4:
+        return None
+    A = np.vstack([pk_t, np.ones_like(pk_t)]).T
+    sol, res, _, _ = np.linalg.lstsq(A, np.log(pk_v), rcond=None)
+    sigma = -float(sol[0])                               # envelope ~ exp(-sigma t)
+    lg = np.log(pk_v)
+    ss = 1.0 - (np.sum((lg - A.dot(sol)) ** 2) / max(np.sum((lg - lg.mean()) ** 2), 1e-12))
+    if sigma <= 0:
+        return (fd, 0.0, float('inf'), len(pk_t), ss)    # not decaying -> self-sustaining
+    wd = 2 * np.pi * fd
+    zeta = sigma / np.sqrt(sigma ** 2 + wd ** 2)
+    return (fd, float(zeta), float(1.0 / (2 * zeta)), len(pk_t), float(ss))
+
+
 def _lockin(t, y, f):
     """Single-bin DFT at f: returns (amplitude, phase_rad). A lock-in rather than a full FFT so
     the estimate is unaffected by the drive frequency falling between FFT bins."""
@@ -122,7 +177,7 @@ def _lockin(t, y, f):
 
 def run(can_device='can0', node_id=127, rate_hz=1000.0, amp=25, freqs=None, dc=None,
         secs=3.0, cycles=40, settle_frac=0.4, csv_dir='twitchtests', vel_abort=None,
-        amp_exp=2.0, verbose=True):
+        amp_exp=2.0, ring_n=0, ring_ms=7.0, ring_secs=0.6, brk_n=0, verbose=True):
     net = canopen.Network()
     net.connect(bustype='socketcan', channel=can_device)
     node = net.add_node(node_id, fw.EDS)
@@ -219,6 +274,43 @@ def run(can_device='can0', node_id=127, rate_hz=1000.0, amp=25, freqs=None, dc=N
         net.sync.start(1.0 / rate_hz)
         time.sleep(0.4)
 
+        def _wait_still(span=3, need=0.4, timeout=8.0):
+            """Block until the rotor has actually stopped. After a breakaway it coasts under
+            zero torque, and starting the next ramp on a moving rotor trips the velocity guard
+            immediately (observed: 8224 and 8670 cts/s).
+
+            Stillness is judged on POSITION, not velocity. VelocityFeedback is a 1 kHz position
+            difference quantised at ~1000 cts/s per count, so it reads several hundred cts/s
+            even at a dead stop (measured +/-372 while parked in IDLE) -- any velocity
+            threshold below that noise floor can never be satisfied."""
+            t0 = time.time(); quiet = 0.0; last = time.time()
+            while time.time() - t0 < timeout:
+                w = st['POS'][-int(need * rate_hz):] if st['POS'] else []
+                now = time.time()
+                moving = (not w) or (max(w) - min(w)) > span
+                quiet = 0.0 if moving else quiet + (now - last)
+                last = now
+                if quiet >= need and len(w) >= int(need * rate_hz * 0.5):
+                    return True
+                time.sleep(0.02)
+            return False
+
+        def _settle_and_anchor():
+            """Wait for stillness and re-anchor the excursion reference. Must run BEFORE each
+            rep, not just after: the rotor can still be coasting from a previous run entirely
+            (observed: rep 0 aborted at 8670 cts/s on a freshly started sweep)."""
+            st['T'], st['POS'], st['VEL'], st['IQ'], st['TRQ'] = [], [], [], [], []
+            st['start'] = timer()
+            st['gain'] = 0.0                      # nothing driving while we wait
+            st['cap'] = True
+            ok = _wait_still()
+            st['cap'] = False
+            try:
+                st['p0'] = node.sdo['PositionFeedback'].raw
+            except Exception:
+                pass
+            return ok
+
         def _burst(f, dur, label, amp_f=None):
             """One excitation burst. f=0 -> DC. Returns False on a safety abort."""
             st['T'], st['POS'], st['VEL'], st['IQ'], st['TRQ'] = [], [], [], [], []
@@ -266,6 +358,121 @@ def run(can_device='can0', node_id=127, rate_hz=1000.0, amp=25, freqs=None, dc=N
                 return False
             time.sleep(0.25)                                   # let it settle between bursts
             return True
+
+        # ---------------- RINGDOWN: impulse, then watch the free decay ----------------
+        # The cleanest way to get the mode's damping on a plant dominated by stiction. A single
+        # large-amplitude transient does not care whether small-signal drive clears breakaway,
+        # and no sustained excitation means nothing can run away. Output shaft free is fine:
+        # motor and load ring against each other through the gearbox spring.
+        if ring_n:
+            if verbose:
+                print("\n# ringdown: {} impulses of {} per-mille x {:.1f} ms, then zero torque"
+                      .format(ring_n, amp, 1000.0 * ring_ms / 1000.0))
+                print("#   rep   f_d Hz   zeta     Q    peaks    r2   note")
+            st['trim_on'] = False               # a trim would inject energy into the decay
+            for rep in range(ring_n):
+                if not _settle_and_anchor():
+                    print("  (rotor will not settle -- aborting ringdown)"); break
+                st['T'], st['POS'], st['VEL'], st['IQ'], st['TRQ'] = [], [], [], [], []
+                st['abort'] = ''
+                st['phase'], st['dphase'] = 0.0, 0.0
+                st['trq'], st['gain'] = float(amp), 1.0
+                st['start'] = timer(); st['cap'] = True
+                t0 = time.time()
+                # half-sine impulse: concentrates energy near 1/(2*width), and unlike a square
+                # pulse it does not slam the current loop with a step.
+                while time.time() - t0 < ring_ms / 1000.0:
+                    frac = (time.time() - t0) / (ring_ms / 1000.0)
+                    st['gain'] = float(np.sin(np.pi * min(frac, 1.0)))
+                    if st['abort']:
+                        break
+                    time.sleep(0.0005)
+                st['gain'] = 0.0                        # release: pure free decay from here
+                node.rpdo[1]['TargetTorque'].raw = 0
+                t1 = time.time()
+                while time.time() - t1 < ring_secs and not st['abort']:
+                    time.sleep(0.002)
+                st['cap'] = False
+                if st['abort']:
+                    _dump(csv_dir, "ring{}_ABORT".format(rep), st)
+                    _drop(node)
+                    print("  !! SAFETY ABORT ({}) during ringdown -> drive dropped.".format(
+                        st['abort']))
+                    break
+                tr = _dump(csv_dir, "ring{}".format(rep), st)
+                t = np.asarray(st['T'], float)
+                n0 = int(np.searchsorted(t, ring_ms / 1000.0 * 1.5))   # analyse AFTER release
+                fit = _ringdown_fit(t[n0:], np.asarray(st['VEL'], float)[n0:])
+                if fit is None:
+                    print("  {:>5}   no clean decay found (too few envelope peaks -- the mode "
+                          "is either absent or dead in under ~2 cycles)".format(rep))
+                    results.append({'mode': 'ring', 'rep': rep, 'fit': None, 'trace': tr})
+                    continue
+                fd, zeta, Q, npk, r2 = fit
+                results.append({'mode': 'ring', 'rep': rep, 'f_d': fd, 'zeta': zeta, 'Q': Q,
+                                'peaks': npk, 'r2': r2, 'trace': tr})
+                if verbose:
+                    print("  {:>5}   {:>6.1f}  {:>6.3f}  {:>5.1f}  {:>5d}  {:>5.2f}   {}".format(
+                        rep, fd, zeta, Q, npk, r2,
+                        "weak fit" if r2 < 0.7 else ""))
+                time.sleep(0.4)
+
+        # ---------------- BREAKAWAY: how much torque before it moves at all? ----------------
+        # Quantifies the stiction the whole limit cycle winds up against, and says whether it
+        # is rotor-position dependent. Ramps slowly and stops the instant the rotor moves, so
+        # it never reaches a speed worth guarding against.
+        if brk_n:
+            if verbose:
+                print("\n# breakaway: slow torque ramp until motion, {} positions".format(brk_n))
+                print("#   rep   breakaway per-mille    mA    moved cts   snap cts/s")
+            st['trim_on'] = False
+            vals = []
+            for rep in range(brk_n):
+                if not _settle_and_anchor():
+                    print("  (rotor will not settle -- aborting breakaway sweep)"); break
+                st['T'], st['POS'], st['VEL'], st['IQ'], st['TRQ'] = [], [], [], [], []
+                st['abort'] = ''
+                st['phase'], st['dphase'] = 0.0, 0.0
+                st['gain'], st['trq'] = 1.0, 0.0
+                p_start = node.sdo['PositionFeedback'].raw
+                st['start'] = timer(); st['cap'] = True
+                found = None
+                for d in range(0, TRQ_AMP_CAP + 1):
+                    st['trq'] = float(d)
+                    time.sleep(0.03)
+                    if st['abort']:
+                        break
+                    now = st['POS'][-1] if st['POS'] else p_start
+                    if abs(now - p_start) > 12:          # >12 cts = unambiguously broken free
+                        found = d
+                        break
+                st['gain'] = 0.0; st['trq'] = 0.0
+                node.rpdo[1]['TargetTorque'].raw = 0
+                st['cap'] = False
+                moved = (st['POS'][-1] - p_start) if st['POS'] else 0
+                # Peak velocity of the SNAP. Breakaway on a geared axis is not gentle: the
+                # gearbox winds up elastically, then releases stored torsional energy as
+                # kinetic in one lurch. That lurch is the same event the twitch root cause
+                # describes, so its size is worth recording rather than merely surviving.
+                snap = max((abs(v) for v in st['VEL']), default=0)
+                _dump(csv_dir, "brk{}".format(rep), st)
+                if st['abort']:
+                    _drop(node); print("  !! SAFETY ABORT ({})".format(st['abort'])); break
+                if found is None:
+                    print("  {:>5}   did not break away by {} per-mille".format(rep, TRQ_AMP_CAP))
+                else:
+                    vals.append(found)
+                    print("  {:>5}   {:>18}  {:>6.0f}  {:>10.0f}  {:>9.0f}".format(
+                        rep, found, found * 1.414 * max_trq / kt, moved, snap))
+                results.append({'mode': 'brk', 'rep': rep, 'breakaway': found, 'moved': moved,
+                                'snap_cts_s': snap})
+                # settling happens at the TOP of the next rep, via _settle_and_anchor()
+            if len(vals) >= 2:
+                print("  breakaway {}-{} per-mille (mean {:.1f}, spread {:.0%}) -> {}".format(
+                    min(vals), max(vals), float(np.mean(vals)),
+                    (max(vals) - min(vals)) / max(np.mean(vals), 1e-9),
+                    "position-DEPENDENT stiction" if (max(vals) - min(vals)) > 0.5 * np.mean(vals)
+                    else "stiction roughly uniform with position"))
 
         # ---------------- DC probe: does the ring exist with NO outer loop? ----------------
         if dc is not None:
@@ -392,6 +599,18 @@ def main():
     ap.add_argument('--cycles', type=int, default=40,
                     help='drive cycles per sweep point (default 40)')
     ap.add_argument('--csv-dir', default='twitchtests')
+    ap.add_argument('--ring', type=int, default=0, metavar='N',
+                    help='RINGDOWN: N impulse-and-decay reps. Gives the mode damping directly '
+                         'from the decay envelope, which small-signal sweeps cannot do on a '
+                         'stiction-dominated plant.')
+    ap.add_argument('--ring-ms', type=float, default=7.0,
+                    help='impulse width ms (default 7 = half period at ~70 Hz, which puts the '
+                         'energy on the mode we are hunting)')
+    ap.add_argument('--ring-secs', type=float, default=0.6,
+                    help='decay capture window s (default 0.6)')
+    ap.add_argument('--breakaway', type=int, default=0, metavar='N',
+                    help='BREAKAWAY: ramp torque until the rotor moves, N times. Quantifies the '
+                         'stiction the limit cycle winds up against.')
     ap.add_argument('--amp-exp', type=float, default=2.0,
                     help='amplitude scales as (f/f_top)^EXP (default 2.0 = constant position '
                          'amplitude). Use 1.0 for constant velocity, 0 for constant torque.')
@@ -406,12 +625,13 @@ def main():
     if args.sweep:
         a, b, c = (float(x) for x in args.sweep.split(':'))
         freqs = list(np.arange(a, b + c / 2, c))
-    if not freqs and args.dc is None:
-        print("nothing to do: pass --sweep or --dc"); return 2
+    if not freqs and args.dc is None and not args.ring and not args.breakaway:
+        print("nothing to do: pass --sweep, --ring, --breakaway or --dc"); return 2
 
     res, st = run(args.can, args.node, rate_hz=args.rate, amp=args.amp, freqs=freqs,
                   dc=args.dc, secs=args.secs, cycles=args.cycles, csv_dir=args.csv_dir,
-                  vel_abort=args.vel_abort, amp_exp=args.amp_exp)
+                  vel_abort=args.vel_abort, amp_exp=args.amp_exp, ring_n=args.ring,
+                  ring_ms=args.ring_ms, ring_secs=args.ring_secs, brk_n=args.breakaway)
 
     sw = [r for r in res if r.get('mode') == 'sweep']
     if len(sw) >= 3:
