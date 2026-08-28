@@ -113,6 +113,26 @@ def _dump(csv_dir, tag, st):
 
 
 def _ringdown_fit(t, y, fmin=25.0, fmax=170.0):
+    """Try several analysis windows and keep the most convincing fit. A heavily damped ring is
+    gone in ~40 ms, so judging it over a 0.8 s capture means 95% of the record is coast residual
+    and noise, and the FFT locks onto that instead (measured: 55 Hz read back as 107 Hz). A
+    lightly damped one needs the long window. Rather than guess, fit each and score."""
+    best = None
+    for win in (0.06, 0.10, 0.18, 0.35, 0.70):
+        m = np.asarray(t, float) - t[0] <= win
+        if m.sum() < 64:
+            continue
+        r = _ringdown_fit_one(np.asarray(t, float)[m], np.asarray(y, float)[m], fmin, fmax)
+        if r is None:
+            continue
+        # score: trust r^2, but require enough envelope peaks to mean anything
+        score = r[4] * min(r[3], 12)
+        if best is None or score > best[0]:
+            best = (score, r)
+    return best[1] if best else None
+
+
+def _ringdown_fit_one(t, y, fmin=25.0, fmax=170.0):
     """Damping from a free-decay trace. Returns (f_d, zeta, Q, n_peaks, r2) or None.
 
     Band-pass first: after an impulse the rotor also coasts, and that rigid-body ramp swamps
@@ -124,13 +144,24 @@ def _ringdown_fit(t, y, fmin=25.0, fmax=170.0):
     if n < 64:
         return None
     dt = float(np.median(np.diff(t)))
-    Y = np.fft.rfft(y - y.mean()); fr = np.fft.rfftfreq(n, dt)
+    # DETREND before the transform. After an impulse the rotor coasts, so position carries a
+    # large ramp; an un-detrended ramp leaks broadband energy into every FFT bin including the
+    # passband, and the "ring" that comes back out is leakage, not signal. (Measured: fitting
+    # raw position gave 0 clean decays from 14, worse than velocity's 2 from 6, purely from
+    # this.) A cubic also absorbs the friction-decelerated part of the coast.
+    kk = np.arange(n, dtype=float)
+    y = y - np.poly1d(np.polyfit(kk, y, 3))(kk)
+    fr = np.fft.rfftfreq(n, dt)
     keep = (fr >= fmin) & (fr <= fmax)
     if not keep.any():
         return None
-    fd = float(fr[keep][np.abs(Y[keep]).argmax()])       # dominant decay frequency
-    Yf = np.where(keep, Y, 0)
-    yb = np.fft.irfft(Yf, n)                             # band-passed oscillation
+    # Window ONLY to estimate the frequency -- it suppresses leakage but imposes its own
+    # rise-and-fall envelope, which would overwrite the exponential decay being measured.
+    Yw = np.fft.rfft(y * np.hanning(n))
+    fd = float(fr[keep][np.abs(Yw[keep]).argmax()])      # dominant decay frequency
+    # Band-pass the UNWINDOWED signal for the envelope fit, so the decay is intact.
+    Y = np.fft.rfft(y)
+    yb = np.fft.irfft(np.where(keep, Y, 0), n)
 
     # successive |peaks| of the band-passed signal = the decay envelope
     pk_t, pk_v = [], []
@@ -402,7 +433,12 @@ def run(can_device='can0', node_id=127, rate_hz=1000.0, amp=25, freqs=None, dc=N
                 tr = _dump(csv_dir, "ring{}".format(rep), st)
                 t = np.asarray(st['T'], float)
                 n0 = int(np.searchsorted(t, ring_ms / 1000.0 * 1.5))   # analyse AFTER release
-                fit = _ringdown_fit(t[n0:], np.asarray(st['VEL'], float)[n0:])
+                # Fit POSITION, not velocity. VelocityFeedback is quantised at ~1000 cts/s, so a
+                # decaying 70 Hz ring falls under the floor after a cycle or two and the envelope
+                # dies early -- that is why the first attempt got only 2 clean fits from 6. The
+                # same ring is a few counts of position against 1-count resolution. The fit
+                # band-passes anyway, so the rigid-body coast is removed for free.
+                fit = _ringdown_fit(t[n0:], np.asarray(st['POS'], float)[n0:])
                 if fit is None:
                     print("  {:>5}   no clean decay found (too few envelope peaks -- the mode "
                           "is either absent or dead in under ~2 cycles)".format(rep))
