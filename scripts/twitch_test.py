@@ -113,7 +113,8 @@ def _is_ring(a, vel_rms_thr, fmin, fmax):
 def run(can_device='can0', node_id=127, rate_hz=750.0, trials=10, hold_secs=2.5,
         perturb_cts=120, vel_rms_thr=600.0, fmin=15.0, fmax=None, csv_dir='twitchtests',
         gain_sweep=None, pos_sweep=None, out_sweep=None, repeat=1, enc_comp=None, settling=None,
-        fric_ff=None, vel_kp=None, vel_ki=None, net=None, node=None, verbose=True):
+        fric_ff=None, vel_kp=None, vel_ki=None, notch_sweep=None, notch_q=20, notch_pos=4,
+        net=None, node=None, verbose=True):
     """Hunt the hold twitch. Returns (results_list, summary_dict).
     pos_sweep=N holds at N rotor positions across one mechanical revolution and reports the
     electrical angle (theta_e) of each -> tells cogging/detent (rings cluster at certain theta_e)
@@ -267,8 +268,77 @@ def run(can_device='can0', node_id=127, rate_hz=750.0, trials=10, hold_secs=2.5,
         net.sync.start(1.0 / rate_hz)
         time.sleep(0.4)
 
+        # NOTCH-frequency sweep: for each centre frequency, hold at notch_pos rotor positions and
+        # report the spread. The notch (0x2100:4) filters ONLY the velocity the PI consumes -- 0x606C,
+        # the signal sampled here, stays unfiltered on purpose, so an improvement below is the ring
+        # actually shrinking rather than the notch hiding it from the measurement.
+        # 0x2100:4/5 are non-NV: a power cycle clears whatever the sweep left behind.
+        if notch_sweep:
+            step = enc_res / float(notch_pos)
+            holds = [int(home + i * step) for i in range(notch_pos)]
+            if verbose:
+                print("# notch sweep: Fc {} Hz @ Q {:.1f}, {} holds each (0x2100:4 = PI feedback only; "
+                      "0x606C telemetry unfiltered)".format(notch_sweep, notch_q / 10.0, notch_pos))
+                print("#   Fc     rb   worst    mean  median    ring Hz   rings")
+            for fc in notch_sweep:
+                try:
+                    node.sdo.download(0x2100, 5, struct.pack('<H', int(notch_q)))
+                    node.sdo.download(0x2100, 4, struct.pack('<H', int(fc)))
+                    rb = struct.unpack('<H', node.sdo.upload(0x2100, 4))[0]
+                except Exception as e:
+                    print("  (could not set notch {} Hz: {})".format(fc, e)); continue
+                time.sleep(0.4)
+                rms, frqs, nring = [], [], 0
+                for i, hp in enumerate(holds):
+                    a = _one_trial(node, st, hp, perturb_cts, hold_secs, enc_res, fw)
+                    if st.get('runaway'):
+                        break
+                    if not a:
+                        continue
+                    ring = _is_ring(a, vel_rms_thr, fmin, fmax)
+                    nring += bool(ring)
+                    rms.append(a['vel_rms'])
+                    if a.get('dom_freq'):
+                        frqs.append(a['dom_freq'])
+                    rec = {'notch_fc': int(fc), 'notch_q': notch_q / 10.0, 'pos': hp,
+                           'ring': ring, **a}
+                    if ring:
+                        rec['trace'] = _dump(csv_dir, "notch{}q{}_pos{}".format(
+                            int(fc), int(notch_q), i), st)
+                    results.append(rec)
+                if st.get('runaway'):
+                    # ALWAYS dump the aborting hold. Without the waveform there is no way to tell a
+                    # real divergence from a large one-off settling transient, and the guard trips on
+                    # instantaneous velocity -- an abort a few percent over the line is ambiguous on
+                    # its own. The trace shows whether the oscillation was growing or decaying.
+                    tr = _dump(csv_dir, "notch{}q{}_ABORT".format(int(fc), int(notch_q)), st)
+                    env = ""
+                    try:
+                        v = np.abs(np.asarray(st['VEL'], float))
+                        if v.size >= 60:
+                            # compare the first and last thirds of the captured hold
+                            head, tail = v[:v.size // 3], v[-v.size // 3:]
+                            growth = float(tail.max()) / max(1.0, float(head.max()))
+                            env = "  envelope x{:.2f} ({})".format(
+                                growth, "GROWING -> divergence" if growth > 1.5 else
+                                        "decaying -> likely transient" if growth < 0.8 else
+                                        "flat -> inconclusive")
+                    except Exception:
+                        pass
+                    print("  !! SAFETY ABORT ({}) at notch {} Hz -> drive dropped; sweep stopped."
+                          "{}".format(st.get('abort', 'unknown'), fc, env))
+                    if tr:
+                        print("     trace: {}".format(os.path.basename(tr)))
+                    break
+                if verbose and rms:
+                    warn = "" if rb == int(fc) else "  <<WRITE DID NOT TAKE"
+                    print("  {:>5} {:>6}  {:>6.0f}  {:>6.0f}  {:>6.0f}   {:>6.1f}    {}/{}{}".format(
+                        int(fc) if fc else "off", rb, max(rms), float(np.mean(rms)),
+                        float(np.median(rms)), float(np.mean(frqs)) if frqs else 0.0,
+                        nring, len(rms), warn))
+
         # theta_e sweep: hold at N positions across a mech rev -> is the ring position-dependent?
-        if pos_sweep:
+        elif pos_sweep:
             step = enc_res / float(pos_sweep)
             if verbose:
                 print("# theta_e sweep: {} holds across 1 mech rev  (elec cycle {:.0f} cts, "
@@ -397,6 +467,14 @@ def run(can_device='can0', node_id=127, rate_hz=750.0, trials=10, hold_secs=2.5,
         }
         return results, summary
     finally:
+        # Clear the notch first: it is the knob most likely to have destabilised the loop, and
+        # 0x2100:4 is non-NV so this is belt-and-braces over the power-cycle default.
+        try:
+            if notch_sweep:
+                node.sdo.download(0x2100, 4, struct.pack('<H', 0))
+                print("# restored notch (0x2100:4) to 0 = off")
+        except Exception:
+            pass
         try:
             if orig_gain is not None:
                 node.sdo[VEL_GAIN[0]][VEL_GAIN[1]].raw = int(orig_gain)
@@ -622,6 +700,15 @@ def main():
     ap.add_argument('--vel-ki', type=float, default=None,
                     help='SCALE the RUNTIME velocity Ki 0x2381:2 (live PI gain) by this factor, e.g. 0.5. '
                          'Restored after.')
+    ap.add_argument('--notch-sweep', default=None,
+                    help='Sweep the velocity-FEEDBACK notch centre frequency (0x2100:4) over this '
+                         'comma-separated Hz list, e.g. "0,55,60,65,70,75,85". Include 0 for an '
+                         'in-run baseline. Non-NV: cleared on exit and on power cycle.')
+    ap.add_argument('--notch-q', type=int, default=20,
+                    help='Notch Q x10 (0x2100:5); 20 = Q 2.0. Higher Q = narrower notch, less '
+                         'phase lag away from centre, but less tolerant of a drifting mode.')
+    ap.add_argument('--notch-pos', type=int, default=4,
+                    help='Rotor positions held per notch frequency (default 4).')
     ap.add_argument('--iq-abort-frac', type=float, default=IQ_ABORT_FRAC,
                     help='SAFETY: abort the sweep if |iq| exceeds this fraction of i_peak '
                          '(default {:.2f}). Raise only with a reason.'.format(IQ_ABORT_FRAC))
@@ -638,13 +725,15 @@ def main():
         RUNAWAY_CTS_S, IQ_ABORT_FRAC, ID_ABORT_FRAC))
 
     gs = [float(x) for x in args.gain_sweep.split(',')] if args.gain_sweep else None
+    ns = [int(x) for x in args.notch_sweep.split(',')] if args.notch_sweep else None
     results, summary = run(args.can, args.node, rate_hz=args.rate, trials=args.trials,
                            hold_secs=args.hold_secs, perturb_cts=args.perturb_cts,
                            vel_rms_thr=args.vel_rms_thr, fmin=args.fmin, fmax=args.fmax,
                            csv_dir=args.csv_dir, gain_sweep=gs, pos_sweep=args.pos_sweep,
                            out_sweep=args.out_sweep, repeat=args.repeat,
                            enc_comp=args.enc_comp, settling=args.settling,
-                           fric_ff=args.fric_ff, vel_kp=args.vel_kp, vel_ki=args.vel_ki)
+                           fric_ff=args.fric_ff, vel_kp=args.vel_kp, vel_ki=args.vel_ki,
+                           notch_sweep=ns, notch_q=args.notch_q, notch_pos=args.notch_pos)
     print("\n==== TWITCH SUMMARY ====")
     if 'error' in summary:
         print("ERROR:", summary['error']); return 2
