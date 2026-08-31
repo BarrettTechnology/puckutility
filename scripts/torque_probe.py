@@ -78,6 +78,19 @@ ID_ABORT_FRAC = 0.10
 TRIM_KP       = 0.004    # per-mille per count of error
 TRIM_KI       = 2.0e-5   # per-mille per count per sample
 TRIM_CAP      = 40       # per-mille ceiling on the trim contribution
+# Crawl servo (cogmap only): a PD position loop, NOT the PI hold clamp. The hold clamp winds up
+# during a stick and releases in a 17k cts/s lurch; a crawl needs to pace the rotor, not hold it.
+# CRAWL_KP is stiff enough that a bounded lead error (see LEAD_CAP) just clears breakaway (~4
+# per-mille); CRAWL_KD brakes each slip before it runs away; no integral => no wind-up.
+# Slip velocity is set by physics: v_peak ~= (windup at break-free) * omega_mode. With the ~70 Hz
+# torsional mode (omega ~440 rad/s), a soft servo that winds 27 cts before breaking free releases
+# 27*440 ~= 12k cts/s. So the servo must be STIFF: break free at few counts of windup -> small
+# energy release -> small slip. KP=0.35 breaks at ~11 cts (breakaway ~4 p-m) -> ~5k cts/s slip.
+CRAWL_KP      = 0.15     # per-mille per count -> break-free windup ~27 cts
+CRAWL_KD      = 0.0      # NO velocity feedback: lagged encvel feedback IS the twitch -- any KD
+                         # rings the ~70 Hz mode instantly (measured: -21k cts/s in a fwd crawl).
+                         # Pure-P can't self-excite; it just stick-slips, which the leash bounds.
+LEAD_CAP      = 25       # cts the crawl setpoint may lead the rotor (hard cap on windup per slip)
 FREQ_REF      = 100.0    # Hz at which --amp is the literal amplitude; see the constant-velocity
                          # note in the sweep loop for why amplitude tracks frequency.
 
@@ -208,13 +221,15 @@ def _lockin(t, y, f):
 
 def run(can_device='can0', node_id=127, rate_hz=1000.0, amp=25, freqs=None, dc=None,
         secs=3.0, cycles=40, settle_frac=0.4, csv_dir='twitchtests', vel_abort=None,
-        amp_exp=2.0, ring_n=0, ring_ms=7.0, ring_secs=0.6, brk_n=0, verbose=True):
+        amp_exp=2.0, ring_n=0, ring_ms=7.0, ring_secs=0.6, brk_n=0,
+        cogmap_revs=0, crawl_vel=200.0, dither_amps=None, dither_hz=250.0, dither_reps=4,
+        verbose=True):
     net = canopen.Network()
     net.connect(bustype='socketcan', channel=can_device)
     node = net.add_node(node_id, fw.EDS)
     st = {'cap': False, 'trq': 0.0, 'phase': 0.0, 'dphase': 0.0, 'gain': 0.0,
           'T': [], 'POS': [], 'VEL': [], 'IQ': [], 'TRQ': [], 'start': 0.0,
-          'abort': '', 'p0': 0, 'trim_on': False, 'ierr': 0.0, 'trim': 0.0}
+          'abort': '', 'p0': 0, 'trim_on': False, 'ierr': 0.0, 'trim': 0.0, 'dc_bias': 0.0}
     results = []
     global VEL_ABORT
     if vel_abort:
@@ -223,6 +238,17 @@ def run(can_device='can0', node_id=127, rate_hz=1000.0, amp=25, freqs=None, dc=N
         i_peak = node.sdo['Calibration']['i_peak'].raw
         max_trq = struct.unpack('<I', node.sdo.upload(0x6076, 0))[0]
         kt = struct.unpack('<H', node.sdo.upload(0x3011, 4))[0]
+        try:                                                # electrical cycle -> the cogging test
+            _poles = int(node.sdo[0x3011][3].raw)
+            enc_zero = int(node.sdo[0x3011][1].raw)
+            enc_res = int(node.sdo['EncoderConfig']['Resolution'].raw)
+            cts_elec = enc_res / max(1.0, _poles / 2.0)
+        except Exception:
+            cts_elec, enc_zero, enc_res = 585.14, 0, 4096
+        try:                                                # gear ratio -> perceptibility at the output
+            gear = float(node.sdo[0x6091][1].raw) / max(1.0, float(node.sdo[0x6091][2].raw))
+        except Exception:
+            gear = 60.84
         amp = int(min(abs(amp), TRQ_AMP_CAP))
         iq_pk = amp * 1.414 * max_trq / kt
         if verbose:
@@ -240,16 +266,21 @@ def run(can_device='can0', node_id=127, rate_hz=1000.0, amp=25, freqs=None, dc=N
             # SYNC-driven: advance the sine and publish the new torque, then latch a sample.
             try:
                 st['phase'] += st['dphase']
-                drive = st['gain'] * (st['trq'] if st['dphase'] == 0.0
-                                      else st['trq'] * np.sin(st['phase']))
+                drive = st['gain'] * (st['dc_bias'] + (st['trq'] if st['dphase'] == 0.0
+                                      else st['trq'] * np.sin(st['phase'])))
                 # Soft clamp: slow position trim so the free rotor holds station. Runs on the
                 # RAW position error, which is dominated by drift -- the injected oscillation is
                 # only a few counts and the loop is far too slow to answer it.
                 trim = 0.0
                 if st['trim_on']:
                     err = st['p0'] - (st['POS'][-1] if st['POS'] else st['p0'])
-                    st['ierr'] += err
-                    trim = TRIM_KP * err + TRIM_KI * st['ierr']
+                    if st.get('crawl'):
+                        # PD crawl servo: stiff-but-damped, no integral (no wind-up -> no lurch).
+                        v = st['VEL'][-1] if st['VEL'] else 0
+                        trim = CRAWL_KP * err - CRAWL_KD * v
+                    else:
+                        st['ierr'] += err
+                        trim = TRIM_KP * err + TRIM_KI * st['ierr']
                     trim = max(-TRIM_CAP, min(TRIM_CAP, trim))
                     st['trim'] = trim
                 trq = drive + trim
@@ -460,7 +491,7 @@ def run(can_device='can0', node_id=127, rate_hz=1000.0, amp=25, freqs=None, dc=N
         if brk_n:
             if verbose:
                 print("\n# breakaway: slow torque ramp until motion, {} positions".format(brk_n))
-                print("#   rep   breakaway per-mille    mA    moved cts   snap cts/s")
+                print("#   rep  theta_e  breakaway per-mille    mA    moved cts   snap cts/s")
             st['trim_on'] = False
             vals = []
             for rep in range(brk_n):
@@ -471,6 +502,7 @@ def run(can_device='can0', node_id=127, rate_hz=1000.0, amp=25, freqs=None, dc=N
                 st['phase'], st['dphase'] = 0.0, 0.0
                 st['gain'], st['trq'] = 1.0, 0.0
                 p_start = node.sdo['PositionFeedback'].raw
+                theta_e = ((p_start - enc_zero) % cts_elec) / cts_elec * 360.0
                 st['start'] = timer(); st['cap'] = True
                 found = None
                 for d in range(0, TRQ_AMP_CAP + 1):
@@ -495,13 +527,14 @@ def run(can_device='can0', node_id=127, rate_hz=1000.0, amp=25, freqs=None, dc=N
                 if st['abort']:
                     _drop(node); print("  !! SAFETY ABORT ({})".format(st['abort'])); break
                 if found is None:
-                    print("  {:>5}   did not break away by {} per-mille".format(rep, TRQ_AMP_CAP))
+                    print("  {:>5}  {:>5.0f}   did not break away by {} per-mille".format(
+                        rep, theta_e, TRQ_AMP_CAP))
                 else:
                     vals.append(found)
-                    print("  {:>5}   {:>18}  {:>6.0f}  {:>10.0f}  {:>9.0f}".format(
-                        rep, found, found * 1.414 * max_trq / kt, moved, snap))
+                    print("  {:>5}  {:>5.0f}   {:>17}  {:>6.0f}  {:>10.0f}  {:>9.0f}".format(
+                        rep, theta_e, found, found * 1.414 * max_trq / kt, moved, snap))
                 results.append({'mode': 'brk', 'rep': rep, 'breakaway': found, 'moved': moved,
-                                'snap_cts_s': snap})
+                                'snap_cts_s': snap, 'theta_e': theta_e, 'pos': p_start})
                 # settling happens at the TOP of the next rep, via _settle_and_anchor()
             if len(vals) >= 2:
                 print("  breakaway {}-{} per-mille (mean {:.1f}, spread {:.0%}) -> {}".format(
@@ -509,6 +542,251 @@ def run(can_device='can0', node_id=127, rate_hz=1000.0, amp=25, freqs=None, dc=N
                     (max(vals) - min(vals)) / max(np.mean(vals), 1e-9),
                     "position-DEPENDENT stiction" if (max(vals) - min(vals)) > 0.5 * np.mean(vals)
                     else "stiction roughly uniform with position"))
+            # --- COGGING vs MESH: is the position-dependent breakaway ELECTRICAL-periodic? ---
+            bp = [(r['theta_e'], r['breakaway']) for r in results
+                  if r.get('mode') == 'brk' and r.get('breakaway') is not None]
+            if len(bp) >= 6:
+                th = np.deg2rad(np.array([p[0] for p in bp], float))
+                bk = np.array([p[1] for p in bp], float)
+                mean_bk = float(bk.mean())
+                print("\n# breakaway vs ELECTRICAL angle  (cogging vs mesh test, {} pts, mean {:.1f} p-m):"
+                      .format(len(bp), mean_bk))
+                worst = 0.0
+                for k in (1, 2, 3):                          # cogging shows as low electrical harmonics
+                    c = 2.0 / len(bk) * float(np.sum(bk * np.cos(k * th)))
+                    s = 2.0 / len(bk) * float(np.sum(bk * np.sin(k * th)))
+                    a = float(np.hypot(c, s)); frac = 100.0 * a / max(mean_bk, 1e-9)
+                    worst = max(worst, frac)
+                    print("#   {}x electrical: amp {:.2f} per-mille = {:>3.0f}% of mean".format(k, a, frac))
+                if worst > 30.0:
+                    print("#   => breakaway is STRONGLY electrical-periodic ({:.0f}%): COGGING is a major part "
+                          "of the stiction -> COGGING COMP (0x3028) is the right lever, test it.".format(worst))
+                else:
+                    print("#   => NOT strongly electrical-periodic ({:.0f}%): stiction is bearing/gearbox-mesh, "
+                          "NOT cogging -> cogging comp won't help; dither / friction-FF is the play.".format(worst))
+                print("#   (caveat: rotor rests at cogging detents post-snap, which biases theta_e sampling; "
+                      "a controlled electrical-cycle sweep would confirm a positive.)")
+
+        # ---------------- COGGING/FRICTION MAP: slow bidirectional crawl ----------------
+        # The breakaway sweep can't sample the electrical cycle cleanly -- every break-free
+        # releases stored gearbox windup as a violent, guard-tripping snap (measured 11k-25k
+        # cts/s from 40-80 mA). Instead, crawl the rotor slowly under continuous position
+        # control (the soft clamp chases a slowly-advancing setpoint -> no free release -> no
+        # snap) through several electrical revs in BOTH directions, and read the torque the
+        # crawl needs (MEASURED iq) at each electrical angle. Decompose:
+        #   iq_fwd(theta_e) = cog(theta_e) + friction ;  iq_rev(theta_e) = cog(theta_e) - friction
+        #   => (fwd+rev)/2 = cogging (position-conservative) ;  (fwd-rev)/2 = friction (dissipative)
+        # If the conservative part is electrically periodic, cogging is real and 0x3028 is the
+        # lever; if it washes out under theta_e-binning, the stiction is friction/mesh -> dither.
+        # No explicit iq/id guard needed here: the crawl torque is the soft clamp, capped at
+        # TRIM_CAP (40 per-mille ~ 11% of i_peak), already under the |iq| envelope.
+        if cogmap_revs:
+            span = cogmap_revs * cts_elec
+            dwell = span / max(crawl_vel, 1.0)
+            if verbose:
+                print("\n# COGGING/FRICTION MAP: bidirectional crawl, {} elec revs ({:.0f} cts) "
+                      "at {:.0f} cts/s (~{:.1f}s/dir)".format(cogmap_revs, span, crawl_vel, dwell))
+                print("#   torque=soft clamp (cap {} p-m); iq(theta_e): fwd+rev=cogging, fwd-rev=friction"
+                      .format(TRIM_CAP))
+            st['dphase'] = 0.0; st['trq'] = 0.0; st['gain'] = 0.0
+            dir_data = {}
+            for direction in (+1, -1):
+                lbl = 'fwd' if direction > 0 else 'rev'
+                if not _settle_and_anchor():
+                    print("  (rotor won't settle -- skipping {} crawl)".format(lbl)); continue
+                p_base = st['p0']; st['ierr'] = 0.0
+                st['T'], st['POS'], st['VEL'], st['IQ'], st['TRQ'] = [], [], [], [], []
+                st['abort'] = ''; st['trim_on'] = True; st['gain'] = 0.0; st['crawl'] = True
+                st['start'] = timer(); st['cap'] = True
+                n_steps = int(dwell * rate_hz); t0 = time.time()
+                for i in range(n_steps):
+                    target = p_base + direction * crawl_vel * (i / rate_hz)     # ideal ramp
+                    cur = st['POS'][-1] if st['POS'] else p_base
+                    # lead-leash: never let the setpoint get more than LEAD_CAP ahead of the rotor,
+                    # so a stick can't wind up more than one small slip's worth of energy. The crawl
+                    # then paces itself to how fast the joint can actually be coaxed along.
+                    st['p0'] = (min(target, cur + LEAD_CAP) if direction > 0
+                                else max(target, cur - LEAD_CAP))
+                    if st['abort']:
+                        break
+                    slp = t0 + (i + 1) / rate_hz - time.time()
+                    if slp > 0:
+                        time.sleep(slp)
+                st['cap'] = False; st['trim_on'] = False; st['gain'] = 0.0; st['crawl'] = False
+                node.rpdo[1]['TargetTorque'].raw = 0
+                _dump(csv_dir, "cog_{}".format(lbl), st)
+                if st['abort']:
+                    _drop(node)
+                    print("  !! abort during {} crawl ({}) -- using partial data".format(lbl, st['abort']))
+                pos = np.asarray(st['POS'], float); iq = np.asarray(st['IQ'], float)
+                vel = np.asarray(st['VEL'], float)
+                if pos.size < 50:
+                    print("  {} crawl: too few samples".format(lbl)); continue
+                n0 = min(int(0.15 * pos.size), int(0.4 * rate_hz))   # drop clamp catch-up transient
+                pos, iq, vel = pos[n0:], iq[n0:], vel[n0:]
+                moved = abs(pos[-1] - pos[0])
+                the = ((pos - enc_zero) % cts_elec) / cts_elec * 360.0
+                dir_data[direction] = (the, iq)
+                if verbose:
+                    print("  {} crawl: {} samp, moved {:.0f} cts ({:.1f} elec rev), mean|iq| {:.0f} mA, "
+                          "vel {:.0f}+/-{:.0f}".format(lbl, pos.size, moved, moved / max(cts_elec, 1),
+                          float(np.mean(np.abs(iq))), float(np.mean(vel)), float(np.std(vel))))
+                results.append({'mode': 'cogmap', 'dir': direction, 'moved': float(moved)})
+
+            if (+1 in dir_data) and (-1 in dir_data):
+                NB = 24; edges = np.linspace(0, 360, NB + 1)
+                ctr = 0.5 * (edges[:-1] + edges[1:])
+                def _binmed(the, iq):
+                    out = np.full(NB, np.nan)
+                    idx = np.clip(np.digitize(the, edges) - 1, 0, NB - 1)
+                    for b in range(NB):
+                        s = iq[idx == b]
+                        if s.size >= 3:
+                            out[b] = np.median(s)         # median -> robust to stick-slip lurches
+                    return out
+                f_iq = _binmed(*dir_data[+1]); r_iq = _binmed(*dir_data[-1])
+                ok = ~(np.isnan(f_iq) | np.isnan(r_iq))
+                if ok.sum() >= max(8, NB // 2):
+                    th = np.deg2rad(ctr[ok])
+                    cons = 0.5 * (f_iq[ok] + r_iq[ok])          # cogging (conservative)
+                    fric = 0.5 * (f_iq[ok] - r_iq[ok])          # friction (dissipative)
+                    fric_lvl = float(np.median(np.abs(fric)))
+                    cons_ac = cons - cons.mean()
+                    print("\n# cogging/friction decomposition ({} of {} electrical bins populated):"
+                          .format(int(ok.sum()), NB))
+                    print("#   friction (fwd-rev)/2 : median |f| = {:.0f} mA  (stiction the loop winds against)"
+                          .format(fric_lvl))
+                    print("#   cogging  (fwd+rev)/2 : pk-pk {:.0f} mA, rms {:.0f} mA  vs electrical angle:"
+                          .format(float(cons_ac.max() - cons_ac.min()), float(np.std(cons_ac))))
+                    worst = 0.0
+                    for k in (1, 2, 3, 6):                       # cogging = low electrical harmonics
+                        c = 2.0 / th.size * float(np.sum(cons_ac * np.cos(k * th)))
+                        s = 2.0 / th.size * float(np.sum(cons_ac * np.sin(k * th)))
+                        a = float(np.hypot(c, s)); frac = 100.0 * a / max(fric_lvl, 1e-9)
+                        worst = max(worst, frac)
+                        print("#   {}x electrical: cogging amp {:.0f} mA = {:>3.0f}% of friction".format(k, a, frac))
+                    if worst > 50.0:
+                        print("#   => COGGING is a MAJOR part of the stiction ({:.0f}% of friction): "
+                              "COGGING COMP (0x3028) is the right lever -- calibrate + test it.".format(worst))
+                    elif worst > 20.0:
+                        print("#   => cogging is a MINOR contributor ({:.0f}% of friction): worth a cogging-comp "
+                              "test but dither/friction-FF is the primary lever.".format(worst))
+                    else:
+                        print("#   => cogging is NEGLIGIBLE ({:.0f}% of friction): the stiction is bearing/"
+                              "gearbox friction -> cogging comp won't help, DITHER / friction-FF is the play."
+                              .format(worst))
+                    results.append({'mode': 'cogmap_result', 'friction_mA': fric_lvl,
+                                    'cogging_rms_mA': float(np.std(cons_ac)), 'worst_elec_frac': worst})
+                else:
+                    print("  cogmap: too few populated electrical bins ({}) -- crawl may have stuck; "
+                          "try a slower --crawl-vel or more --cogmap revs.".format(int(ok.sum())))
+
+        # ---------------- DITHER validation: does HF torque dither dissolve the stiction? ----
+        # The twitch is stick-slip: the velocity integrator winds against a STATIC-friction
+        # deadband, then snaps free (releasing gearbox windup) and strikes the ~70 Hz mode. The
+        # proposed fix is HF torque dither -- keep the contact micro-sliding so static friction
+        # never re-establishes, so there is no deadband to wind against. CST has no velocity loop
+        # so this can't be closed-loop tested from the host, but the MECHANISM premise can: hold
+        # the rotor, superimpose HF dither on a slow DC-torque ramp, and ask whether breakaway
+        # goes from a violent SNAP (deadband intact) to smooth CREEP (deadband dissolved). Two
+        # numbers per amplitude: (1) residual motion from the dither ALONE = the "buzz" cost /
+        # perceptibility; (2) the breakaway snap velocity = whether the deadband is gone. A* =
+        # smallest amplitude that smooths breakaway; if its residual motion is imperceptible, the
+        # window exists -> GO. Host SYNC is 1 kHz so dither >~250 Hz is coarsely sampled; firmware
+        # dithers far faster (cleaner, smaller residual) -- so this is a CONSERVATIVE lower bound.
+        if dither_amps:
+            wd = 2 * np.pi * dither_hz / rate_hz
+            R = max(1, dither_reps)
+            if verbose:
+                print("\n# DITHER validation: {:.0f} Hz torque dither vs stick-slip, amps {} per-mille, "
+                      "{} reps each".format(dither_hz, dither_amps, R))
+                print("#   (host 1 kHz SYNC caps clean dither ~250 Hz; firmware goes higher/cleaner)")
+                print("#   Stick-slip snap scatters ~5x, so judge on the MEDIAN over reps, not one shot.")
+                print("#   amp  ~mA   resid_ppk(max)  brk_DC(med)  snap med [min-max]     verdict")
+            agg = {}
+            for A in dither_amps:
+                snaps = []; resids = []; brks = []
+                for rep in range(R):
+                    if not _settle_and_anchor():
+                        continue
+                    # --- phase 1: residual motion from dither ALONE (zero-mean -> no net drift) ---
+                    st['dc_bias'] = 0.0; st['trq'] = float(A); st['dphase'] = wd; st['gain'] = 1.0
+                    st['trim_on'] = False; st['abort'] = ''
+                    st['T'], st['POS'], st['VEL'], st['IQ'], st['TRQ'] = [], [], [], [], []
+                    st['start'] = timer(); st['cap'] = True
+                    t0 = time.time()
+                    while time.time() - t0 < 1.0 and not st['abort']:
+                        time.sleep(0.01)
+                    st['cap'] = False
+                    rpos = np.asarray(st['POS'], float)
+                    res_pp = float(rpos.max() - rpos.min()) if rpos.size else 0.0
+                    # --- phase 2: breakaway WITH dither running -- ramp DC bias until net motion ---
+                    st['abort'] = ''
+                    st['T'], st['POS'], st['VEL'], st['IQ'], st['TRQ'] = [], [], [], [], []
+                    p_start = node.sdo['PositionFeedback'].raw
+                    st['start'] = timer(); st['cap'] = True
+                    found = None
+                    for d in range(0, TRQ_AMP_CAP + 1):
+                        st['dc_bias'] = float(d)             # dither (trq=A) still runs on top
+                        time.sleep(0.03)
+                        if st['abort']:
+                            break
+                        now = st['POS'][-1] if st['POS'] else p_start
+                        if abs(now - p_start) > 12:
+                            found = d; break
+                    st['dc_bias'] = 0.0; st['trq'] = 0.0; st['gain'] = 0.0
+                    node.rpdo[1]['TargetTorque'].raw = 0; st['cap'] = False
+                    snap = max((abs(v) for v in st['VEL']), default=0)
+                    if rep == 0:
+                        _dump(csv_dir, "dith{}".format(A), st)
+                    snaps.append(snap); resids.append(res_pp)
+                    if found is not None:
+                        brks.append(found)
+                    if st['abort']:
+                        _drop(node)
+                if not snaps:
+                    continue
+                med = float(np.median(snaps)); mn = min(snaps); mx = max(snaps)
+                max_res = max(resids); med_brk = float(np.median(brks)) if brks else None
+                agg[A] = {'med': med, 'min': mn, 'max': mx, 'max_res': max_res, 'brk': med_brk}
+                b = agg.get(0)
+                if A == 0:
+                    verd = "baseline (no dither)"
+                elif max_res > 40:
+                    verd = "dither too big -> drives the joint"
+                elif b and med < 0.4 * b['med']:
+                    verd = "SMOOTHED (deadband dissolving)"
+                elif b and med < 0.75 * b['med']:
+                    verd = "partial"
+                else:
+                    verd = "no better than baseline"
+                if verbose:
+                    print("  {:>4}  {:>4.0f}   {:>13.0f}  {:>10}  {:>6.0f} [{:.0f}-{:.0f}]   {}".format(
+                        A, A * 1.414 * max_trq / kt, max_res,
+                        "{:.0f}".format(med_brk) if med_brk is not None else "none",
+                        med, mn, mx, verd))
+                results.append({'mode': 'dither', 'amp': A, 'dither_hz': dither_hz, 'reps': R,
+                                'snap_med': med, 'snap_min': mn, 'snap_max': mx,
+                                'residual_pp_max': max_res, 'breakaway_dc_med': med_brk})
+            # ----- overall verdict: a robust amplitude that smooths AND stays imperceptible? -----
+            b0 = agg.get(0)
+            wins = [(A, d) for A, d in agg.items()
+                    if A > 0 and b0 and d['med'] < 0.4 * max(b0['med'], 1) and d['max_res'] < 20]
+            if b0 and wins:
+                A, d = min(wins, key=lambda x: x[0])
+                out_deg = d['max_res'] / max(enc_res, 1) * 360.0 / max(gear, 1e-6)
+                print("\n#  => DITHER VALIDATED: {} per-mille ({:.0f} mA) at {:.0f} Hz cuts the median "
+                      "snap {:.0f} -> {:.0f} cts/s over {} reps,".format(
+                          A, A * 1.414 * max_trq / kt, dither_hz, b0['med'], d['med'], R))
+                print("#     with worst-case residual {:.0f} cts pk-pk motor = {:.4f} deg output "
+                      "(/{:.1f} gear) = imperceptible. Window EXISTS -> GO for firmware.".format(
+                          d['max_res'], out_deg, gear))
+            elif b0 and any(A > 0 and d['med'] < 0.6 * b0['med'] for A, d in agg.items()):
+                print("\n#  => PARTIAL: dither reduces the snap but not cleanly to the <40% bar, or the "
+                      "residual creeps up. Window is narrow -- worth finer amps/higher freq before firmware.")
+            elif b0:
+                print("\n#  => NOT VALIDATED: no amplitude robustly smooths breakaway below scatter. "
+                      "Raise dither freq (firmware can), or reconsider dither vs gain-down.")
 
         # ---------------- DC probe: does the ring exist with NO outer loop? ----------------
         if dc is not None:
@@ -647,6 +925,25 @@ def main():
     ap.add_argument('--breakaway', type=int, default=0, metavar='N',
                     help='BREAKAWAY: ramp torque until the rotor moves, N times. Quantifies the '
                          'stiction the limit cycle winds up against.')
+    ap.add_argument('--cogmap', type=int, default=0, metavar='REVS',
+                    help='COGGING/FRICTION MAP: crawl the rotor slowly under position control '
+                         'through REVS electrical revolutions in both directions (no free snap) '
+                         'and split the torque-vs-electrical-angle into cogging (conservative, '
+                         'fwd+rev) and friction (dissipative, fwd-rev). Settles cogging-comp vs '
+                         'dither. Try REVS=4.')
+    ap.add_argument('--crawl-vel', type=float, default=200.0,
+                    help='cogmap crawl speed cts/s (default 200). Slower = more quasi-static / '
+                         'less inertial contamination but longer.')
+    ap.add_argument('--dither', default=None, metavar='A0,A1,...',
+                    help='DITHER validation: comma list of dither amplitudes (per-mille) to sweep, '
+                         'e.g. "0,2,4,8,15". Include 0 for the no-dither baseline. Tests whether HF '
+                         'torque dither dissolves the stick-slip deadband (snap->creep) and at what '
+                         'residual "buzz" cost. Run with --vel-abort 25000 so the baseline snap is captured.')
+    ap.add_argument('--dither-hz', type=float, default=250.0,
+                    help='dither frequency Hz (default 250; host 1 kHz SYNC caps clean dither ~250).')
+    ap.add_argument('--dither-reps', type=int, default=4,
+                    help='reps per amplitude (default 4). Stick-slip snap scatters ~5x; the median '
+                         'over reps is what separates the dither effect from that noise.')
     ap.add_argument('--amp-exp', type=float, default=2.0,
                     help='amplitude scales as (f/f_top)^EXP (default 2.0 = constant position '
                          'amplitude). Use 1.0 for constant velocity, 0 for constant torque.')
@@ -661,13 +958,19 @@ def main():
     if args.sweep:
         a, b, c = (float(x) for x in args.sweep.split(':'))
         freqs = list(np.arange(a, b + c / 2, c))
-    if not freqs and args.dc is None and not args.ring and not args.breakaway:
-        print("nothing to do: pass --sweep, --ring, --breakaway or --dc"); return 2
+    dither_amps = None
+    if args.dither:
+        dither_amps = [int(x) for x in args.dither.split(',')]
+    if (not freqs and args.dc is None and not args.ring and not args.breakaway
+            and not args.cogmap and not dither_amps):
+        print("nothing to do: pass --sweep, --ring, --breakaway, --cogmap, --dither or --dc"); return 2
 
     res, st = run(args.can, args.node, rate_hz=args.rate, amp=args.amp, freqs=freqs,
                   dc=args.dc, secs=args.secs, cycles=args.cycles, csv_dir=args.csv_dir,
                   vel_abort=args.vel_abort, amp_exp=args.amp_exp, ring_n=args.ring,
-                  ring_ms=args.ring_ms, ring_secs=args.ring_secs, brk_n=args.breakaway)
+                  ring_ms=args.ring_ms, ring_secs=args.ring_secs, brk_n=args.breakaway,
+                  cogmap_revs=args.cogmap, crawl_vel=args.crawl_vel,
+                  dither_amps=dither_amps, dither_hz=args.dither_hz, dither_reps=args.dither_reps)
 
     sw = [r for r in res if r.get('mode') == 'sweep']
     if len(sw) >= 3:

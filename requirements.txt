@@ -13,6 +13,7 @@ libusb-package==1.0.26.1
 matplotlib==3.11.0
 numpy==2.4.6
 python-can==4.5.0
+pyserial==3.5           # bench PSU control (psu.py -> TDK-Lambda Z+ over USB serial)
 python-config==0.1.2
 semver==3.0.2
 setuptools==80.9.0
