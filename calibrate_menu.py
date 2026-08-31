@@ -7739,6 +7739,11 @@ class calibrate():
 
     def cogging_fw_calibrate(self, event, calAll=False, _upd=None):
         """
+        ⚠ EXPERIMENTAL / NOT SHIPPING — cogging compensation is a STALLED, not-fully-implemented
+        firmware feature branch. The objects it needs (0x3028 comp bins, 0x3029 firmware DFT cal)
+        do NOT exist AT ALL before v4.4.1 firmware, so this aborts on any earlier build. It is a
+        test feature only; do not run it on production pucks.
+
         Firmware-side DFT cogging calibration using 0x3029.
 
         Spins motor at TARGET_MOTOR_RPM, triggers the ISR DFT accumulator,
