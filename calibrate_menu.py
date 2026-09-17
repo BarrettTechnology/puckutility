@@ -4673,6 +4673,21 @@ class calibrate():
 
                 # ── Upload significant harmonic bins to Puck (0x3027) ────────
                 N_BINS = 10
+                # Hardware has ten bins; upload at most this many. Measured on a P4-42
+                # (node 127, 2026-09-17, notes/enc_comp_shape.md in the stm32 repo):
+                # each uploaded bin costs ~0.98 us of case 2 in the PWM ISR, and case 2
+                # only has 7.7 us of headroom at 80 kHz / 5.2 us at 100 kHz. Ten bins put
+                # case 2 at 131% of the 80 kHz budget; two put it at 68%.
+                #
+                # And the tail buys almost nothing. On that unit the encoder-synchronous
+                # error was 8.582 ct RMS, of which k=2 alone is 94%. Residual after the
+                # top-N, against a 26.1% ceiling set by the electrical-synchronous content
+                # that encoder comp cannot touch:
+                #     1 bin  -> 1.422 ct, 25.3%      3 bins -> 0.604 ct, 25.9%
+                #     2 bins -> 0.959 ct, 25.7%     10 bins -> 0.194 ct, 26.1%
+                # Bins three through ten together are worth 0.4 percentage points and
+                # 7.8 us of every control cycle. Raise this only with timing evidence.
+                N_UPLOAD_MAX = 2
                 # AC harmonics by amplitude (k≥1). DC offset is not uploaded to the puck;
                 # it is subtracted from the retest plots for display only.
                 #
@@ -4792,13 +4807,19 @@ class calibrate():
                 # ---------------------------------------------------------------------------------
 
                 _n_sig       = sum(1 for _k in _cap_ks if float(amps[_k]) >= _sig_thresh)
-                _keep_n      = min(N_BINS, max(best_n, _n_sig))
+                # best_n is computed over the WHOLE spectrum, including the electrical /
+                # cogging harmonics this list has already excluded, so it is not a
+                # meaningful floor for encoder bins -- it is what used to force all ten.
+                # Report it, do not obey it. _cap_ks is amplitude-descending, so this
+                # takes the top N_UPLOAD_MAX by amplitude.
+                _keep_n      = min(N_UPLOAD_MAX, max(1, _n_sig))
                 _top_bins    = _cap_ks[:_keep_n]    # significant, in-band bins, amplitude-descending
                 _dropped     = _cap_ks[_keep_n:]    # in-band but below noise floor — not uploaded
                 n_upload     = len(_top_bins)
 
                 print("\n  Harmonic trim: noise floor ≈ {:.3f} ct, threshold {:.3f} ct, "
-                      "k≤{}, best_n(<1ct)={} → keeping {} of {} bins.".format(
+                      "k≤{}, best_n(<1ct, whole spectrum)={} → keeping top {} of {} "
+                      "by amplitude.".format(
                           _noise_floor, _sig_thresh, K_MAX_ENC, best_n, n_upload, len(sorted_ks)))
                 _capped_sig = [_k for _k in _capped if float(amps[_k]) >= _sig_thresh]
                 if _capped_sig:
@@ -4883,8 +4904,9 @@ class calibrate():
                 except Exception:
                     pass
                 if n_upload < N_BINS:
-                    print("  (Bins {}–{} zeroed — only {} needed for <1ct RMS)".format(
-                        n_upload, N_BINS - 1, n_upload))
+                    print("  (Bins {}–{} zeroed — upload capped at {} to stay inside the "
+                          "case-2 ISR budget; see N_UPLOAD_MAX)".format(
+                              n_upload, N_BINS - 1, N_UPLOAD_MAX))
 
                 # Readback verification
                 print("\n  Readback verification:")
