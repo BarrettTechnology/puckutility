@@ -16,6 +16,7 @@ from canopen_runner import (
 from canopen.sdo import SdoAbortedError
 from can_backend import sdo_contention_message
 from paths import _resolve_path, FIRMWARE_DIR, CONFIG_DIR
+import ezero
 
 # TODO - No active issues
 
@@ -693,9 +694,9 @@ class calibrate():
         # QUICK calibration (~25 s/puck vs the Thorough calibrate_all's ~35 s, measured on a P4-16).
         #
         # Same OD writes / same registers / same values as calibrate_all — the sole intended
-        # accuracy trade is the spiral-gated enczero (calibrate_enczero(quick=True)): a coarser
-        # spin-through that AUTO-FALLS-BACK to the fine kinetic sweep if its fwd/rev spread is
-        # unreliable. Everything else runs the identical Thorough step so Quick and Thorough
+        # accuracy trade is the coarser enczero (calibrate_enczero(quick=True)): 8 steps per
+        # electrical cycle instead of 16 over the same revolution sweep, within ~1 deg on a P4-42.
+        # Everything else runs the identical Thorough step so Quick and Thorough
         # produce equivalent stored cal within tolerance.
         #
         # FOLDS EVALUATED BUT NOT APPLIED (correctness over speed, per design):
@@ -3196,31 +3197,22 @@ class calibrate():
         event.Skip()
 
     def calibrate_enczero(self, event, calAll=False, _upd=None, quick=False):  # wxGlade: wxp3_frame.<event_handler>
-        # SPIN-THROUGH electrical-zero calibration.
+        # REVOLUTION-SWEEP electrical-zero calibration (ezero.py, shared with p4gui).
         #
-        # QUICK MODE (quick=True, used by calibrate_quick): the SAME spin-through, but coarser
-        # (fewer FINE_STEPS, shorter DWELL) so it lands the zero from the spiral in less time. It
-        # is GATED on the fwd/rev crossing spread: if the spread is tight the coarse spiral zero is
-        # stored as-is; if it's coarse/unreliable (or a crossing was missed) it AUTO-FALLS-BACK to
-        # the full fine kinetic sweep before storing (see the `if quick and _need_fallback` block
-        # below). Every OD write is identical to the Thorough path — the only trade is spin
-        # resolution, backstopped by the fallback. quick=False (default) = the fine kinetic method,
-        # byte-identical to before this feature.
+        # The spin-through this replaces swept Theta_e +-22.5 deg around 0 at ONE spot and averaged
+        # the two crossings. That cancels friction but not the encoder nonlinearity or cogging at
+        # that spot: on a P4-42 single points scatter +-20 deg electrical about the true zero, and
+        # a one-spot calibration left e_zero 21 deg off (the back-EMF of a zero-current coast,
+        # p4gui tools/bench/enc_latency_coast.py, measured it; the sweep then agreed within ~1 deg).
         #
-        # The previous method stepped Theta_e to 0 from -22.5 deg and +22.5 deg and read the
-        # RawPosition after the rotor PARKED at each end. Parking stops the rotor THROUGH static
-        # friction, so it detents short of true alignment by the stiction band -- the ~29-count
-        # (~12.75 deg elec) approach spread this puck showed. e_zero enters commutation as
-        # theta_m = e_polarity*(enc.est - e_zero) (app/pwm.c ~536), and the +/- speed asymmetry
-        # scales as sin(2*e_zero_error), so this static bias is a first-order lever.
+        # This steps the field through every electrical cycle of one mechanical revolution, forward
+        # then back, and takes the circular mean of e_zero over all the settled points: the periodic
+        # errors average out and friction cancels between the directions. The same sweep gives
+        # e_polarity and checks the pole count (the rotor must turn once per revolution of field).
+        # The rotor turns ONE FULL REVOLUTION each way.
         #
-        # This version sweeps Theta_e CONTINUOUSLY through 0 in both directions and interpolates
-        # the RawPosition at the instant Theta_e crosses 0 -- the rotor is MOVING (kinetic, not
-        # static friction) at the crossing, and the two opposite-direction crossings straddle the
-        # true zero symmetrically, so their average cancels the (smaller, repeatable) kinetic lag.
-        #
-        # BENCH-VERIFY: the raw-count unwrap/mod near the 0/4095 encoder boundary, and that the
-        # rotor actually tracks the fine Theta_e steps (kinetic, no stall) at the cal current.
+        # quick=True (calibrate_quick): 8 steps per electrical cycle instead of 16, ~2x faster,
+        # within ~1 deg on the P4-42.
         if calAll == False:
           if self.check_for_node() == False:
             return False
@@ -3245,203 +3237,51 @@ class calibrate():
         if _upd is None:
             _upd = lambda v: None
 
-        self.frame_statusbar.SetStatusText("Calibrating encoder (spin-through)...", 1)
+        self.frame_statusbar.SetStatusText("Calibrating encoder zero (one revolution each way)...", 1)
         self.frame_statusbar.Update()
         wx.Yield()
 
+        def _finish():
+            if self.ADC_ON == False and self.adcWasON == True:
+                self.on_off_adc(self)
+            if calAll == False:
+                self.OnTaskComplete()
+                self.Enable()
+
         try:
-          # Clear faults, RTSO, OpEnabled
-          print("Going OpEnabled")
           self.node.sdo["ControlWord"].raw = CLEAR_FAULT
-          self.node.sdo["ControlWord"].raw = SHUTDOWN
-          self.node.sdo["ControlWord"].raw = OP_ENABLED
-
-          print("Setting Mode = VOLTAGE")
-          self.node.sdo["SetModeOfOperation"].raw = MODE_PHASE_VOLTAGE_ANGLE
-
-          # uq==0 keeps the firmware in the HOST-angle D-axis-stall branch (app/pwm.c ~518),
-          # so the rotor detents to the commanded Theta_e as we sweep it.
-          self.node.sdo['Motor']['uq'].raw = 0
-          self.node.sdo['Theta_e'].raw = -0x1000   # start at -22.5 deg elec
-
-          calibration_current = self.node.sdo['Calibration']['i_cal'].raw
-          i_peak = self.node.sdo['Calibration']['i_peak'].raw
-          if calibration_current > i_peak:
-             calibration_current = i_peak
-
-          encoder_resolution = self.node.sdo['EncoderConfig']['Resolution'].raw
-          motor_poles = self.node.sdo['Calibration']['poles'].raw
-          cts_per_elec_cyc = encoder_resolution * 2.0 / motor_poles
-          print("Encoder resolution = {}  Motor poles (EEPROM) = {}  cts/elec_cyc = {:.1f}".format(
-              encoder_resolution, motor_poles, cts_per_elec_cyc))
-
-          # Ramp d-axis voltage until measured id >= calibration_current (same machinery as
-          # calibrate_igainfactor / calibrate_current_slope).
-          motor_ud = 0
-          motor_id = self.node.sdo['Motor']['id'].raw
-          while (motor_id < 1000 and self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak) < calibration_current and motor_ud < 32000:
-            print("id = {0}, ud = {1}".format(
-              self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak,
-              self.node.sdo['Motor']['ud'].raw))
-            _id_now = self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak
-            _upd(int(min(1.0, max(0.0, _id_now / calibration_current)) * 30))   # 0->30%
-            if motor_ud > 0 and _id_now > 0:
-                _ramp_step = max(100, int((motor_ud * calibration_current / _id_now - motor_ud) / 4))
-            else:
-                _ramp_step = max(100, 32000 // 12)
-            motor_ud = min(motor_ud + _ramp_step, 32000)
-            self.node.sdo['Motor']['ud'].raw = motor_ud
-            time.sleep(0.05); wx.Yield()
-
-          # ---- spin-through helper: sweep Theta_e lo->hi, interpolate RawPosition at Theta_e=0 ----
-          # Quick mode uses a coarser spin (48 steps, shorter dwell) to save the fine sweep's time;
-          # Thorough keeps the fine 128-step / 0.02 s kinetic sweep. The quick spread-gate below
-          # promotes a coarse/unreliable quick result back to the fine sweep before storing.
-          FINE_STEPS = 48 if quick else 128        # finer crossing resolution (~64 F16/step)
-          SWEEP_LO, SWEEP_HI = -0x1000, 0x1000     # +/- 22.5 deg electrical
-          DWELL = 0.015 if quick else 0.02         # keep the rotor MOVING (kinetic) between reads
-          RD_AVG = 2                               # RawPosition reads averaged per step (denoise)
-          REPEAT_CTS = 15                          # abs fwd/rev-crossing disagreement -> re-seat flag
-
-          def _unwrap(p, ref, res):
-              while p - ref >  res / 2.0: p -= res
-              while p - ref < -res / 2.0: p += res
-              return p
-
-          def _sweep_through_zero(lo, hi):
-              n = FINE_STEPS
-              seq = [int(round(lo + (hi - lo) * k / float(n))) for k in range(n + 1)]
-              self.node.sdo['Theta_e'].raw = seq[0]
-              _sleep_responsive(0.3)               # settle at the start before sweeping
-              ref = self.node.sdo['Encoder']['RawPosition'].raw
-              first_rp = ref
-              last_rp = ref
-              th_prev = rp_prev = None
-              cross_rp = None
-              for th in seq:
-                  self.node.sdo['Theta_e'].raw = th
-                  time.sleep(DWELL); wx.Yield()
-                  # Average RD_AVG quick reads (unwrapped against a running ref) to denoise the
-                  # ~1-2 ct encoder jitter that would otherwise ride straight into the crossing.
-                  _acc = 0.0; _r = ref
-                  for _ri in range(RD_AVG):
-                      _r = _unwrap(self.node.sdo['Encoder']['RawPosition'].raw, _r, encoder_resolution)
-                      _acc += _r
-                  rp = _acc / RD_AVG
-                  ref = rp
-                  last_rp = rp
-                  if (th_prev is not None) and (cross_rp is None) and ((th_prev <= 0 <= th) or (th_prev >= 0 >= th)):
-                      frac = (0 - th_prev) / float(th - th_prev) if th != th_prev else 0.0
-                      cross_rp = rp_prev + frac * (rp - rp_prev)
-                  th_prev, rp_prev = th, rp
-              return cross_rp, first_rp, last_rp
-
-          _upd(45)
-          cross_f, f0, f1 = _sweep_through_zero(SWEEP_LO, SWEEP_HI)   # forward (-22.5 -> +22.5)
-          _upd(70)
-          cross_r, r0, r1 = _sweep_through_zero(SWEEP_HI, SWEEP_LO)   # reverse (+22.5 -> -22.5)
-          _upd(90)
-
-          # QUICK spiral spread-gate + auto-fallback. The fwd/rev crossing spread is the same
-          # repeatability proxy the store step warns on (friction hysteresis; asymmetry scales as
-          # sin(2*e_zero_error)). If the coarse quick spin lands a TIGHT spread, keep it. If it's
-          # coarse/unreliable (spread over the electrical-cycle % or absolute-count thresholds, or a
-          # crossing was missed), re-run the sweeps at FULL fine resolution while the drive is STILL
-          # energised, then store from those — identical to the Thorough path. Only runs in quick mode;
-          # Thorough is untouched.
-          if quick:
-              _need_fallback = (cross_f is None or cross_r is None)
-              if not _need_fallback:
-                  _qf, _qr = cross_f, cross_r
-                  if abs(_qf - _qr) > encoder_resolution / 2.0:
-                      if _qf > _qr: _qr += encoder_resolution
-                      else:         _qf += encoder_resolution
-                  _qspread = abs(_qf - _qr)
-                  _need_fallback = (_qspread / cts_per_elec_cyc * 100.0 > 10.0) or (_qspread > REPEAT_CTS)
-              if _need_fallback:
-                  print("  Quick spiral enczero spread coarse/unreliable -> fine kinetic fallback sweep.")
-                  FINE_STEPS = 128        # promote the closure to full resolution for the re-sweep
-                  DWELL = 0.02
-                  cross_f, f0, f1 = _sweep_through_zero(SWEEP_LO, SWEEP_HI)
-                  cross_r, r0, r1 = _sweep_through_zero(SWEEP_HI, SWEEP_LO)
-
-          self.node.sdo['Motor']['ud'].raw = 0
-          self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
-
-          if cross_f is None or cross_r is None:
-              raise RuntimeError("Theta_e never crossed 0 during the spin-through sweep "
-                                 "(rotor did not track -- check cal current / output friction)")
-
-          # e_polarity from the forward sweep (Theta_e increased): sign of the net raw travel.
-          d_raw_f = f1 - f0
-          if d_raw_f != 0:
-              e_polarity = math.copysign(1, d_raw_f)
-          else:
-              e_polarity = self.node.sdo['Calibration']['e_polarity'].raw
-          self.node.sdo['Calibration']['e_polarity'].raw = e_polarity
-          self.node.sdo['Save']['Single'].raw = ((0x3011 << 8) | 0x02)   # Save e_polarity to EE
-          print("Electrical polarity = {0}".format(e_polarity))
-
-          # Average the two zero-crossings (handle raw wrap between them), store e_zero.
-          if abs(cross_f - cross_r) > encoder_resolution / 2.0:
-              if cross_f > cross_r: cross_r += encoder_resolution
-              else:                 cross_f += encoder_resolution
-          friction_spread = abs(cross_f - cross_r)
-          friction_pct = friction_spread / cts_per_elec_cyc * 100.0
-          print("Approach spread: {:.1f} counts ({:.1f}% of electrical cycle) -- friction hysteresis".format(
-              friction_spread, friction_pct))
-          # Repeatability proxy: the fwd/rev crossings must agree. A large disagreement is exactly
-          # the friction-hysteresis bias that made e_zero non-repeatable, so flag it two ways --
-          # the >10% electrical-cycle rule AND an absolute-count threshold (catches small cts_per_
-          # elec_cyc motors where 10% is only a few counts).
-          if friction_pct > 10.0 or friction_spread > REPEAT_CTS:
-              print("  WARNING: fwd/rev crossings disagree by {:.1f} cts ({:.1f}% of cycle) -- e_zero "
-                    "may not be repeatable. RE-SEAT the motor / reduce output friction and RE-RUN; "
-                    "confirm two runs land within a few counts (asymmetry scales as "
-                    "sin(2*e_zero_error)).".format(friction_spread, friction_pct))
-          else:
-              print("  Repeatability OK: fwd/rev crossings agree within {:.1f} cts.".format(friction_spread))
-
-          pos = int(round(((cross_f + cross_r) / 2.0) % cts_per_elec_cyc))
+          try:
+              r = ezero.sweep(self.node, steps=8 if quick else 16,
+                              progress=lambda f: _upd(int(f * 95)), sleep=_sleep_responsive)
+          except ezero.EZeroError as exc:
+              print('Encoder Zero Failed! {}'.format(exc))
+              cal_torque = (self.node.sdo['Calibration']['i_cal'].raw
+                            * self.node.sdo['Calibration']['kt'].raw / 1000)
+              msg = "Encoder Zero Failed!\n\n{}\n\nNothing was stored." \
+                    "\n\nDebugging steps:" \
+                    "\n- Ensure proper configuration file has been loaded (poles, i_cal)" \
+                    "\n- Verify output friction is less than cal torque for the motor ({:.0f}mNm)" \
+                    "\n\nWould you like to continue calibration?".format(exc, cal_torque)
+              continue_cal = self._prompt('Warning!', msg)
+              _finish()
+              return continue_cal
 
           previous_polarity = self.node.sdo['Calibration']['e_polarity'].raw
-          previous_zero     = self.node.sdo['Calibration']['e_zero'].raw
-          print("Previous electrical polarity = {0}".format(previous_polarity))
-          print("Previous electrical zero = {0}".format(previous_zero))
-          self.node.sdo['Calibration']['e_zero'].raw = pos
+          previous_zero = self.node.sdo['Calibration']['e_zero'].raw
+          cpe = r['cts_per_elec_cycle']
+          print("Electrical polarity = {} (was {})".format(r['e_polarity'], previous_polarity))
+          print("Electrical zero = {} (was {}, {:+.1f} deg elec)".format(
+              r['e_zero'], previous_zero, ezero.wrap(r['e_zero'] - previous_zero, cpe) * 360.0 / cpe))
+          print("  friction split {:.1f} deg elec; single points scatter +-{:.1f} deg "
+                "(rms {:.1f}) about it".format(r['friction_split_deg'], r['spread_max_deg'],
+                                               r['spread_rms_deg']))
+          self.node.sdo['Calibration']['e_polarity'].raw = r['e_polarity']
+          self.node.sdo['Save']['Single'].raw = ((0x3011 << 8) | 0x02)   # Save e_polarity to EE
+          self.node.sdo['Calibration']['e_zero'].raw = r['e_zero']
           self.node.sdo['Save']['Single'].raw = ((0x3011 << 8) | 0x01)   # Save e_zero to EE
-          print("New electrical zero = {0}".format(pos))
-
-          # Bounds: did the rotor track a reasonable fraction of the full electrical span BOTH ways?
-          expected_raw = cts_per_elec_cyc * (SWEEP_HI - SWEEP_LO) / 65536.0
-          moved_f = abs(f1 - f0); moved_r = abs(r1 - r0)
-          error = 0.25
           _upd(100)
-          if moved_f < expected_raw * (1 - error) or moved_r < expected_raw * (1 - error):
-            print('Encoder Zero Failed!')
-            cal_torque = calibration_current * self.node.sdo['Calibration']['kt'].raw / 1000
-            msg = "Encoder Zero Failed! \n\nForward travel: {:.0f} cts" \
-            "\nReverse travel: {:.0f} cts" \
-            "\nExpected: >= {:.0f} cts" \
-            "\n\nDebugging steps:" \
-            "\n- Ensure proper configuration file has been loaded" \
-            "\n- Verify output friction is less than cal torque for the motor ({}mNm)" \
-            "\n\nWould you like to continue calibration?".format(
-                moved_f, moved_r, expected_raw * (1 - error), cal_torque)
-            continue_cal = self._prompt('Warning!', msg)
-            if self.ADC_ON == False and self.adcWasON == True:
-                self.on_off_adc(self)
-            if calAll == False:
-                self.OnTaskComplete()
-                self.Enable()
-            return continue_cal
-          else:
-            if self.ADC_ON == False and self.adcWasON == True:
-                self.on_off_adc(self)
-            if calAll == False:
-                self.OnTaskComplete()
-                self.Enable()
-            return True
+          _finish()
+          return True
 
         except Exception as _exc:
             if calAll:
@@ -3471,6 +3311,23 @@ class calibrate():
         # i2t transient inflates current (|I| >> i_cont) -- on the FIRST direction the current hasn't
         # de-rated yet and spikes to i_peak, which otherwise corrupts the early "best". This is a TOP-
         # SPEED optimization / stress test -- watch it, and confirm SUSTAINED stability at the banked lag.
+        # Firmware from stm32 a896b09 on has 0x3013,7: 0x3013,5 is then no longer an angle-advance
+        # knob but the fixed (us) part of the measured encoder latency (0x3013,7 is the PWM-period
+        # part), set from the configuration CSV (p4gui tools/bench/enc_latency_coast.py measures
+        # both). Field weakening is the FWLIM regulator's job there. Writing a Q8.8 advance into it
+        # would put hundreds of us of error into commutation, so this only runs on older firmware.
+        try:
+            self.node.sdo.upload(0x3013, 7)
+            has_latency_split = True
+        except Exception:
+            has_latency_split = False
+        if has_latency_split:
+            self._prompt_ok('Encoder Lag',
+                            'This firmware measures encoder latency instead (0x3013,5 in us and '
+                            '0x3013,7 in PWM periods, from the configuration file).\n\n'
+                            'Encoder Lag calibration only applies to older firmware; nothing was changed.')
+            return True
+
         if self.ADC_ON == True:
             self.adcWasON = True
             self.on_off_adc(self)
@@ -3527,7 +3384,7 @@ class calibrate():
             MARGIN_LAGS   = 20                   # ROLLOVER case: bank this far BELOW the peak-velocity lag
             SUSTAIN_MARGIN = 8                    # CAP-LIMITED case: bank this far below the max reliable lag
 
-            orig_lag = self.node.sdo['EncoderConfig']['LagFactor'].raw
+            orig_lag = self.node.sdo[0x3013][5].raw
 
             def _imag_mA():
                 _id = self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak
@@ -3537,7 +3394,7 @@ class calibrate():
             def _sweep_fw(vel_sign):
                 """Advance LagFactor at commanded max velocity; return the full [(lag, vel, imag)] series.
                 Safety stops (fault, bus sag, overcurrent, velocity collapse) act online."""
-                self.node.sdo['EncoderConfig']['LagFactor'].raw = 0
+                self.node.sdo[0x3013][5].raw = 0
                 self.node.sdo['TargetVelocity'].raw = int(vel_sign * max_vel)
                 _sleep_responsive(SPIN_S)
                 # Let the i2t transient DE-RATE before sweeping. Commanding max velocity saturates the
@@ -3555,7 +3412,7 @@ class calibrate():
                           "excluded anyway)".format(SETTLE_TIMEOUT))
                 series = []; run_max = 0.0; lag = 0
                 while lag <= LAG_HARD_CAP:
-                    self.node.sdo['EncoderConfig']['LagFactor'].raw = lag
+                    self.node.sdo[0x3013][5].raw = lag
                     time.sleep(SETTLE); wx.Yield()
                     sw = self.node.sdo['StatusWord'].raw
                     if sw & 0x08:
@@ -3617,7 +3474,7 @@ class calibrate():
             try:
                 ser_f = _sweep_fw(+1)
                 self.node.sdo['TargetVelocity'].raw = 0
-                self.node.sdo['EncoderConfig']['LagFactor'].raw = 0
+                self.node.sdo[0x3013][5].raw = 0
                 _sleep_responsive(0.8)
                 ser_r = _sweep_fw(-1)
                 self.node.sdo['TargetVelocity'].raw = 0
@@ -3651,14 +3508,14 @@ class calibrate():
                     print(">>> No consistent field-weakening gain (need >= {:.0f}% in BOTH dirs; got fwd {:.1f}% "
                           "rev {:.1f}%). Leaving LagFactor=0.".format((GAIN_MIN - 1) * 100.0,
                           (gain_f - 1) * 100.0, (gain_r - 1) * 100.0))
-                self.node.sdo['EncoderConfig']['LagFactor'].raw = lag
+                self.node.sdo[0x3013][5].raw = lag
                 self.node.sdo['Save']['Single'].raw = ((0x3013 << 8) | 0x05)   # persist to EE
                 print("Saved LagFactor={} to EEPROM.".format(lag))
                 saved = True
             except Exception as _e:
                 print("Encoder lag cal ABORTED: {}".format(_e))
                 print("Restoring LagFactor={} (prior), TargetVelocity=0.".format(orig_lag))
-                try: self.node.sdo['EncoderConfig']['LagFactor'].raw = orig_lag
+                try: self.node.sdo[0x3013][5].raw = orig_lag
                 except Exception: pass
             finally:
                 try: self.node.sdo['TargetVelocity'].raw = 0

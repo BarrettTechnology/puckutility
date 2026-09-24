@@ -149,9 +149,7 @@ def _cli_calibrate_all(node, network=None):
         except Exception as _e:
             print(f"  Current Sense Slope attempt {_slope_try}/2 failed: {_e}")
             adapter._slope_stored = False
-    # NOTE: calibrate_enczero returns None on success and only False on a
-    # user-requested abort, so check `is False` explicitly here — `if not ...`
-    # would wrongly treat a successful run as an abort.
+    # calibrate_enczero returns True on success, False on a user-requested abort.
     if adapter.calibrate_enczero(None, calAll=True, _upd=lambda v: None) is False:
         print("  Calibration aborted.")
         return False
@@ -163,9 +161,8 @@ def _cli_calibrate_all(node, network=None):
 
 
 def _cli_calibrate_quick(node, network=None):
-    """QUICK calibration sequence — mirrors _cli_calibrate_all but uses the spiral-gated enczero
-    (calibrate_enczero(quick=True), which auto-falls-back to the fine kinetic sweep on a bad
-    fwd/rev spread). ibias settle + the slope-sweep current levels are ALSO trimmed in quick mode
+    """QUICK calibration sequence — mirrors _cli_calibrate_all but uses the coarser enczero
+    (calibrate_enczero(quick=True): 8 steps per electrical cycle instead of 16). ibias settle + the slope-sweep current levels are ALSO trimmed in quick mode
     (quick=True); every stored value/model matches Thorough within tolerance — the only trades are
     the coarser enczero and the 4-level (vs 7) slope fit."""
     adapter = _HeadlessCalibrateAdapter(node, network)
@@ -194,7 +191,7 @@ def _cli_calibrate_quick(node, network=None):
         except Exception as _e:
             print(f"  Current Sense Slope attempt {_slope_try}/2 failed: {_e}")
             adapter._slope_stored = False
-    # calibrate_enczero returns None on success, False only on a user-requested abort.
+    # calibrate_enczero returns True on success, False on a user-requested abort.
     if adapter.calibrate_enczero(None, calAll=True, _upd=lambda v: None, quick=True) is False:
         print("  Calibration aborted.")
         return False

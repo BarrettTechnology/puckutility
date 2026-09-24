@@ -2664,14 +2664,14 @@ DefaultValue=0
 [3013]
 ParameterName=EncoderConfig
 ObjectType=0x09
-SubNumber=7
+SubNumber=8
 
 [3013sub0]
 ParameterName=NumberOfEntries
 ObjectType=0x07
 DataType=0x0005
 AccessType=ro
-DefaultValue=6
+DefaultValue=7
 
 [3013sub1]
 ParameterName=Resolution
@@ -2702,11 +2702,11 @@ AccessType=rw
 DefaultValue=0
 
 [3013sub5]
-ParameterName=LagFactor
+ParameterName=LatencyUs
 ObjectType=0x07
-DataType=0x0006
+DataType=0x0003
 AccessType=rw
-DefaultValue=0
+DefaultValue=-34
 
 [3013sub6]
 ParameterName=EncoderHWFilter
@@ -2714,6 +2714,13 @@ ObjectType=0x07
 DataType=0x0005
 AccessType=rw
 DefaultValue=0
+
+[3013sub7]
+ParameterName=LatencyPeriods
+ObjectType=0x07
+DataType=0x0003
+AccessType=rw
+DefaultValue=602
 
 [3014]
 ParameterName=CoggingCalibSnapshot
@@ -2902,7 +2909,7 @@ AccessType=ro
 DefaultValue=3
 
 [3025sub1]
-ParameterName=Value
+ParameterName=ValuePercentX10
 ObjectType=0x07
 DataType=0x0003
 AccessType=ro
