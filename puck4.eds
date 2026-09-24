@@ -1986,14 +1986,14 @@ DefaultValue=0
 [2384]
 ParameterName=Object2384
 ObjectType=0x09
-SubNumber=6
+SubNumber=7
 
 [2384sub0]
 ParameterName=NumberOfEntries
 ObjectType=0x07
 DataType=0x0005
 AccessType=ro
-DefaultValue=9
+DefaultValue=10
 
 [2384sub4]
 ParameterName=OvervoltageFaultTimeout
@@ -2029,6 +2029,13 @@ ObjectType=0x07
 DataType=0x0005
 AccessType=rw
 DefaultValue=0
+
+[2384sub10]
+ParameterName=OvervoltageFastTrip
+ObjectType=0x07
+DataType=0x0006
+AccessType=rw
+DefaultValue=560
 
 [2385]
 ParameterName=Execute
