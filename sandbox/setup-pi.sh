@@ -6,6 +6,7 @@
 #   ./setup-pi.sh --check           diagnostics only -- changes nothing
 #   ./setup-pi.sh --remove-autostart  stop the YES/NO prompt appearing at login
 #   ./setup-pi.sh --desktop-icon      (re)create just the Barrett Pendulum desktop icon
+#   ./setup-pi.sh --touch-display-only  just switch HDMI off (Touch Display only)
 #
 # What the full setup does (re-runnable; every step is idempotent):
 #   1. apt: wxPython, venv, can-utils          5. screen never blanks / locks / sleeps
@@ -14,6 +15,7 @@
 #      via ../scripts/setup-socketcan.sh          appears after a power cycle)
 #   4. login autostart: YES/NO boot prompt     8. app-menu entries: kiosk + engineering GUI
 #                                              9. "Barrett Pendulum" icon on the desktop
+#                                             10. HDMI off: the Touch Display is the only screen
 #
 # Works on Ubuntu (GNOME) and Raspberry Pi OS (labwc / wayfire / X11).
 set -u
@@ -311,6 +313,25 @@ setup_wallpaper() {
     esac
 }
 
+setup_touch_display_only() {
+    say "10. Display: Touch Display only (HDMI outputs off in Linux)"
+    # video=HDMI-A-n:d disables that connector in the kernel's KMS driver, so the
+    # desktop can only ever use the DSI Touch Display. (The Pi 5 bootloader's
+    # own error screen still goes to HDMI -- it runs before Linux.)
+    for c in /boot/firmware/cmdline.txt /boot/cmdline.txt; do
+        [ -e "$c" ] || continue
+        if grep -q 'video=HDMI-A-1:d' "$c"; then
+            ok "already set in $c"
+        else
+            $SUDO cp -n "$c" "$c.bak-pendulum-display"
+            $SUDO sed -i '1 s/$/ video=HDMI-A-1:d video=HDMI-A-2:d/' "$c" \
+                && ok "HDMI-A-1/2 disabled in $c (backup: $c.bak-pendulum-display; applies at next boot)"
+        fi
+        return
+    done
+    warn "no cmdline.txt found -- not a Raspberry Pi boot layout?"
+}
+
 setup_autologin() {
     say "7. Desktop auto-login as $USER_NAME"
     if [ -e /etc/gdm3/custom.conf ]; then
@@ -348,6 +369,7 @@ case "${1:-}" in
     --check) check; exit 0 ;;
     --remove-autostart) rm -f "$AUTOSTART"; echo "Removed $AUTOSTART"; exit 0 ;;
     --desktop-icon) setup_desktop_icon; exit 0 ;;
+    --touch-display-only) setup_touch_display_only; exit 0 ;;
     "") ;;
     *) sed -n '2,20p' "$0"; exit 2 ;;
 esac
@@ -365,6 +387,7 @@ setup_no_blanking
 setup_wallpaper
 setup_autologin
 setup_launchers
+setup_touch_display_only
 
 say "Done"
 echo "    Reboot to test the full boot flow:  sudo reboot"
