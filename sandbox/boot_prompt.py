@@ -4,7 +4,9 @@ Boot-time prompt for the Raspberry Pi pendulum demo.
 
 Full screen, in the style of the pucktuner splash: the pucks backdrop with
 the orange glow, the Barrett logo, "Start the pendulum demo?" and YES / NO.
-  YES -> replaces this process with the pendulum kiosk (furuta_pendulum.py --touchscreen)
+  YES -> shows "Starting the pendulum..." and opens the kiosk in this same
+         process, removing the prompt only once the kiosk is on screen (so the
+         desktop never flashes in between)
   NO  -> exits, leaving the normal desktop
 
 Launched at login by the XDG autostart entry that setup-pi.sh installs.
@@ -35,6 +37,7 @@ class PromptCanvas(wx.Panel):
         super().__init__(parent)
         self._on_pick = on_pick
         self._countdown = ""
+        self._starting = False
         self._pressed = None
         self._buttons = {}          # 'yes'/'no' -> wx.Rect (set while painting)
         self._backdrop = wx.Image(kw.BACKDROP)
@@ -45,6 +48,12 @@ class PromptCanvas(wx.Panel):
         self.Bind(wx.EVT_LEFT_DOWN, self._on_down)
         self.Bind(wx.EVT_LEFT_DCLICK, self._on_down)
         self.Bind(wx.EVT_LEFT_UP, self._on_up)
+
+    def set_starting(self):
+        self._starting = True
+        self._buttons = {}
+        self.Refresh()
+        self.Update()
 
     def set_countdown(self, text):
         self._countdown = text
@@ -80,6 +89,13 @@ class PromptCanvas(wx.Panel):
             gc.DrawBitmap(logo, (W - lw) / 2, y, lw, lh)
             y += lh
         y += H * 0.10
+
+        if self._starting:
+            q = "Starting the pendulum…"
+            gc.SetFont(kw.fit_font(gc, q, W * 0.8, H * 0.075), wx.Colour(*kw.NAVY))
+            tw, th = gc.GetTextExtent(q)
+            gc.DrawText(q, (W - tw) / 2, y)
+            return
 
         q = "Start the pendulum demo?"
         gc.SetFont(kw.fit_font(gc, q, W * 0.8, H * 0.075), wx.Colour(*kw.NAVY))
@@ -128,10 +144,12 @@ class PromptCanvas(wx.Panel):
 
 class BootPrompt(wx.Frame):
 
-    def __init__(self, auto_yes_s=0):
+    def __init__(self, auto_yes_s=0, auto_stop_s=60):
         super().__init__(None, title="Barrett Pendulum")
         kw.set_app_icon(self)
         self.choice = None
+        self._auto_stop_s = auto_stop_s
+        self.kiosk_failed = False
         self._remaining = auto_yes_s
         self._canvas = PromptCanvas(self, self._pick)
         sz = wx.BoxSizer(wx.VERTICAL)
@@ -158,7 +176,32 @@ class BootPrompt(wx.Frame):
         if self.choice is not None:
             return
         self.choice = yes
-        self.Close()
+        if not yes:
+            self.Close()
+            return
+        if hasattr(self, '_timer'):
+            self._timer.Stop()
+        self._canvas.set_starting()
+        wx.CallLater(50, self._launch_kiosk)       # let "Starting..." paint first
+
+    def _launch_kiosk(self):
+        """Open the kiosk behind this full-screen prompt; drop the prompt only
+        once the kiosk is up, so the desktop never shows in between."""
+        try:
+            import furuta_kiosk as fk
+            fk.AUTO_STOP_S = max(0.0, self._auto_stop_s)
+            fk.log(f"auto-stop: {f'{fk.AUTO_STOP_S:g} s' if fk.AUTO_STOP_S > 0 else 'off'}")
+            kiosk = fk.FurutaKioskFrame()
+            kiosk.Show()
+            kiosk.start()
+            kiosk.Raise()
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            self.kiosk_failed = True               # main() falls back to a fresh process
+            self.Close()
+            return
+        wx.CallLater(1200, self.Destroy)
 
 
 def main():
@@ -170,13 +213,14 @@ def main():
     args = ap.parse_args()
 
     app = wx.App()
-    frame = BootPrompt(args.auto_yes)
+    frame = BootPrompt(args.auto_yes, args.auto_stop)
     frame.Show()
     frame.ShowFullScreen(True)
     wx.CallLater(500, lambda: print(f"[boot-prompt] {kw.display_info(frame)}", flush=True))
     app.MainLoop()
 
-    if frame.choice:
+    if frame.choice and frame.kiosk_failed:
+        # In-process start failed: fall back to the kiosk as its own process.
         kiosk = os.path.join(HERE, 'furuta_pendulum.py')
         os.execv(sys.executable, [sys.executable, kiosk, '--touchscreen',
                                   '--auto-stop', f'{args.auto_stop:g}'])
