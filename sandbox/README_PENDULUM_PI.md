@@ -13,6 +13,7 @@ encoder, via a CANable (candleLight) at 1 Mbit on `can0`.
 | `pendulum-launch.sh` | `prompt` \| `kiosk` \| `gui`. Logs to `~/.cache/barrett-pendulum/pendulum.log`. |
 | `setup-pi.sh` | One-time Pi setup, plus `--check` diagnostics. |
 | `disable-onscreen-keyboard.sh` | Turns off every on-screen keyboard (xvkbd, onboard, squeekboard, GNOME's). `--check` = report only. |
+| `boot-speed.sh` | Why the Pi boots slowly (`systemd-analyze` report, saved for pasting). `--fix` disables the usual culprits (network-wait-online, cloud-init, ModemManager). |
 
 ## Setting up the Pi
 
