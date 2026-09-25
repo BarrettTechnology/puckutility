@@ -18,6 +18,7 @@ CAN/drive code are reused unchanged); only the screen differs:
     Shut down.
 """
 
+import json
 import os
 import subprocess
 import sys
@@ -107,7 +108,7 @@ class FurutaKioskFrame(fp.FurutaPIDFrame):
 
         # Top bar: logo (5 s hold = staff menu) + status line
         top = wx.BoxSizer(wx.HORIZONTAL)
-        self._logo = kw.LogoPanel(root, kw.load_logo(S(60)), align=wx.ALIGN_LEFT,
+        self._logo = kw.LogoPanel(root, S(60), align=wx.ALIGN_LEFT,
                                   hold_s=STAFF_HOLD_S, on_long_press=self._staff_menu)
         top.Add(self._logo, 0, wx.EXPAND | wx.ALL, S(18))
         top.AddStretchSpacer()
@@ -125,11 +126,21 @@ class FurutaKioskFrame(fp.FurutaPIDFrame):
         self._hint.SetFont(kw.px_font(S(28)))
         self._hint.SetForegroundColour(wx.Colour(*MUTED))
         side.Add(self._hint, 0, wx.ALIGN_CENTER | wx.TOP, S(12))
+        # Connection diagnostics (only while it can't connect)
+        self._diag = wx.StaticText(root, label="")
+        f = wx.Font(wx.FontInfo().Family(wx.FONTFAMILY_TELETYPE)); f.SetPixelSize(wx.Size(0, S(20)))
+        self._diag.SetFont(f)
+        self._diag.SetForegroundColour(wx.Colour(*MUTED))
+        self._diag.Hide()
+        side.Add(self._diag, 0, wx.EXPAND | wx.TOP, S(12))
         side.AddStretchSpacer()
 
+        # START grows up to 220 px tall but gives way (down to 110) when the
+        # connection diagnostics need the room.
         self._btn_main = kw.BigButton(root, "START", GREEN, self._on_main_button,
-                                      size=(S(380), S(220)))
-        side.Add(self._btn_main, 0, wx.EXPAND | wx.TOP, S(16))
+                                      size=(S(380), S(110)))
+        self._btn_main.SetMaxSize((-1, S(220)))
+        side.Add(self._btn_main, 3, wx.EXPAND | wx.TOP, S(16))
         self._btn_connect = kw.BigButton(root, "CONNECT", BLUE, self._on_connect_button,
                                          size=(S(380), S(110)))
         side.Add(self._btn_connect, 0, wx.EXPAND | wx.TOP, S(16))
@@ -144,6 +155,8 @@ class FurutaKioskFrame(fp.FurutaPIDFrame):
     def _set_state(self, state, status, colour, hint=""):
         self._state = state
         self._show_text(status, colour, hint)
+        if self._diag.IsShown():
+            self._show_diag("")
         if state == RUNNING:
             self._btn_main.set("STOP", RED, True)
         else:
@@ -182,6 +195,7 @@ class FurutaKioskFrame(fp.FurutaPIDFrame):
 
     def start(self):
         self.ShowFullScreen(True)
+        wx.CallLater(500, lambda: log(kw.display_info(self)))
         self._start_connect_worker()
 
     def _start_connect_worker(self):
@@ -219,33 +233,91 @@ class FurutaKioskFrame(fp.FurutaPIDFrame):
 
     def _connect_worker(self):
         while not self._closing and not self._connected:
+            port = nodes = None
             try:
                 port = self._pick_port()
-                motor_id, enc_id = self._pick_nodes(self._scan_nodes(port))
+                nodes = self._scan_nodes(port)
+                motor_id, enc_id = self._pick_nodes(nodes)
                 self._open_bus(port, motor_id, enc_id)
                 log(f"connected on {port}: motor={motor_id} encoder={enc_id}")
                 wx.CallAfter(self._on_bus_up)
                 return
-            except ConnectProblem as ex:
-                self._connect_failures += 1
-                wx.CallAfter(self._on_connect_failed, self._connect_failures, str(ex), ex.hint)
             except Exception as ex:
                 self._connect_failures += 1
-                wx.CallAfter(self._on_connect_failed, self._connect_failures, str(ex),
-                             "Check that the pendulum is powered and the CAN cable "
-                             "is plugged in, then tap CONNECT.")
+                hint = getattr(ex, 'hint', None) or self._hint_for(ex, port)
+                diag = self._diag_lines(self._connect_failures, port, nodes, ex)
+                wx.CallAfter(self._on_connect_failed, self._connect_failures, str(ex), hint, diag)
             self._retry_now.wait(RETRY_S)
             self._retry_now.clear()
 
-    def _on_connect_failed(self, failures, reason, hint):
+    @staticmethod
+    def _can_link(port):
+        """(operstate, CAN controller state, bitrate) for `port`, from `ip -json`."""
+        try:
+            out = subprocess.run(['ip', '-json', '-details', 'link', 'show', port],
+                                 capture_output=True, text=True, timeout=2).stdout
+            d = json.loads(out)[0] if out.strip() else {}
+        except Exception:
+            d = {}
+        info = d.get('linkinfo', {}).get('info_data', {})
+        return (d.get('operstate', '?'), info.get('state', '?'),
+                info.get('bittiming', {}).get('bitrate'))
+
+    @classmethod
+    def _hint_for(cls, ex, port):
+        """Plain-language hint for an unexpected connect failure."""
+        if port:
+            oper, can_state, _ = cls._can_link(port)
+            if oper == 'DOWN':
+                return (f"The CAN adapter ({port}) is down. Unplug the CANable "
+                        f"and plug it back in.")
+            if can_state == 'BUS-OFF':
+                return ("The CAN bus shut down after too many errors. Check the "
+                        "cable and termination, then unplug and replug the CANable.")
+        return ("Check that the pendulum is powered and the CAN cable "
+                "is plugged in, then tap CONNECT.")
+
+    @classmethod
+    def _diag_lines(cls, attempt, port, nodes, ex):
+        """Technical detail shown in small text under the message."""
+        lines = [f"Attempt {attempt}  ·  {time.strftime('%H:%M:%S')}"]
+        ifaces = sorted(os.path.basename(p) for p in fp.glob.glob('/sys/class/net/can*'))
+        if not ifaces:
+            lines.append("CAN: no can* interface (CANable not detected)")
+        for i in ifaces:
+            oper, can_state, bitrate = cls._can_link(i)
+            rate = f", {bitrate // 1000} kbit/s" if bitrate else ""
+            lines.append(f"CAN: {i} {oper}, {can_state}{rate}")
+        if nodes is None:
+            lines.append("Pucks: not scanned")
+        elif not nodes:
+            lines.append("Pucks: none answered the scan")
+        else:
+            missing = [n for n in (MOTOR_NODE_ID, ENC_NODE_ID) if n not in nodes]
+            lines.append(f"Pucks: found {sorted(nodes)}"
+                         + (f", missing {missing}" if missing else ""))
+        lines.append(f"Need: motor {MOTOR_NODE_ID} + encoder {ENC_NODE_ID}")
+        if not isinstance(ex, ConnectProblem):      # those are already described above
+            msg = f"{type(ex).__name__}: {ex}"
+            lines.append("Error: " + (msg if len(msg) <= 90 else msg[:87] + "..."))
+        return "\n".join(lines)
+
+    def _on_connect_failed(self, failures, reason, hint, diag=""):
         if self._closing or self._connected:
             return
         log(f"connect attempt {failures} failed: {reason}")
+        self._set_state(CONNECTING, "Can't reach the pendulum", RED, hint)
+        self._show_diag(diag)
         if failures >= SHOW_CONNECT_AFTER:
-            self._set_state(CONNECTING, "Can't reach the pendulum", RED, hint)
             self._btn_connect.set(enabled=True)
             self._btn_connect.Show()
             self._root.Layout()
+
+    def _show_diag(self, text):
+        self._diag.SetLabel(text)
+        self._diag.Wrap(self.TEXT_WIDTH)
+        self._diag.Show(bool(text))
+        self._root.Layout()
 
     def _on_connect_button(self):
         self._btn_connect.set(enabled=False)

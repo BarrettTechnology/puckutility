@@ -50,11 +50,15 @@ class PromptCanvas(wx.Panel):
         self.Refresh()
 
     def _scaled(self, W, H):
-        if self._back_cache and self._back_cache[0] == (W, H):
+        # Rendered at the display's physical resolution (HiDPI-sharp).
+        scale = self.GetContentScaleFactor()
+        key = (W, H, scale)
+        if self._back_cache and self._back_cache[0] == key:
             return self._back_cache[1], self._logo_cache
-        back = kw.cover_bitmap(self._backdrop, W, H) if self._backdrop.IsOk() else None
-        self._logo_cache = kw.load_logo(int(H * 0.17), max_width=int(W * 0.55))
-        self._back_cache = ((W, H), back)
+        back = (kw.cover_bitmap(self._backdrop, W, H, scale=scale)
+                if self._backdrop.IsOk() else None)
+        self._logo_cache = kw.load_logo(int(H * 0.17), max_width=int(W * 0.55), scale=scale)
+        self._back_cache = (key, back)
         return back, self._logo_cache
 
     def _on_paint(self, _):
@@ -65,13 +69,13 @@ class PromptCanvas(wx.Panel):
         if W < 50 or H < 50:
             return
         back, logo = self._scaled(W, H)
-        if back:
-            dc.DrawBitmap(back, 0, 0)
-
         gc = wx.GraphicsContext.Create(dc)
+        if back:
+            gc.DrawBitmap(back, 0, 0, W, H)
+
         y = H * 0.14
         if logo:
-            lw, lh = logo.GetSize()
+            lw, lh = logo.GetLogicalSize()
             gc.DrawBitmap(logo, (W - lw) / 2, y, lw, lh)
             y += lh
         y += H * 0.10
@@ -165,6 +169,7 @@ def main():
     frame = BootPrompt(args.auto_yes)
     frame.Show()
     frame.ShowFullScreen(True)
+    wx.CallLater(500, lambda: print(f"[boot-prompt] {kw.display_info(frame)}", flush=True))
     app.MainLoop()
 
     if frame.choice:

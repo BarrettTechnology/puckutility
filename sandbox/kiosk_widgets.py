@@ -34,10 +34,23 @@ NAVY = (13, 51, 110)
 WHITE = (255, 255, 255)
 
 
+# The full-screen pendulum screens (boot prompt, --touchscreen kiosk) run as
+# NATIVE Wayland clients.  Under GDK_BACKEND=x11 a scaled desktop (125-200%,
+# common on the Pi touch displays) renders the app at low resolution and
+# stretches it -- everything goes soft.  Natively, GTK gets the real scale
+# factor and we draw bitmaps at physical resolution (see hidpi_bitmap).
+# Their layouts are sized from the screen, so they don't need the x11
+# backend's integer-scaling workaround that puckutility's fixed-pixel wxGlade
+# layout (and the engineering GUI here) relies on.
+KIOSK_MODE = ('--touchscreen' in sys.argv
+              or os.path.basename(sys.argv[0]) in ('boot_prompt.py', 'furuta_kiosk.py'))
+
+
 def apply_display_env():
     """See the comment block at the top of puckutilityapp.py for why each is set."""
     if sys.platform.startswith('linux'):
-        os.environ.setdefault('GDK_BACKEND', 'x11')
+        if not KIOSK_MODE:
+            os.environ.setdefault('GDK_BACKEND', 'x11')
         os.environ.setdefault('GTK_THEME', 'Adwaita:light')
         os.environ.setdefault('GSETTINGS_BACKEND', 'memory')
         os.environ.setdefault('GTK_IM_MODULE', 'gtk-im-context-simple')
@@ -75,9 +88,32 @@ def _content_box(img):
     return x0, y0, x1 - x0 + 1, y1 - y0 + 1
 
 
-def load_logo(height, path=LOGO_HIRES, max_width=None):
-    """Logo bitmap cropped to its visible content and scaled to `height` px
-    (or narrower if it would exceed max_width).  None if the file is missing."""
+def hidpi_bitmap(img, w, h, scale=1.0):
+    """Bitmap of `img` for a w x h (logical px) area, rendered at physical
+    resolution (w*scale x h*scale) so it stays sharp on a scaled display."""
+    pw, ph = max(1, round(w * scale)), max(1, round(h * scale))
+    if (img.GetWidth(), img.GetHeight()) != (pw, ph):
+        img = img.Scale(pw, ph, wx.IMAGE_QUALITY_HIGH)
+    bmp = wx.Bitmap(img)
+    if scale != 1.0:
+        bmp.SetScaleFactor(scale)
+    return bmp
+
+
+def display_info(window):
+    """One-line description of how the window is being rendered, for the log."""
+    idx = wx.Display.GetFromWindow(window)
+    geo = wx.Display(idx if idx != wx.NOT_FOUND else 0).GetGeometry()
+    return (f"display {geo.width}x{geo.height} (logical), content scale "
+            f"{window.GetContentScaleFactor():g}, GDK_BACKEND="
+            f"{os.environ.get('GDK_BACKEND', 'auto')}, "
+            f"session={os.environ.get('XDG_SESSION_TYPE', '?')}")
+
+
+def load_logo(height, path=LOGO_HIRES, max_width=None, scale=1.0):
+    """Logo bitmap cropped to its visible content, `height` logical px tall
+    (or narrower if it would exceed max_width), rendered at `scale`x for
+    HiDPI.  Use GetLogicalSize() for layout.  None if the file is missing."""
     img = wx.Image(path)
     if not img.IsOk():
         return None
@@ -98,7 +134,7 @@ def load_logo(height, path=LOGO_HIRES, max_width=None):
     if max_width and new_w > max_width:
         new_w = max_width
         new_h = round(h * new_w / w)
-    return wx.Bitmap(img.Scale(new_w, new_h, wx.IMAGE_QUALITY_HIGH))
+    return hidpi_bitmap(img, new_w, new_h, scale)
 
 
 def screen_scale(window=None):
@@ -132,36 +168,41 @@ def fit_font(gc_or_dc, text, max_w, max_h, bold=True):
     return px_font(8, bold)
 
 
-def cover_bitmap(img, W, H, anchor_x=0.35):
-    """Scale `img` to cover W x H (cropping the overflow) -- like CSS
-    background-size: cover.  anchor_x picks which part of an over-wide image
-    survives the crop (0 = keep the left edge, 1 = the right)."""
+def cover_bitmap(img, W, H, anchor_x=0.35, scale=1.0):
+    """Scale `img` to cover W x H logical px (cropping the overflow) -- like
+    CSS background-size: cover -- at `scale`x physical resolution.  anchor_x
+    picks which part of an over-wide image survives the crop (0 = keep the
+    left edge, 1 = the right)."""
+    PW, PH = max(1, round(W * scale)), max(1, round(H * scale))
     iw, ih = img.GetWidth(), img.GetHeight()
-    s = max(W / iw, H / ih)
-    sw, sh = max(W, round(iw * s)), max(H, round(ih * s))
+    s = max(PW / iw, PH / ih)
+    sw, sh = max(PW, round(iw * s)), max(PH, round(ih * s))
     scaled = img.Scale(sw, sh, wx.IMAGE_QUALITY_HIGH)
-    x = round((sw - W) * anchor_x)
-    y = round((sh - H) / 2)
-    return wx.Bitmap(scaled.GetSubImage(wx.Rect(x, y, W, H)))
+    x = round((sw - PW) * anchor_x)
+    y = round((sh - PH) / 2)
+    return hidpi_bitmap(scaled.GetSubImage(wx.Rect(x, y, PW, PH)), W, H, scale)
 
 
 class LogoPanel(wx.Panel):
-    """Draws a bitmap; fires on_long_press after the user holds it for
-    `hold_s` seconds.  A plain wx.StaticBitmap is a no-window widget on GTK
-    and doesn't receive mouse/touch events, hence a painted panel."""
+    """Draws the logo `height` logical px tall, at the display's physical
+    resolution; fires on_long_press after the user holds it for `hold_s`
+    seconds.  A plain wx.StaticBitmap is a no-window widget on GTK and doesn't
+    receive mouse/touch events, hence a painted panel."""
 
-    def __init__(self, parent, bitmap, bg=WHITE, align=wx.ALIGN_CENTER,
+    def __init__(self, parent, height, path=LOGO_HIRES, bg=WHITE, align=wx.ALIGN_CENTER,
                  hold_s=None, on_long_press=None):
         super().__init__(parent)
-        self._bmp = bitmap
+        self._height, self._path = height, path
+        self._bmp = load_logo(height, path)          # logical size for layout
+        self._bmp_scale = 1.0
         self._align = align
         self._hold_ms = int((hold_s or 0) * 1000)
         self._on_long_press = on_long_press
         self._timer = None
         self.SetBackgroundColour(wx.Colour(*bg))
         self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
-        if bitmap:
-            self.SetMinSize(bitmap.GetSize())
+        if self._bmp:
+            self.SetMinSize(self._bmp.GetLogicalSize())
         self.Bind(wx.EVT_PAINT, self._on_paint)
         self.Bind(wx.EVT_SIZE, lambda e: (self.Refresh(), e.Skip()))
         if on_long_press and self._hold_ms:
@@ -176,10 +217,15 @@ class LogoPanel(wx.Panel):
         dc.Clear()
         if not self._bmp:
             return
+        scale = self.GetContentScaleFactor()
+        if scale != self._bmp_scale:                 # re-render for this display
+            self._bmp = load_logo(self._height, self._path, scale=scale)
+            self._bmp_scale = scale
         W, H = self.GetClientSize()
-        bw, bh = self._bmp.GetSize()
+        bw, bh = self._bmp.GetLogicalSize()
         x = (W - bw) // 2 if self._align == wx.ALIGN_CENTER else 0
-        dc.DrawBitmap(self._bmp, x, (H - bh) // 2, True)
+        gc = wx.GraphicsContext.Create(dc)
+        gc.DrawBitmap(self._bmp, x, (H - bh) // 2, bw, bh)
 
     def _on_down(self, _):
         self._cancel(None)
