@@ -72,9 +72,13 @@ say "1. Screen-keyboard setting (GNOME keyboard + squeekboard)"
 if command -v gsettings >/dev/null 2>&1; then
     cur=$(gs get org.gnome.desktop.a11y.applications screen-keyboard-enabled 2>/dev/null)
     info "currently: ${cur:-n/a}"
-    if [ "$cur" = "true" ] && act "set screen-keyboard-enabled false"; then
-        gs set org.gnome.desktop.a11y.applications screen-keyboard-enabled false && ok "set to false"
-    elif [ "$cur" = "false" ]; then ok "already off"; fi
+    # GNOME standard (default): switch ON -- the built-in keyboard then appears
+    # whenever a text field is focused (touch auto-show alone didn't trigger on
+    # the Pi). --block-gnome-too: switch OFF.
+    want=true; [ $BLOCK_GNOME = 1 ] && want=false
+    if [ "$cur" != "$want" ] && act "set screen-keyboard-enabled $want"; then
+        gs set org.gnome.desktop.a11y.applications screen-keyboard-enabled $want && ok "set to $want"
+    elif [ "$cur" = "$want" ]; then ok "already $want"; fi
 else
     info "gsettings not installed -- skipping"
 fi
