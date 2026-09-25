@@ -2,8 +2,8 @@
 """
 Boot-time prompt for the Raspberry Pi pendulum demo.
 
-Full screen, in the style of the puckutility splash: the faded BarrettHand
-backdrop, the Barrett logo, "Start the pendulum demo?" and YES / NO.
+Full screen, in the style of the pucktuner splash: the pucks backdrop with
+the orange glow, the Barrett logo, "Start the pendulum demo?" and YES / NO.
   YES -> replaces this process with the pendulum kiosk (furuta_pendulum.py --touchscreen)
   NO  -> exits, leaving the normal desktop
 
@@ -52,12 +52,8 @@ class PromptCanvas(wx.Panel):
     def _scaled(self, W, H):
         if self._back_cache and self._back_cache[0] == (W, H):
             return self._back_cache[1], self._logo_cache
-        back = None
-        if self._backdrop.IsOk():
-            bh = H
-            bw = round(self._backdrop.GetWidth() * bh / self._backdrop.GetHeight())
-            back = wx.Bitmap(self._backdrop.Scale(bw, bh, wx.IMAGE_QUALITY_HIGH))
-        self._logo_cache = kw.load_logo(int(H * 0.15), kw.LOGO_SMALL, max_width=int(W * 0.55))
+        back = kw.cover_bitmap(self._backdrop, W, H) if self._backdrop.IsOk() else None
+        self._logo_cache = kw.load_logo(int(H * 0.17), max_width=int(W * 0.55))
         self._back_cache = ((W, H), back)
         return back, self._logo_cache
 
@@ -70,7 +66,7 @@ class PromptCanvas(wx.Panel):
             return
         back, logo = self._scaled(W, H)
         if back:
-            dc.DrawBitmap(back, W - back.GetWidth(), 0, True)    # anchored right, like the splash
+            dc.DrawBitmap(back, 0, 0)
 
         gc = wx.GraphicsContext.Create(dc)
         y = H * 0.14

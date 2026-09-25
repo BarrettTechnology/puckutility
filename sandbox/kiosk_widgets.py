@@ -14,10 +14,16 @@ Shared touch-screen widgets for the pendulum kiosk and the boot prompt.
 import os
 import sys
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.dirname(HERE)
 LOGO_WIDE = os.path.join(REPO_ROOT, 'images', 'BarrettLogo.png')           # white bg, full name
 LOGO_SMALL = os.path.join(REPO_ROOT, 'images', 'BarrettLogoScaled-NoBG.png')  # "Barrett(TM)", as on the splash
-BACKDROP = os.path.join(REPO_ROOT, 'images', 'Background.png')              # faded BarrettHand (splash)
+# High-res branding for the Pi screens (sandbox/assets):
+#   barrett-logo.png       2020x582 "Barrett(TM)", navy on transparent (from the
+#                          icon-mockups master, background keyed out)
+#   pendulum-backdrop.png  1500x625 pucktuner splash backdrop (pucks + orange glow)
+LOGO_HIRES = os.path.join(HERE, 'assets', 'barrett-logo.png')
+BACKDROP = os.path.join(HERE, 'assets', 'pendulum-backdrop.png')
 
 # Layouts are designed for the Touch Display 2 in landscape; everything is
 # scaled by screen_scale() so they also fit whatever size the desktop reports
@@ -69,14 +75,16 @@ def _content_box(img):
     return x0, y0, x1 - x0 + 1, y1 - y0 + 1
 
 
-def load_logo(height, path=LOGO_WIDE, max_width=None):
+def load_logo(height, path=LOGO_HIRES, max_width=None):
     """Logo bitmap cropped to its visible content and scaled to `height` px
     (or narrower if it would exceed max_width).  None if the file is missing."""
     img = wx.Image(path)
     if not img.IsOk():
         return None
-    x, y, w, h = _content_box(img)
-    img = img.GetSubImage(wx.Rect(x, y, w, h))
+    if path != LOGO_HIRES:          # the hi-res master is already tightly cropped
+        x, y, w, h = _content_box(img)
+        img = img.GetSubImage(wx.Rect(x, y, w, h))
+    w, h = img.GetWidth(), img.GetHeight()
     if not img.HasAlpha():
         # The JPEG-sourced logo's "white" is ~(250,250,250): snap near-white
         # to pure white so it doesn't show as a grey box on the white screen.
@@ -122,6 +130,19 @@ def fit_font(gc_or_dc, text, max_w, max_h, bold=True):
             return f
         px = int(px * 0.9)
     return px_font(8, bold)
+
+
+def cover_bitmap(img, W, H, anchor_x=0.35):
+    """Scale `img` to cover W x H (cropping the overflow) -- like CSS
+    background-size: cover.  anchor_x picks which part of an over-wide image
+    survives the crop (0 = keep the left edge, 1 = the right)."""
+    iw, ih = img.GetWidth(), img.GetHeight()
+    s = max(W / iw, H / ih)
+    sw, sh = max(W, round(iw * s)), max(H, round(ih * s))
+    scaled = img.Scale(sw, sh, wx.IMAGE_QUALITY_HIGH)
+    x = round((sw - W) * anchor_x)
+    y = round((sh - H) / 2)
+    return wx.Bitmap(scaled.GetSubImage(wx.Rect(x, y, W, H)))
 
 
 class LogoPanel(wx.Panel):

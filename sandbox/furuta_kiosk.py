@@ -107,7 +107,7 @@ class FurutaKioskFrame(fp.FurutaPIDFrame):
 
         # Top bar: logo (5 s hold = staff menu) + status line
         top = wx.BoxSizer(wx.HORIZONTAL)
-        self._logo = kw.LogoPanel(root, kw.load_logo(S(60), kw.LOGO_SMALL), align=wx.ALIGN_LEFT,
+        self._logo = kw.LogoPanel(root, kw.load_logo(S(60)), align=wx.ALIGN_LEFT,
                                   hold_s=STAFF_HOLD_S, on_long_press=self._staff_menu)
         top.Add(self._logo, 0, wx.EXPAND | wx.ALL, S(18))
         top.AddStretchSpacer()

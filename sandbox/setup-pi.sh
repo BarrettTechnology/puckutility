@@ -55,7 +55,7 @@ gs() {
 }
 
 AUTOSTART="$HOME/.config/autostart/barrett-pendulum.desktop"
-WALLPAPER_SRC="$HERE/assets/barrett-wallpaper-1280x720.png"
+WALLPAPER_SRC="$HERE/assets/barrett-wallpaper.png"
 WALLPAPER="$HOME/.local/share/backgrounds/barrett-wallpaper.png"
 
 # ─────────────────────────────────────────────────────────────── check ──────
