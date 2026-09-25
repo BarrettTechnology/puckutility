@@ -1,4 +1,14 @@
 #!/bin/bash
+# !!! DO NOT USE -- 2026-09-25: installing this on the pendulum Pi (Ubuntu 24.04,
+# !!! Pi 5, Touch Display 2, with setup-pi.sh --reliable-display active) was
+# !!! followed by black-screen boots (Linux running, nothing on the panel) until
+# !!! --undo AND restore-display.sh. Cause not isolated (splash vs. the initramfs
+# !!! rebuild vs. the explicit display overlay). Refuses to run unless forced.
+if [ "${1:-}" != "--undo" ] && [ "${PENDULUM_SPLASH_I_KNOW:-}" != "1" ]; then
+    echo "install-splash.sh is disabled (black screens on the Pi, 2026-09-25)."
+    echo "Only --undo is allowed. See the comment at the top of this file."
+    exit 1
+fi
 # Barrett boot splash: white screen, Barrett logo, orange spinner.
 #
 #   ./install-splash.sh          install + make it the boot splash (~1-2 min)

@@ -327,6 +327,9 @@ setup_touch_display_only() {
 
 setup_reliable_display() {
     say "Reliable display: explicit Touch Display overlay + touch guard"
+    # CAUTION (2026-09-25): worked for one boot, but the black-screen boots that
+    # followed the splash install were only cured by restore-display.sh (back to
+    # auto-detect). Unverified -- only use with a monitor or SSH access at hand.
     # Why: display_auto_detect=1 sometimes misses the panel at power-on (black
     # touch screen, desktop on HDMI). Loading the panel overlay explicitly fixes
     # that -- but on the first try touch didn't come up (likely the touch
