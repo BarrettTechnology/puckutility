@@ -520,6 +520,8 @@ setup_wallpaper
 setup_autologin
 setup_launchers
 setup_touch_display_only
+say "12. Display guard (log power, reboot if the touch display was missed)"
+$SUDO "$HERE/install-display-guard.sh" || warn "install-display-guard.sh failed"
 say "11. Maintenance link over the Ethernet cable (192.168.100.66 + SSH)"
 "$HERE/setup-lan-link.sh" || warn "setup-lan-link.sh failed -- run it again by hand"
 
