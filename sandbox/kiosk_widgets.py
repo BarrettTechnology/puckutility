@@ -23,6 +23,7 @@ LOGO_SMALL = os.path.join(REPO_ROOT, 'images', 'BarrettLogoScaled-NoBG.png')  # 
 #                          icon-mockups master, background keyed out)
 #   pendulum-backdrop.png  1500x625 pucktuner splash backdrop (pucks + orange glow)
 LOGO_HIRES = os.path.join(HERE, 'assets', 'barrett-logo.png')
+APP_ICON = os.path.join(HERE, 'assets', 'pendulum-icon.png')   # make-pendulum-icon.py
 BACKDROP = os.path.join(HERE, 'assets', 'pendulum-backdrop.png')
 
 # Layouts are designed for the Touch Display 2 in landscape; everything is
@@ -135,6 +136,14 @@ def load_logo(height, path=LOGO_HIRES, max_width=None, scale=1.0):
         new_w = max_width
         new_h = round(h * new_w / w)
     return hidpi_bitmap(img, new_w, new_h, scale)
+
+
+def set_app_icon(frame):
+    """Barrett Pendulum icon for the window (dock / app switcher)."""
+    try:
+        frame.SetIcon(wx.Icon(APP_ICON, wx.BITMAP_TYPE_PNG))
+    except Exception:
+        pass
 
 
 def screen_scale(window=None):

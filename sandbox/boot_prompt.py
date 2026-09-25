@@ -130,6 +130,7 @@ class BootPrompt(wx.Frame):
 
     def __init__(self, auto_yes_s=0):
         super().__init__(None, title="Barrett Pendulum")
+        kw.set_app_icon(self)
         self.choice = None
         self._remaining = auto_yes_s
         self._canvas = PromptCanvas(self, self._pick)

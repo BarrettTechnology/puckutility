@@ -251,6 +251,7 @@ class FurutaPIDFrame(wx.Frame):
         self._last_rx          = [0.0, 0.0]   # monotonic time of last TPDO (P1, P2)
 
         self._build_ui()
+        kiosk_widgets.set_app_icon(self)
         self.Bind(wx.EVT_CLOSE, self._on_close)
         self.SetMinSize((580, 460))
         self.Centre()

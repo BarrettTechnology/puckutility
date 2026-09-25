@@ -174,7 +174,7 @@ setup_launchers() {
 Type=Application
 Name=$name
 Exec=$HERE/pendulum-launch.sh $mode
-Icon=$REPO/images/BarrettIcon.png
+Icon=$HERE/assets/pendulum-icon.png
 Terminal=false
 Categories=Utility;
 EOF
@@ -195,7 +195,7 @@ Type=Application
 Name=Barrett Pendulum
 Comment=Start the pendulum demo
 Exec=$HERE/pendulum-launch.sh kiosk
-Icon=$REPO/images/BarrettIcon.png
+Icon=$HERE/assets/pendulum-icon.png
 Terminal=false
 EOF
     chmod +x "$ICON"
