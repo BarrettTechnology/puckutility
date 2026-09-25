@@ -55,3 +55,24 @@ last log lines.
 
 Gains are fixed at the v4.1 defaults in `furuta_pendulum.py` (`KP_DEFAULT` …). To re-tune,
 use the engineering GUI and copy the values back into the defaults.
+
+## Future work
+
+**Gentler automatic swing-up (4–6 swings instead of one hard one).** From rest the v4.1
+energy controller pumps full ±Ks bang-bang every half-swing, so the first swing-up is violent
+(the arm can whip round, the pendulum can fly over the top). Tried on 2026-09-25 and backed
+out: a torque soft-start (too weak to start from rest) and an arm speed limit (didn't stop it).
+Plan, to tune at the rig with SSH access (`sandbox/pi-connect.sh`):
+1. **Ramp the energy target** (small swing → upright over ~4–6 s) instead of always aiming at
+   upright energy, plus a small start kick from dead rest.
+2. **Arm-centring spring** during swing-up so the arm oscillates about home instead of running away.
+3. **Smooth energy law** (torque ∝ energy error × ω·cos θ, capped) instead of bang-bang, and the
+   faster velocity estimate for push timing.
+4. **Safety monitor** that parks automatically if the arm passes ~1 rev from home, spins too fast,
+   or the pendulum goes over the top more than once.
+Record a 500 Hz trace of a few first swings first; tune in simulation before the rig.
+
+**Touch display occasionally missed at power-on.** Firmware sometimes doesn't set up the panel
+(no DSI node); warm reboots don't recover it, a power-cycle does. The display guard logs power +
+display each boot (`journalctl -b -u pendulum-display-guard`). Explicit overlay and the boot
+splash both caused black-screen boots on this Pi — disabled. Next: investigate a panel power reset.
