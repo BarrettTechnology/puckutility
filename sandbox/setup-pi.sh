@@ -314,20 +314,13 @@ setup_wallpaper() {
 }
 
 setup_touch_display_only() {
-    say "10. Display: HDMI off (the Touch Display is the only screen)"
-    # NOTE: loading the ili9881 panel overlay explicitly (display_auto_detect=0)
-    # fixed the occasional missed-panel boot but LOST TOUCH on this Pi, so it
-    # was backed out. Auto-detect stays on; if a power-on misses the panel
-    # (black touch screen), power-cycle once.
-    CMD=/boot/firmware/cmdline.txt
-    [ -e "$CMD" ] || { warn "no $CMD -- not a Raspberry Pi boot layout?"; return; }
-    if grep -q 'video=HDMI-A-1:d' "$CMD"; then
-        ok "HDMI already disabled in cmdline.txt"
-    else
-        $SUDO cp -n "$CMD" "$CMD.bak-pendulum-display"
-        $SUDO sed -i '1 s/$/ video=HDMI-A-1:d video=HDMI-A-2:d/' "$CMD" \
-            && ok "HDMI-A-1/2 disabled in cmdline.txt (backup: $CMD.bak-pendulum-display)"
-    fi
+    say "10. Display: left on auto-detect (no changes)"
+    # Both attempts to pin the display to the Touch Display broke touch on this
+    # Pi (explicit ili9881 overlay + display_auto_detect=0, and/or
+    # video=HDMI-A-n:d on the kernel command line), so this step no longer
+    # changes anything. If a power-on misses the panel (black touch screen),
+    # power-cycle once.
+    ok "nothing to do"
 }
 
 setup_autologin() {
