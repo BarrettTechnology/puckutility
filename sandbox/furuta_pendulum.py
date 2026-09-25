@@ -900,7 +900,16 @@ class FurutaPIDFrame(wx.Frame):
             self._set_status("Motor enabled  |  zero torque — arm moves freely")
 
     def _control_loop(self, kp, ki, kd, adz, bi, kt, kf, pdz, tmax, ks, kb, kv, kda,
-                      torque_lim_swing, torque_lim_bal):
+                      torque_lim_swing, torque_lim_bal,
+                      soft_start_s=0.0, soft_start_from=1.0, arm_vel_max=0.0):
+        # soft_start_s / soft_start_from / arm_vel_max: optional swing-up guards
+        # (the kiosk uses them; 0 / 1.0 / 0 = off = v4.1 behaviour):
+        #   soft start  -- swing torque scaled from soft_start_from up to 1.0
+        #                  over the first soft_start_s seconds of a run, so the
+        #                  first swing-up from rest builds energy gradually
+        #   arm_vel_max -- [rad/s] swing torque that would speed the arm up is
+        #                  faded to zero as |arm_vel| approaches this (it may
+        #                  always slow the arm) -- no multi-revolution runaway
         # ── Parameter reference ───────────────────────────────────────────
         #
         # BALANCE  (|θ| < BALANCE_ENTRY, |ω| < BALANCE_VEL_MAX)
@@ -973,6 +982,9 @@ class FurutaPIDFrame(wx.Frame):
         arm_rad_target_z = 0.0
 
         prev_t = time.monotonic()
+        run_t0 = prev_t
+        self._run_peak_arm_vel = 0.0      # run stats (the kiosk logs them)
+        self._run_first_balance_s = None
 
         while self._controlling and self._enabled:
             t0 = time.monotonic()
@@ -1090,6 +1102,14 @@ class FurutaPIDFrame(wx.Frame):
                 torque = prev_torque + step
                 torque = max(-torque_lim_swing, min(torque_lim_swing, torque))
 
+                # Optional swing-up guards (off unless the caller asks)
+                if soft_start_s > 0:
+                    ramp = min(1.0, soft_start_from
+                               + (1.0 - soft_start_from) * (t0 - run_t0) / soft_start_s)
+                    torque *= ramp
+                if arm_vel_max > 0 and torque * arm_vel > 0:
+                    torque *= max(0.0, 1.0 - abs(arm_vel) / arm_vel_max)
+
                 self._in_braking = braking
 
             else:  # Resting — no swing mode, or pendulum barely moving
@@ -1108,6 +1128,9 @@ class FurutaPIDFrame(wx.Frame):
                 torque = max(0.0, torque)
 
             prev_torque = torque
+            self._run_peak_arm_vel = max(self._run_peak_arm_vel, abs(arm_vel))
+            if in_balance and self._run_first_balance_s is None:
+                self._run_first_balance_s = t0 - run_t0
 
             try:
                 # INT16 torque sent as a 2-byte CAN frame directly, bypassing

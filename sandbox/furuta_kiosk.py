@@ -47,6 +47,12 @@ TEMP_RESUME_C      = 70      # after an over-temp stop, START returns below this
 FAULT_BIT          = 0x0008  # DS402 StatusWord: Fault
 STAFF_HOLD_S       = 5.0
 STAFF_MENU_TIMEOUT_S = 30    # staff menu closes itself if left open
+# Swing-up guards (kiosk only; the engineering GUI runs plain v4.1). The first
+# swing-up from rest pumps at full torque every half-swing and could spin the
+# arm several revolutions and fling the pendulum over the top.
+SOFT_START_S       = 3.0     # swing torque ramps from SOFT_START_FROM to 100% over this
+SOFT_START_FROM    = 0.35
+ARM_SPEED_LIMIT    = 12.0    # [rad/s] (~1.9 rev/s) no swing torque that speeds the arm past this
 AUTO_STOP_S        = 60      # a run stops itself (arm limp) after this long; 0 = never
                              # (set from the command line: --auto-stop SECONDS)
 
@@ -190,12 +196,14 @@ class FurutaKioskFrame(fp.FurutaPIDFrame):
     # ───────────────────────────────────────────────── gains ────────────
 
     def _read_gains(self):
-        # Fixed at the v4.1 defaults; bias 0 (upright = encoder zero + π).
+        # Fixed at the v4.1 defaults; bias 0 (upright = encoder zero + π);
+        # plus the kiosk's swing-up guards.
         return (fp.KP_DEFAULT, fp.KI_DEFAULT, fp.KD_DEFAULT, fp.ADZ_DEFAULT,
                 float(fp.BI_DEFAULT),
                 fp.KT_DEFAULT, fp.KF_DEFAULT, fp.PDZ_DEFAULT, fp.TMAX_DEFAULT,
                 fp.KS_DEFAULT, fp.KB_DEFAULT, fp.KV_DEFAULT, fp.KDA_DEFAULT,
-                fp.TORQUE_LIM_SWING_DEFAULT, fp.TORQUE_LIM_BAL_DEFAULT)
+                fp.TORQUE_LIM_SWING_DEFAULT, fp.TORQUE_LIM_BAL_DEFAULT,
+                SOFT_START_S, SOFT_START_FROM, ARM_SPEED_LIMIT)
 
     # ───────────────────────────────────────────────── connection ───────
 
@@ -528,8 +536,18 @@ class FurutaKioskFrame(fp.FurutaPIDFrame):
         self._auto_stopped = True
         self._stop_control()                # -> _on_ctrl_stopped
 
+    def _log_run_stats(self):
+        peak = getattr(self, '_run_peak_arm_vel', None)
+        if peak is None:
+            return
+        bal = self._run_first_balance_s
+        log(f"run stats: peak arm speed {peak:.1f} rad/s ({peak / 6.283:.2f} rev/s, "
+            f"limit {ARM_SPEED_LIMIT:g}), first balance "
+            + (f"after {bal:.1f} s" if bal is not None else "never"))
+
     def _on_ctrl_stopped(self):
         # Base _stop_control() schedules this.  STOP = zero torque, arm limp.
+        self._log_run_stats()
         self._cancel_auto_stop()
         self._in_balance = self._ramping_balance = self._in_braking = False
         self._send_zero_torque()
