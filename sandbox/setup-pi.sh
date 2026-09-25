@@ -7,6 +7,8 @@
 #   ./setup-pi.sh --remove-autostart  stop the YES/NO prompt appearing at login
 #   ./setup-pi.sh --desktop-icon      (re)create just the Barrett Pendulum desktop icon
 #   ./setup-pi.sh --touch-display-only  just switch HDMI off (Touch Display only)
+#   ./setup-pi.sh --reliable-display    explicit panel overlay (no more missed-panel
+#                                       boots) + touch guard; --undo-reliable-display
 #
 # What the full setup does (re-runnable; every step is idempotent):
 #   1. apt: wxPython, venv, can-utils          5. screen never blanks / locks / sleeps
@@ -323,6 +325,133 @@ setup_touch_display_only() {
     ok "nothing to do"
 }
 
+setup_reliable_display() {
+    say "Reliable display: explicit Touch Display overlay + touch guard"
+    # Why: display_auto_detect=1 sometimes misses the panel at power-on (black
+    # touch screen, desktop on HDMI). Loading the panel overlay explicitly fixes
+    # that -- but on the first try touch didn't come up (likely the touch
+    # controller wasn't awake when its driver probed). The touch guard service
+    # re-probes it at boot; if touch still isn't there it RESTORES the original
+    # config.txt and reboots, so the Pi can't be left without touch.
+    CFG=/boot/firmware/config.txt
+    [ -e "$CFG" ] || { warn "no $CFG -- not a Raspberry Pi boot layout?"; return; }
+
+    # Panel + port from the running system (must be a GOOD boot).
+    RP1=$(ls -d /proc/device-tree/axi/pcie@*/rp1 2>/dev/null | head -1)
+    PORT="" ; PANEL=""
+    for n in 110000:dsi0 128000:dsi1; do
+        node="$RP1/dsi@${n%%:*}"
+        if [ "$(tr -d '\0' <"$node/status" 2>/dev/null)" = okay ]; then
+            PORT=${n##*:}
+            PANEL=$(tr '\0' ' ' <"$node/dsi_panel@0/compatible" 2>/dev/null)
+        fi
+    done
+    case "$PANEL" in
+        *dsi-7inch*) OVL=vc4-kms-dsi-ili9881-7inch ;;
+        *dsi-5inch*) OVL=vc4-kms-dsi-ili9881-5inch ;;
+        *) OVL="" ;;
+    esac
+    if [ -z "$PORT" ] || [ -z "$OVL" ]; then
+        warn "the Touch Display isn't active on THIS boot (port='$PORT' panel='$PANEL')."
+        warn "Nothing changed. Power-cycle until the touch screen shows the desktop, then re-run."
+        return
+    fi
+    if ! grep -qi goodix /proc/bus/input/devices; then
+        warn "touch isn't working on THIS boot either -- fix that first. Nothing changed."
+        return
+    fi
+    PARAM=""; [ "$PORT" = dsi0 ] && PARAM=",dsi0"      # the overlay defaults to dsi1
+    LINE="dtoverlay=$OVL$PARAM"
+    ok "detected: $PANEL on $PORT -> $LINE (touch working now)"
+
+    # 1. touch guard: script + boot service
+    $SUDO tee /usr/local/sbin/pendulum-touch-guard >/dev/null <<'GUARD'
+#!/bin/sh
+# Barrett pendulum: make sure the Goodix touchscreen came up. Re-probe it a few
+# times; if it never appears and the explicit display config is active, restore
+# the original config.txt and reboot (installed by setup-pi.sh --reliable-display).
+CFG=/boot/firmware/config.txt
+BAK=$CFG.bak-pendulum-display
+has_touch() { grep -qi goodix /proc/bus/input/devices; }
+for i in 1 2 3 4 5 6 7 8 9 10; do
+    if has_touch; then echo "touchscreen OK (check $i)"; exit 0; fi
+    modprobe goodix_ts 2>/dev/null
+    for d in /sys/bus/i2c/devices/*; do
+        case "$(tr -d '\0' <"$d/of_node/compatible" 2>/dev/null)" in
+            *goodix*)
+                [ -e "$d/driver" ] && continue
+                echo "re-probing $(basename "$d")"
+                echo "$(basename "$d")" > /sys/bus/i2c/drivers/Goodix-TS/bind 2>/dev/null ;;
+        esac
+    done
+    sleep 2
+done
+echo "no touchscreen after 10 tries"
+if grep -q '^display_auto_detect=0' "$CFG" && [ -e "$BAK" ]; then
+    echo "restoring $BAK (display auto-detect) and rebooting"
+    cp "$BAK" "$CFG" && sync && systemctl reboot
+fi
+exit 1
+GUARD
+    $SUDO chmod 755 /usr/local/sbin/pendulum-touch-guard
+    $SUDO tee /etc/systemd/system/pendulum-touch-guard.service >/dev/null <<'UNIT'
+[Unit]
+Description=Barrett pendulum: make sure the touchscreen came up
+After=systemd-udevd.service systemd-modules-load.service
+Before=display-manager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/pendulum-touch-guard
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+    $SUDO systemctl daemon-reload
+    $SUDO systemctl enable pendulum-touch-guard.service >/dev/null 2>&1 \
+        && ok "touch guard installed (journalctl -u pendulum-touch-guard to see what it did)"
+
+    # 2. explicit panel overlay, auto-detect off (first [all] block only)
+    $SUDO cp -n "$CFG" "$CFG.bak-pendulum-display"
+    if grep -q "^$LINE\$" "$CFG" && grep -q '^display_auto_detect=0' "$CFG"; then
+        ok "config.txt already set"
+    else
+        $SUDO python3 - "$CFG" "$LINE" <<'PYEOF'
+import re, sys
+path, line = sys.argv[1], sys.argv[2]
+text = open(path).read()
+m = re.search(r'^\[(?!all\])', text, re.M)          # first non-[all] section
+head, tail = (text[:m.start()], text[m.start():]) if m else (text, '')
+head = re.sub(r'^display_auto_detect=.*$', 'display_auto_detect=0', head, flags=re.M)
+if 'display_auto_detect=0' not in head:
+    head += '\ndisplay_auto_detect=0\n'
+if not re.search(r'^' + re.escape(line) + r'$', head, re.M):
+    head = re.sub(r'^(dtoverlay=vc4-kms-v3d.*)$',
+                  r'\1\n# Touch Display 2, loaded explicitly (auto-detect missed it on some boots)\n' + line,
+                  head, count=1, flags=re.M)
+    if line not in head:
+        head += '\n' + line + '\n'
+open(path, 'w').write(head + tail)
+PYEOF
+        ok "config.txt: display_auto_detect=0 + $LINE (backup: $CFG.bak-pendulum-display)"
+    fi
+    setup_touch_display_only
+    echo "    Reboot to apply. After it, touch should work; if it didn't come up the"
+    echo "    guard restores the old config and reboots once by itself (~30 s extra)."
+    echo "    Undo any time:  $0 --undo-reliable-display"
+}
+
+undo_reliable_display() {
+    say "Undo reliable display"
+    CFG=/boot/firmware/config.txt
+    if [ -e "$CFG.bak-pendulum-display" ]; then
+        $SUDO cp "$CFG.bak-pendulum-display" "$CFG" && ok "restored $CFG from backup"
+    fi
+    $SUDO systemctl disable pendulum-touch-guard.service >/dev/null 2>&1 && ok "touch guard disabled"
+    echo "    Reboot to apply."
+}
+
 setup_autologin() {
     say "7. Desktop auto-login as $USER_NAME"
     if [ -e /etc/gdm3/custom.conf ]; then
@@ -361,6 +490,8 @@ case "${1:-}" in
     --remove-autostart) rm -f "$AUTOSTART"; echo "Removed $AUTOSTART"; exit 0 ;;
     --desktop-icon) setup_desktop_icon; exit 0 ;;
     --touch-display-only) setup_touch_display_only; exit 0 ;;
+    --reliable-display) setup_reliable_display; exit 0 ;;
+    --undo-reliable-display) undo_reliable_display; exit 0 ;;
     "") ;;
     *) sed -n '2,20p' "$0"; exit 2 ;;
 esac
