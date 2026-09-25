@@ -4,6 +4,12 @@
 #   ./disable-onscreen-keyboard.sh           find + disable (run as the desktop user,
 #                                            not with sudo; it uses sudo where needed)
 #   ./disable-onscreen-keyboard.sh --check   only report what's there; changes nothing
+#   ./disable-onscreen-keyboard.sh --block-gnome-too   ALSO stop GNOME's own keyboard
+#                                            popping up on touch (step 7; off by default)
+#
+# Default result ("GNOME standard", 2026-09-25): every third-party / extra
+# keyboard is off, and GNOME's built-in keyboard appears when you tap a text
+# field with your finger (the kiosk has no text fields, so it never shows there).
 #
 # Covers xvkbd, onboard, squeekboard, wvkbd and GNOME's built-in keyboard:
 #   1. the "screen keyboard" accessibility setting (GNOME's keyboard AND squeekboard obey it)
@@ -26,6 +32,7 @@ NAMES='xvkbd|onboard|squeekboard|wvkbd|matchbox-keyboard|florence|caribou'
 PROC_RE="(^|/)($NAMES)[^ /]*( |\$)"
 PKGS="xvkbd onboard onboard-common onboard-data squeekboard wvkbd matchbox-keyboard florence"
 CHECK=0; [ "${1:-}" = "--check" ] && CHECK=1
+BLOCK_GNOME=0; [ "${1:-}" = "--block-gnome-too" ] && BLOCK_GNOME=1
 
 say()  { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
 ok()   { printf '    \033[32mOK\033[0m  %s\n' "$*"; }
@@ -180,7 +187,18 @@ else
     GMAJOR=$(gnome-shell --version 2>/dev/null | grep -o '[0-9]\+' | head -1)
     info "GNOME Shell ${GMAJOR:-?}"
     enabled_list=$(gs get org.gnome.shell enabled-extensions 2>/dev/null)
-    if [ -e "$EXT_DIR/extension.js" ] && echo "$enabled_list" | grep -q "$EXT_UUID"; then
+    if [ $BLOCK_GNOME = 0 ]; then
+        # GNOME standard: make sure our blocker is OFF so the built-in keyboard works on touch
+        if echo "$enabled_list" | grep -q "$EXT_UUID" && act "disable $EXT_UUID (use GNOME's built-in touch keyboard)"; then
+            gnome-extensions disable "$EXT_UUID" 2>/dev/null
+            new=$(echo "$enabled_list" | python3 -c "
+import ast, sys
+cur = sys.stdin.read().strip(); cur = cur.split(' ', 1)[1] if cur.startswith('@as') else cur
+print(str([x for x in (ast.literal_eval(cur) if cur else []) if x != sys.argv[1]]))" "$EXT_UUID")
+            gs set org.gnome.shell enabled-extensions "$new"
+        fi
+        ok "GNOME built-in keyboard pops up on touch in text fields (standard)"
+    elif [ -e "$EXT_DIR/extension.js" ] && echo "$enabled_list" | grep -q "$EXT_UUID"; then
         ok "$EXT_UUID installed and enabled"
     elif act "install + enable $EXT_UUID"; then
         mkdir -p "$EXT_DIR"
@@ -264,7 +282,7 @@ EOF
 fi
 
 # ── 8. third-party on-screen-keyboard GNOME extensions ──────────────────────
-say "8. Third-party keyboard extensions (e.g. GJS OSK)"
+say "8. Third-party keyboard extensions (e.g. GJS OSK) -- kept OFF"
 if command -v gnome-extensions >/dev/null 2>&1; then
     osk_ext=$(gnome-extensions list 2>/dev/null | grep -i -E 'osk|keyboard|kbd' | grep -v -x "$EXT_UUID")
     if [ -z "$osk_ext" ]; then ok "none installed"; fi
