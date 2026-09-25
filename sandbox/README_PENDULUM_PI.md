@@ -12,6 +12,7 @@ encoder, via a CANable (candleLight) at 1 Mbit on `can0`.
 | `kiosk_widgets.py` | Logo panel with long-press, big touch buttons, and the display environment settings. |
 | `pendulum-launch.sh` | `prompt` \| `kiosk` \| `gui`. Logs to `~/.cache/barrett-pendulum/pendulum.log`. |
 | `setup-pi.sh` | One-time Pi setup, plus `--check` diagnostics. |
+| `disable-onscreen-keyboard.sh` | Turns off every on-screen keyboard (xvkbd, onboard, squeekboard, GNOME's). `--check` = report only. |
 
 ## Setting up the Pi
 
