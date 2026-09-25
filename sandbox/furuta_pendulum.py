@@ -120,12 +120,12 @@ class FurutaCanvas(wx.Panel):
         self._mode     = "idle"
         self._kiosk    = kiosk      # bigger drawing, no numeric labels, Barrett colours
         if kiosk:
-            # Barrett branding on a light background (navy would vanish on the dark one)
-            self.BG        = wx.Colour(244, 246, 250)
-            self.TRACK     = wx.Colour(170, 176, 190)
+            # Barrett branding on the dark panel: navy cart + orange pendulum,
+            # each with a bold white outline so they read on the dark background
+            self.TRACK     = wx.Colour(96, 102, 124)
             self.CART      = wx.Colour(10, 47, 101)       # Barrett navy
-            self.CART_EDGE = wx.Colour(10, 47, 101)
-            self.WHEEL     = wx.Colour(60, 66, 82)
+            self.CART_EDGE = wx.Colour(255, 255, 255)
+            self.WHEEL     = wx.Colour(44, 48, 62)
             self.PIVOT     = wx.Colour(255, 255, 255)
         self.SetBackgroundColour(self.BG)
         self.SetMinSize((-1, 290))
@@ -185,11 +185,12 @@ class FurutaCanvas(wx.Panel):
         cw, ch = int(46 * s), int(22 * s)
 
         dc.SetBrush(wx.Brush(self.CART))
-        dc.SetPen(wx.Pen(self.CART_EDGE, int(2 * s)))
+        dc.SetPen(wx.Pen(self.CART_EDGE, int((3 if self._kiosk else 2) * s)))
         dc.DrawRoundedRectangle(cx - cw // 2, ty, cw, ch, int(5 * s))
 
         dc.SetBrush(wx.Brush(self.WHEEL))
-        dc.SetPen(wx.Pen(wx.Colour(85, 90, 115), 1))
+        dc.SetPen(wx.Pen(wx.Colour(255, 255, 255) if self._kiosk else wx.Colour(85, 90, 115),
+                         int(2 * s) if self._kiosk else 1))
         for wx_ in (cx - int(14 * s), cx + int(14 * s)):
             dc.DrawCircle(wx_, ty + ch + int(4 * s), int(6 * s))
 
@@ -211,11 +212,17 @@ class FurutaCanvas(wx.Panel):
             g = int(210 * nearness)
             arm_col = wx.Colour(r, g, 40)
 
+        if self._kiosk:                      # bold white outline under the link
+            outline = wx.Pen(wx.WHITE, int(7 * s) + 2 * max(2, int(2 * s)))
+            outline.SetCap(wx.CAP_ROUND)
+            dc.SetPen(outline)
+            dc.DrawLine(px, py, ex, ey)
         dc.SetPen(wx.Pen(arm_col, int(7 * s)))
         dc.DrawLine(px, py, ex, ey)
 
         dc.SetBrush(wx.Brush(arm_col))
-        dc.SetPen(wx.Pen(wx.Colour(240, 240, 240), 1))
+        dc.SetPen(wx.Pen(wx.Colour(240, 240, 240) if not self._kiosk else wx.WHITE,
+                         max(2, int(3 * s)) if self._kiosk else 1))
         dc.DrawCircle(ex, ey, int(11 * s))
 
         dc.SetBrush(wx.Brush(self.PIVOT))
@@ -231,7 +238,7 @@ class FurutaCanvas(wx.Panel):
                 f = wx.Font(wx.FontInfo().Family(wx.FONTFAMILY_SWISS))
                 f.SetPixelSize(wx.Size(0, max(10, int(H * 0.036))))
                 dc.SetFont(f)
-                dc.SetTextForeground(wx.Colour(96, 104, 124))
+                dc.SetTextForeground(wx.Colour(185, 192, 210))
                 tw, th = dc.GetTextExtent(info)
                 pad = max(corner, int(H * 0.03))
                 dc.DrawText(info, (W - tw) // 2, H - th - int(H * 0.035))
