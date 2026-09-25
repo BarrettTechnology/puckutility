@@ -1,6 +1,6 @@
 #!/bin/bash
-# One command to bring the pendulum Pi up to date and ready for a demo:
-#   - pulls the latest code
+# One command to get the pendulum Pi ready for a demo (run `git pull` first
+# yourself if you want the latest code):
 #   - turns GNOME's on-screen keyboard on (appears when a text field is tapped)
 #   - restarts the pendulum kiosk with the new code
 #
@@ -10,8 +10,6 @@
 set -u
 cd "$(dirname "$0")/.." || exit 1
 
-echo "==> Updating code"
-git pull --ff-only || echo "!!  git pull failed (no internet?) -- continuing with the current code"
 git log -1 --oneline
 
 echo "==> On-screen keyboard on"
