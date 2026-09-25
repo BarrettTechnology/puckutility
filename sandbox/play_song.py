@@ -19,7 +19,7 @@ per voice, so a three-note chord peaks at three times it.  Channel 10
 
 Raw SDO throughout, so any EDS (or none) will do.  Nothing is saved to NVM;
 the drive is returned to idle in a finally block.  Does not suspend a purr
-overlay (0x3027): turn it off first on firmware that has one.
+overlay (0x302B,1): turn it off first on firmware that has one.
 
 Usage:
   play_song.py [song.mid] [--channel can2] [--node 127] [--bpm N]

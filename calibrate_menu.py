@@ -458,6 +458,32 @@ class calibrate():
     def _fw_at_least(self, major, minor, patch):
         return self._fw_ver_tuple() >= (major, minor, patch)
 
+    # 0x3027 encoder compensation: sub1 = active, then per bin i: 2+3i A_s (INT16),
+    # 3+3i k (UNSIGNED16), 4+3i A_c (INT16).  The bin count is whatever the firmware
+    # has - v4.4 builds have 2 (ENC_COMP_BINS; bins cost ~1 us each in the PWM ISR),
+    # older experimental builds had 10 - so it is read from sub0, never assumed.  Raw
+    # SDO throughout, so an EDS with a different sub count cannot get in the way.
+    def _enc_comp_bins(self):
+        """Number of encoder-compensation bins the node implements (0 if it has no 0x3027)."""
+        try:
+            _hi = self.node.sdo.upload(0x3027, 0)[0]
+        except Exception:
+            return 0
+        return max(0, (int(_hi) - 1) // 3)
+
+    def _enc_comp_read(self, sub):
+        _signed = sub >= 2 and (sub - 2) % 3 != 1
+        return int.from_bytes(self.node.sdo.upload(0x3027, sub)[:2], 'little', signed=_signed)
+
+    def _enc_comp_write(self, sub, value):
+        _signed = sub >= 2 and (sub - 2) % 3 != 1
+        self.node.sdo.download(0x3027, sub, int(value).to_bytes(2, 'little', signed=_signed))
+
+    def _enc_comp_save(self, n_bins):
+        """Persist 0x3027 sub1 .. the last sub of n_bins bins."""
+        for _si in range(1, 2 + 3 * n_bins):
+            self.node.sdo['Save']['Single'].raw = ((0x3027 << 8) | _si)
+
     def _clear_offset_reg(self):
         """Zero the drive-gated iSense offset (0x3008:8 / 0x3009:8) if the firmware has it, so a cal
         MEASURES raw current. The firmware applies this offset under ANY drive -- including the cal's own
@@ -3878,7 +3904,7 @@ class calibrate():
         # Recalibration always runs an automatic retest sweep afterwards.
         _retest_only = False
         try:
-            if not _test_only and self.node.sdo[0x3027][1].raw:
+            if not _test_only and self._enc_comp_read(1):
                 _cdlg = wx.Dialog(self, title="Encoder Compensation Active")
                 _cdlg_sizer = wx.BoxSizer(wx.VERTICAL)
                 _cdlg_msg = wx.StaticText(
@@ -3988,9 +4014,9 @@ class calibrate():
             _enc_was_active = False
             if not _retest_only:
                 try:
-                    _enc_was_active = bool(self.node.sdo[0x3027][1].raw)
+                    _enc_was_active = bool(self._enc_comp_read(1))
                     if _enc_was_active:
-                        self.node.sdo[0x3027][1].raw = 0
+                        self._enc_comp_write(1, 0)
                         print("  Encoder compensation disabled for calibration sweep.")
                 except Exception:
                     pass
@@ -4529,8 +4555,8 @@ class calibrate():
                 print("  FFT JSON → {}".format(fft_path))
 
                 # ── Upload significant harmonic bins to Puck (0x3027) ────────
-                N_BINS = 10
-                # Hardware has ten bins; upload at most this many. Measured on a P4-42
+                N_BINS = self._enc_comp_bins()
+                # Bins the firmware implements (2 on v4.4). Upload at most N_UPLOAD_MAX. Measured on a P4-42
                 # (node 127, 2026-09-17, notes/enc_comp_shape.md in the stm32 repo):
                 # each uploaded bin costs ~0.98 us of case 2 in the PWM ISR, and case 2
                 # only has 7.7 us of headroom at 80 kHz / 5.2 us at 100 kHz. Ten bins put
@@ -4544,7 +4570,7 @@ class calibrate():
                 #     2 bins -> 0.959 ct, 25.7%     10 bins -> 0.194 ct, 26.1%
                 # Bins three through ten together are worth 0.4 percentage points and
                 # 7.8 us of every control cycle. Raise this only with timing evidence.
-                N_UPLOAD_MAX = 2
+                N_UPLOAD_MAX = min(2, N_BINS)
                 # AC harmonics by amplitude (k≥1). DC offset is not uploaded to the puck;
                 # it is subtracted from the retest plots for display only.
                 #
@@ -4725,7 +4751,7 @@ class calibrate():
                 print("  " + "-" * 44)
 
                 # Disable compensation while writing bins
-                self.node.sdo[0x3027][1].raw = 0
+                self._enc_comp_write(1, 0)
 
                 for _bi in range(N_BINS):
                     _as_sub = 2 + _bi * 3
@@ -4748,12 +4774,12 @@ class calibrate():
                     else:
                         _A_s_val = _A_c_val = _k_val = 0
 
-                    self.node.sdo[0x3027][_as_sub].raw = _A_s_val
-                    self.node.sdo[0x3027][_k_sub].raw  = _k_val
-                    self.node.sdo[0x3027][_ac_sub].raw = _A_c_val
+                    self._enc_comp_write(_as_sub, _A_s_val)
+                    self._enc_comp_write(_k_sub, _k_val)
+                    self._enc_comp_write(_ac_sub, _A_c_val)
 
                 # Enable compensation
-                self.node.sdo[0x3027][1].raw = 1
+                self._enc_comp_write(1, 1)
                 print("  Encoder Compensation Active → 1")
                 try:
                     self.frame_menubar.ON.Check(True)
@@ -4770,13 +4796,13 @@ class calibrate():
                 print("  {:>4}  {:>6}  {:>8}  {:>8}  {}".format(
                     "Bin", "k", "A_s", "A_c", "OK?"))
                 print("  " + "-" * 40)
-                _active_rb = self.node.sdo[0x3027][1].raw
+                _active_rb = self._enc_comp_read(1)
                 print("  Active flag readback: {}".format(_active_rb))
                 _rb_ok = True
                 for _bi in range(N_BINS):
-                    _as_rb = self.node.sdo[0x3027][2 + _bi * 3].raw
-                    _k_rb  = self.node.sdo[0x3027][3 + _bi * 3].raw
-                    _ac_rb = self.node.sdo[0x3027][4 + _bi * 3].raw
+                    _as_rb = self._enc_comp_read(2 + _bi * 3)
+                    _k_rb  = self._enc_comp_read(3 + _bi * 3)
+                    _ac_rb = self._enc_comp_read(4 + _bi * 3)
                     if _bi < n_upload:
                         _bk_exp  = int(_top_bins[_bi])
                         _bA_exp  = float(amps[_top_bins[_bi]])
@@ -4807,10 +4833,9 @@ class calibrate():
                 else:
                     print("  WARNING: one or more bins did not readback correctly.")
 
-                # Save all 31 NV subindices of 0x3027 to EEPROM
+                # Save every NV subindex of 0x3027 to EEPROM
                 print("\n  Saving 0x3027 to EEPROM ...")
-                for _si in range(1, 32):
-                    self.node.sdo['Save']['Single'].raw = ((0x3027 << 8) | _si)
+                self._enc_comp_save(N_BINS)
                 print("  Saved.")
 
                 # Write top-10 harmonics JSON (full detail for each uploaded bin)
@@ -5011,9 +5036,9 @@ class calibrate():
                     self.node.sdo['ControlWord'].raw = OP_ENABLED
                     self.node.sdo['SetModeOfOperation'].raw = MODE_PROFILE_VEL
                     try:
-                        self.node.sdo[0x3027][1].raw = 1;  _on  = _measure("comp ON ")
-                        self.node.sdo[0x3027][1].raw = 0;  _off = _measure("comp OFF")
-                        self.node.sdo[0x3027][1].raw = 1                        # restore ON; the gate decides
+                        self._enc_comp_write(1, 1);  _on  = _measure("comp ON ")
+                        self._enc_comp_write(1, 0);  _off = _measure("comp OFF")
+                        self._enc_comp_write(1, 1)                        # restore ON; the gate decides
                     finally:
                         self.node.sdo['TargetVelocity'].raw = 0
                         self.node.sdo['SetModeOfOperation'].raw = MODE_IDLE
@@ -5047,13 +5072,12 @@ class calibrate():
                               "did not improve linearity" if not _rt_passed_stat
                               else "destabilised the closed-loop hold (dynamic)"))
                     try:
-                        self.node.sdo[0x3027][1].raw = 0            # Encoder Compensation Active = OFF
+                        self._enc_comp_write(1, 0)            # Encoder Compensation Active = OFF
                         for _bi in range(N_BINS):                    # zero every bin so nothing stale
-                            self.node.sdo[0x3027][2 + _bi * 3].raw = 0   # A_s
-                            self.node.sdo[0x3027][3 + _bi * 3].raw = 0   # k
-                            self.node.sdo[0x3027][4 + _bi * 3].raw = 0   # A_c
-                        for _si in range(1, 32):                     # persist the OFF/cleared state
-                            self.node.sdo['Save']['Single'].raw = ((0x3027 << 8) | _si)
+                            self._enc_comp_write(2 + _bi * 3, 0)   # A_s
+                            self._enc_comp_write(3 + _bi * 3, 0)   # k
+                            self._enc_comp_write(4 + _bi * 3, 0)   # A_c
+                        self._enc_comp_save(N_BINS)                  # persist the OFF/cleared state
                         try:
                             self.frame_menubar.ON.Check(False)
                             self.frame_menubar.OFF.Check(True)
@@ -6463,12 +6487,12 @@ class calibrate():
                     import numpy as _np_va
                     _va_lut = [0.0] * enc_resolution
                     try:
-                        if int(self.node.sdo[0x3027][1].raw) == 1:
+                        if int(self._enc_comp_read(1)) == 1:
                             _vb_list = []
-                            for _vbi in range(10):
-                                _vas = int(self.node.sdo[0x3027][2 + _vbi * 3].raw)
-                                _vk  = int(self.node.sdo[0x3027][3 + _vbi * 3].raw)
-                                _vac = int(self.node.sdo[0x3027][4 + _vbi * 3].raw)
+                            for _vbi in range(self._enc_comp_bins()):
+                                _vas = int(self._enc_comp_read(2 + _vbi * 3))
+                                _vk  = int(self._enc_comp_read(3 + _vbi * 3))
+                                _vac = int(self._enc_comp_read(4 + _vbi * 3))
                                 if (_vas | _vac) == 0: break
                                 _vb_list.append((_vas, _vk, _vac))
                             for _p in range(enc_resolution):
@@ -6681,12 +6705,12 @@ class calibrate():
                     # isolates cogging comp.
                     _enc_corr_lut = [0.0] * enc_resolution
                     try:
-                        if int(self.node.sdo[0x3027][1].raw) == 1:   # enc comp active
+                        if int(self._enc_comp_read(1)) == 1:   # enc comp active
                             _ec_bins = []
                             for _eb in range(10):
-                                _eas = int(self.node.sdo[0x3027][2 + _eb * 3].raw)
-                                _ek  = int(self.node.sdo[0x3027][3 + _eb * 3].raw)
-                                _eac = int(self.node.sdo[0x3027][4 + _eb * 3].raw)
+                                _eas = int(self._enc_comp_read(2 + _eb * 3))
+                                _ek  = int(self._enc_comp_read(3 + _eb * 3))
+                                _eac = int(self._enc_comp_read(4 + _eb * 3))
                                 if (_eas | _eac) == 0:
                                     break
                                 _ec_bins.append((_eas, _ek, _eac))
@@ -8271,7 +8295,7 @@ class calibrate():
             return
         enable = event.GetId() == self.frame_menubar.ON.GetId()
         try:
-            self.node.sdo[0x3027][1].raw = 1 if enable else 0
+            self._enc_comp_write(1, 1 if enable else 0)
             self.node.sdo['Save']['Single'].raw = ((0x3027 << 8) | 1)
             state_str = "ON" if enable else "OFF"
             print("Encoder error compensation set to {} and saved.".format(state_str))
