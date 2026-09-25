@@ -963,8 +963,8 @@ class FurutaPIDFrame(wx.Frame):
         #                  over the first soft_start_s seconds of a run, so the
         #                  first swing-up from rest builds energy gradually
         #   arm_vel_max -- [rad/s] swing torque that would speed the arm up is
-        #                  faded to zero as |arm_vel| approaches this (it may
-        #                  always slow the arm) -- no multi-revolution runaway
+        #                  full strength up to 70 % of this, then faded to zero
+        #                  at it (it may always slow the arm) -- no runaway
         # ── Parameter reference ───────────────────────────────────────────
         #
         # BALANCE  (|θ| < BALANCE_ENTRY, |ω| < BALANCE_VEL_MAX)
@@ -1163,7 +1163,10 @@ class FurutaPIDFrame(wx.Frame):
                                + (1.0 - soft_start_from) * (t0 - run_t0) / soft_start_s)
                     torque *= ramp
                 if arm_vel_max > 0 and torque * arm_vel > 0:
-                    torque *= max(0.0, 1.0 - abs(arm_vel) / arm_vel_max)
+                    # full strength up to 70 % of the limit, then fade to 0 at it
+                    knee = 0.7 * arm_vel_max
+                    if abs(arm_vel) > knee:
+                        torque *= max(0.0, (arm_vel_max - abs(arm_vel)) / (arm_vel_max - knee))
 
                 self._in_braking = braking
 

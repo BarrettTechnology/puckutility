@@ -54,7 +54,8 @@ STAFF_MENU_TIMEOUT_S = 30    # staff menu closes itself if left open
 SOFT_START_S       = 0.0     # OFF (was 3.0): at 35% the pendulum wouldn't start from rest
                              # without a tap. The arm speed limit alone curbs the runaway.
 SOFT_START_FROM    = 0.35
-ARM_SPEED_LIMIT    = 12.0    # [rad/s] (~1.9 rev/s) no swing torque that speeds the arm past this
+ARM_SPEED_LIMIT    = 18.0    # [rad/s] (~2.9 rev/s) swing torque fades out from 70 % of this
+                             # (12 with a fade from 0 was too weak to swing up; none = v4.1 runaway)
 AUTO_STOP_S        = 60      # a run stops itself (arm limp) after this long; 0 = never
                              # (set from the command line: --auto-stop SECONDS)
 
