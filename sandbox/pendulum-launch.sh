@@ -1,8 +1,8 @@
 #!/bin/sh
 # Launch the Barrett pendulum on the Raspberry Pi.
-#   launch.sh prompt   boot-time YES/NO prompt (what the login autostart runs)
-#   launch.sh kiosk    straight into the full-screen pendulum kiosk
-#   launch.sh gui      engineering GUI (gains, scan, zero, bias)
+#   pendulum-launch.sh prompt   boot-time YES/NO prompt (what the login autostart runs)
+#   pendulum-launch.sh kiosk    straight into the full-screen pendulum kiosk
+#   pendulum-launch.sh gui      engineering GUI (gains, scan, zero, bias)
 # Output goes to ~/.cache/barrett-pendulum/pendulum.log (last run) for SSH debugging.
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PY="$HERE/.venv/bin/python"

@@ -8,7 +8,7 @@
 #
 # What the full setup does (re-runnable; every step is idempotent):
 #   1. apt: wxPython, venv, can-utils          5. screen never blanks / locks / sleeps
-#   2. pendulum/.venv (canopen, python-can)    6. Barrett wallpaper
+#   2. sandbox/.venv (canopen, python-can)    6. Barrett wallpaper
 #   3. CAN: CANable (gs_usb) -> can0 @ 1 Mbit  7. desktop auto-login (so the prompt
 #      via ../scripts/setup-socketcan.sh          appears after a power cycle)
 #   4. login autostart: YES/NO boot prompt     8. app-menu entries: kiosk + engineering GUI
@@ -153,7 +153,7 @@ setup_autostart() {
 Type=Application
 Name=Barrett Pendulum boot prompt
 Comment=Asks whether to start the pendulum demo
-Exec=$HERE/launch.sh prompt
+Exec=$HERE/pendulum-launch.sh prompt
 X-GNOME-Autostart-enabled=true
 X-GNOME-Autostart-Delay=2
 NoDisplay=true
@@ -171,7 +171,7 @@ setup_launchers() {
 [Desktop Entry]
 Type=Application
 Name=$name
-Exec=$HERE/launch.sh $mode
+Exec=$HERE/pendulum-launch.sh $mode
 Icon=$REPO/images/BarrettIcon.png
 Terminal=false
 Categories=Utility;
@@ -326,4 +326,4 @@ setup_launchers
 say "Done"
 echo "    Reboot to test the full boot flow:  sudo reboot"
 echo "    Diagnostics any time:               $HERE/setup-pi.sh --check"
-echo "    Run now without rebooting:          $HERE/launch.sh prompt"
+echo "    Run now without rebooting:          $HERE/pendulum-launch.sh prompt"

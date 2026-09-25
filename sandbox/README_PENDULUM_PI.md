@@ -10,7 +10,7 @@ encoder, via a CANable (candleLight) at 1 Mbit on `can0`.
 | `furuta_kiosk.py` | The kiosk screen. Reuses the v4.1 control loop and CAN/drive code unchanged. |
 | `boot_prompt.py` | Full-screen Barrett logo + "Start the pendulum demo?" YES / NO. |
 | `kiosk_widgets.py` | Logo panel with long-press, big touch buttons, and the display environment settings. |
-| `launch.sh` | `prompt` \| `kiosk` \| `gui`. Logs to `~/.cache/barrett-pendulum/pendulum.log`. |
+| `pendulum-launch.sh` | `prompt` \| `kiosk` \| `gui`. Logs to `~/.cache/barrett-pendulum/pendulum.log`. |
 | `setup-pi.sh` | One-time Pi setup, plus `--check` diagnostics. |
 
 ## Setting up the Pi
@@ -18,25 +18,25 @@ encoder, via a CANable (candleLight) at 1 Mbit on `can0`.
 ```sh
 git clone git@git.barrett.com:software/puckutility.git   # or git pull + checkout
 cd puckutility && git checkout feature/pendulum-pi
-./pendulum/setup-pi.sh          # as the desktop user, not sudo
+./sandbox/setup-pi.sh          # as the desktop user, not sudo
 sudo reboot
 ```
 
 `setup-pi.sh` works on Ubuntu (GNOME) and Raspberry Pi OS, and is safe to re-run. It:
-installs wxPython from apt and puts canopen in `pendulum/.venv`; sets up CAN (same udev and
+installs wxPython from apt and puts canopen in `sandbox/.venv`; sets up CAN (same udev and
 `can-up@.service` files as puckutility, and loads `gs_usb` at boot); adds the login autostart
 for the boot prompt; turns off screen blanking, locking, sleep and notification banners;
 sets the Barrett wallpaper; turns on desktop auto-login; and adds app-menu entries for the
 kiosk and the engineering GUI.
 
-If something isn't working: `./pendulum/setup-pi.sh --check`. It shows the OS and desktop,
+If something isn't working: `./sandbox/setup-pi.sh --check`. It shows the OS and desktop,
 Python/wx/canopen, the CANable, `can0` bitrate/state/traffic, the kiosk settings, and the
 last log lines.
 
 ## At the booth
 
 - **Power on** → Barrett logo prompt → **YES** starts the kiosk; **NO** leaves the desktop.
-  (`launch.sh prompt --auto-yes 20` auto-picks YES after 20 s, if wanted.)
+  (`pendulum-launch.sh prompt --auto-yes 20` auto-picks YES after 20 s, if wanted.)
 - The kiosk connects by itself and retries forever. If it can't connect after a few tries,
   a **CONNECT** button appears.
 - It zeroes the pendulum once it hangs still, then **START** swings it up and balances it.

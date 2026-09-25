@@ -1,6 +1,6 @@
 """Kiosk state-machine test against a fake canopen network (no hardware needed).
 
-  python3 pendulum/test_kiosk_fake_can.py
+  python3 sandbox/test_kiosk_fake_can.py
 
 Covers: no adapter -> CONNECT button, connect + auto-zero, START/STOP,
 drive fault + recovery, over-temperature cool-down, lost CAN + reconnect.
