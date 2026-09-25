@@ -2,7 +2,11 @@
 """Play a MIDI file on a P4 motor with the 0x3015 current-injection sine.
 
 One d-axis HOLD (pins the rotor, keeps the phases past the dead-time knee),
-then a SINE on q per note, so the winding and rotor sing at the note's pitch.
+then a SINE per note, so the winding and rotor sing at the note's pitch.
+The sine is on q by default: torque ripple, so the rotor itself vibrates and
+the tone is loud.  --axis d puts it on the locking axis instead: no torque,
+only the winding and iron sound, and the hold is raised (unless --bias is
+given) so the d current never swings through zero.
 Needs firmware that has 0x3015 and re-arms SINE from a running SINE
 (stm32 app/inject.c, which keeps the DC lock and phase), so notes are legato.
 A rest drops back to a HOLD and the next note waits --gap for it to settle.
@@ -19,7 +23,8 @@ overlay (0x3027): turn it off first on firmware that has one.
 
 Usage:
   play_song.py [song.mid] [--channel can2] [--node 127] [--bpm N]
-               [--transpose N] [--bias A] [--iac A] [--gap S] [--dry-run]
+               [--transpose N] [--axis q|d] [--bias A] [--iac A] [--gap S]
+               [--dry-run]
 """
 import argparse
 import math
@@ -181,8 +186,13 @@ def main():
     ap.add_argument('--node', type=int, default=127)
     ap.add_argument('--bpm', type=float, help="override the file's tempo")
     ap.add_argument('--transpose', type=int, default=0, help='semitones')
-    ap.add_argument('--bias', type=float, default=3.0, help='d hold, A')
-    ap.add_argument('--iac', type=float, default=3.0, help='q sine, A peak')
+    ap.add_argument('--axis', choices=('q', 'd'), default='q',
+                    help='axis the sine is on (default q)')
+    ap.add_argument('--bias', type=float,
+                    help='d hold, A (default 3; on --axis d, 1 A above the '
+                         'largest chord peak)')
+    ap.add_argument('--iac', type=float, default=3.0,
+                    help='sine, A peak per voice')
     ap.add_argument('--gap', type=float, default=0.05, help='re-hold, s')
     ap.add_argument('--dry-run', action='store_true')
     args = ap.parse_args()
@@ -195,6 +205,13 @@ def main():
             n, ' '.join('{:.1f}'.format(f) for f in fs) or '-', d))
     print('total {:.1f} s'.format(sum(d for _, _, d in plan)))
     width = max(len(fs) for _, fs, _ in plan)
+    axis = AXIS_D if args.axis == 'd' else AXIS_Q
+    if args.bias is None:
+        # On d the sine rides on the hold: keep the troughs positive, out of
+        # the dead-time knee, so the tone is not clipped into harmonics.
+        args.bias = width * args.iac + 1.0 if axis == AXIS_D else 3.0
+    print('sine on {}, hold {:.1f} A d, {:.1f} A peak per voice'.format(
+        args.axis, args.bias, args.iac))
     if args.dry_run:
         return
 
@@ -206,12 +223,15 @@ def main():
         u_max = p.u(0x3001, 9) / 10.0 / math.sqrt(3.0)   # V at F16 full scale
         rate = p.u(0x3001, 1, '<I') / PWM_PATTERNS_PER_CONTROL_CYCLE
         r_ph = p.u(0x3011, 5) / 2000.0                   # mOhm l-l -> ohm/ph
+        ld = p.u(0x3011, 6)                              # uH l-l
         lq = p.u(0x3011, 12)
-        l_ph = (lq if 0 < lq < 0xFFFF else p.u(0x3011, 6)) / 2e6  # uH l-l
+        l_ph = (lq if axis == AXIS_Q and 0 < lq < 0xFFFF else ld) / 2e6
         vbus = p.u(0x3000, 1) / 10.0
-        print('Vbus {:.1f} V, i_peak {:.1f} A, R {:.3f} ohm/ph, Lq {:.3f} '
-              'mH/ph, control {:.0f} Hz'.format(vbus, i_peak / 1000.0, r_ph,
-                                                l_ph * 1e3, rate))
+        print('Vbus {:.1f} V, i_peak {:.1f} A, R {:.3f} ohm/ph, L{} {:.3f} '
+              'mH/ph, control {:.0f} Hz'.format(
+                  vbus, i_peak / 1000.0, r_ph, args.axis, l_ph * 1e3, rate))
+        if 1000 * (args.bias + width * args.iac) > i_peak:
+            raise SystemExit('hold + chord peak exceeds i_peak')
         for n, fs, d in plan:
             if any(f > rate / 6 for f in fs):
                 raise SystemExit('{} is above the firmware limit of control '
@@ -245,7 +265,7 @@ def main():
             # Every voice the firmware has is written on every note: voices
             # 2 and 3 persist until the injection stops, so a melody note
             # after a chord has to silence them itself.
-            params, volts = {INJ_AXIS: AXIS_Q}, []
+            params, volts = {INJ_AXIS: axis}, []
             for k, (sub_amp, sub_freq) in enumerate(VOICE_SUBS[:voices]):
                 amp = 0
                 if k < len(fs):

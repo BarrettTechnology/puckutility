@@ -7,8 +7,8 @@ song_triads.mid  melody + major third + perfect fifth above (3 voices)
 
 and two part-per-channel arrangements (repeats not taken):
 song-harmony.mid  notes/two-voice-song.png: melody, bass
-song3.mid         notes/song3.png: melody, inner harmony, bass (bass played
-                  an octave above where it is written)
+song3.mid         notes/song3.png: melody, inner harmony, bass (as written;
+                  sounds best played with --transpose 12)
 """
 import os
 
@@ -158,5 +158,4 @@ if __name__ == '__main__':
         write(os.path.join(OUT, name), above)
     write_parts(os.path.join(OUT, 'song-harmony.mid'), HARMONY, bpm=120,
                 key='G')
-    write_parts(os.path.join(OUT, 'song3.mid'), SONG3, bpm=100, key='F',
-                shift={'bass': 12})
+    write_parts(os.path.join(OUT, 'song3.mid'), SONG3, bpm=100, key='F')
