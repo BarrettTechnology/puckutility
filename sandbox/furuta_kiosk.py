@@ -62,6 +62,7 @@ BG        = kw.WHITE
 TEXT      = (30, 34, 48)
 MUTED     = (110, 116, 135)
 GREEN     = (34, 160, 84)
+BARRETT_ORANGE = (255, 124, 27)
 RED       = (205, 50, 50)
 AMBER     = (215, 140, 20)
 BLUE      = (30, 110, 200)
@@ -73,9 +74,9 @@ CONNECTING, SETTLING, READY, STARTING, RUNNING, FAULT, COOLING, PARKING = (
 
 # Control-loop status messages (FurutaPIDFrame._control_loop) -> kiosk wording.
 LOOP_PHRASES = {
-    "Swingup…":   ("Swinging up…", AMBER),
-    "Resting…":   ("Swinging up…", AMBER),
-    "Balancing…": ("Balancing!",   GREEN),
+    "Swingup…":   ("Swinging up…", NAVY),
+    "Resting…":   ("Swinging up…", NAVY),
+    "Balancing…": ("Balancing!",   BARRETT_ORANGE),
 }
 
 
@@ -566,7 +567,7 @@ class FurutaKioskFrame(fp.FurutaPIDFrame):
         if self._state != STARTING or self._closing:
             return
         self._launch_control(self._read_gains())
-        self._set_state(RUNNING, "Swinging up…", AMBER, "Tap STOP at any time")
+        self._set_state(RUNNING, "Swinging up…", NAVY, "Tap STOP at any time")
         self._run_id += 1
         self._run_t0 = time.monotonic()
         self._auto_stopped = False
