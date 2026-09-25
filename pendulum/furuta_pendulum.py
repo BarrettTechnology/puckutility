@@ -30,8 +30,15 @@ CST vs CSP:
   Note on TargetTorque units: the EDS defines the scaling.  For DS402
   drives this is typically 0.1 % of rated torque (1000 = 100 %).  Verify
   against your puck4.eds and scale Ks, Kb, and Torque limit accordingly.
+
+Usage:
+  python3 furuta_pendulum.py                 # engineering GUI (gains, scan, zero, bias)
+  python3 furuta_pendulum.py --touchscreen   # full-screen customer kiosk (see
+                                             # furuta_kiosk.py): auto-connect,
+                                             # START/STOP only, fixed gains
 """
 
+import kiosk_widgets  # noqa: F401  -- sets the Linux display env; must precede wx
 import wx
 import canopen
 import platform
@@ -104,11 +111,12 @@ class FurutaCanvas(wx.Panel):
     PIVOT     = wx.Colour(210, 215, 230)
     LABEL     = wx.Colour(185, 192, 210)
 
-    def __init__(self, parent, **kw):
+    def __init__(self, parent, kiosk=False, **kw):
         super().__init__(parent, **kw)
         self._pend_rad = 0.0
         self._arm_cts  = 0
         self._mode     = "idle"
+        self._kiosk    = kiosk      # bigger drawing, no numeric labels
         self.SetBackgroundColour(self.BG)
         self.SetMinSize((-1, 290))
         self.Bind(wx.EVT_PAINT, self._on_paint)
@@ -141,18 +149,21 @@ class FurutaCanvas(wx.Panel):
             dc.DrawLine(lx, ty + 8, lx, ty + 24)
 
         # ── cart (arm position mapped to track) ──────────────────────────
+        # Kiosk: scale the fixed-pixel parts with the canvas height (the
+        # desktop GUI keeps its original look at s = 1).
+        s    = max(1.0, H / 290.0) if self._kiosk else 1.0
         frac = max(-1.0, min(1.0, self._arm_cts / MAX_ARM_CTS))
         cx   = int(tx0 + tw * (0.5 + 0.5 * frac))
-        cw, ch = 46, 22
+        cw, ch = int(46 * s), int(22 * s)
 
         dc.SetBrush(wx.Brush(self.CART))
-        dc.SetPen(wx.Pen(self.CART_EDGE, 2))
-        dc.DrawRoundedRectangle(cx - cw // 2, ty, cw, ch, 5)
+        dc.SetPen(wx.Pen(self.CART_EDGE, int(2 * s)))
+        dc.DrawRoundedRectangle(cx - cw // 2, ty, cw, ch, int(5 * s))
 
         dc.SetBrush(wx.Brush(self.WHEEL))
         dc.SetPen(wx.Pen(wx.Colour(85, 90, 115), 1))
-        for wx_ in (cx - 14, cx + 14):
-            dc.DrawCircle(wx_, ty + ch + 4, 6)
+        for wx_ in (cx - int(14 * s), cx + int(14 * s)):
+            dc.DrawCircle(wx_, ty + ch + int(4 * s), int(6 * s))
 
         # ── pendulum ─────────────────────────────────────────────────────
         px, py  = cx, ty + 2
@@ -166,18 +177,21 @@ class FurutaCanvas(wx.Panel):
         g = int(210 * nearness)
         arm_col = wx.Colour(r, g, 40)
 
-        dc.SetPen(wx.Pen(arm_col, 7))
+        dc.SetPen(wx.Pen(arm_col, int(7 * s)))
         dc.DrawLine(px, py, ex, ey)
 
         dc.SetBrush(wx.Brush(arm_col))
         dc.SetPen(wx.Pen(wx.Colour(240, 240, 240), 1))
-        dc.DrawCircle(ex, ey, 11)
+        dc.DrawCircle(ex, ey, int(11 * s))
 
         dc.SetBrush(wx.Brush(self.PIVOT))
-        dc.DrawCircle(px, py, 5)
+        dc.DrawCircle(px, py, int(5 * s))
 
         dc.SetPen(wx.Pen(wx.Colour(80, 180, 80, 90), 1, wx.PENSTYLE_DOT))
         dc.DrawLine(px, py, px, py - arm_len)
+
+        if self._kiosk:
+            return      # the kiosk shows state in its own status line
 
         # ── labels ───────────────────────────────────────────────────────
         dc.SetTextForeground(self.LABEL)
@@ -229,6 +243,10 @@ class FurutaPIDFrame(wx.Frame):
         self._ctrl_thread      = None
         self._bi = 0.0
         self._rpdo2_backup     = None   # saved before remapping to TargetTorque
+        # canopen's SDO client isn't thread-safe: serialise the enable/disable
+        # sequences against the background temperature/health polling.
+        self._sdo_lock         = threading.RLock()
+        self._last_rx          = [0.0, 0.0]   # monotonic time of last TPDO (P1, P2)
 
         self._build_ui()
         self.Bind(wx.EVT_CLOSE, self._on_close)
@@ -402,22 +420,33 @@ class FurutaPIDFrame(wx.Frame):
 
     # ───────────────────────────────────────────────── connection ───────
 
+    @staticmethod
+    def _bus_connect(net, port):
+        if platform.system() == "Windows":
+            net.connect(bustype='pcan', channel=port, bitrate=1_000_000)
+        else:
+            net.connect(bustype='socketcan', channel=port, bitrate=1_000_000)
+
+    @classmethod
+    def _scan_nodes(cls, port):
+        """Node IDs answering on `port`.  Raises if the bus can't be opened."""
+        net = canopen.Network()
+        cls._bus_connect(net, port)
+        try:
+            net.scanner.reset()
+            net.scanner.search()
+            time.sleep(0.5)
+            return list(net.scanner.nodes)
+        finally:
+            net.disconnect()
+
     def _on_scan(self, _):
         port = self._port.GetStringSelection()
         self._set_status("Scanning…", 180, 120, 0)
         self._btn_scan.Disable()
         wx.Yield()
         try:
-            net = canopen.Network()
-            if platform.system() == "Windows":
-                net.connect(bustype='pcan', channel=port, bitrate=1_000_000)
-            else:
-                net.connect(bustype='socketcan', channel=port, bitrate=1_000_000)
-            net.scanner.reset()
-            net.scanner.search()
-            time.sleep(0.5)
-            nodes = list(net.scanner.nodes)
-            net.disconnect()
+            nodes = self._scan_nodes(port)
         except Exception as ex:
             self._set_status(f"Scan failed: {ex}", 180, 0, 0)
             self._btn_scan.Enable()
@@ -447,19 +476,12 @@ class FurutaPIDFrame(wx.Frame):
         else:
             self._connect()
 
-    def _connect(self):
-        port     = self._port.GetStringSelection()
-        motor_id = int(self._motor_choice.GetStringSelection())
-        enc_id   = int(self._enc_choice.GetStringSelection())
-        self._set_status("Connecting…", 180, 120, 0)
-        wx.Yield()
+    def _open_bus(self, port, motor_id, enc_id):
+        """Open the bus, attach both pucks, seed positions and start SYNC.
+        Raises on failure, with the bus closed again so a retry starts clean."""
+        net = canopen.Network()
+        self._bus_connect(net, port)
         try:
-            net = canopen.Network()
-            if platform.system() == "Windows":
-                net.connect(bustype='pcan', channel=port, bitrate=1_000_000)
-            else:
-                net.connect(bustype='socketcan', channel=port, bitrate=1_000_000)
-
             n1 = net.add_node(motor_id, EDS_FILE)
             n2 = net.add_node(enc_id,   EDS_FILE)
             n1.nmt.state = 'OPERATIONAL'
@@ -487,7 +509,25 @@ class FurutaPIDFrame(wx.Frame):
                 self._puck1_zero = p1_now
                 self._puck2_zero = p2_now
 
+            self._last_rx = [time.monotonic()] * 2
             net.sync.start(1.0 / SYNC_HZ)
+        except Exception:
+            self._network = self._node1 = self._node2 = None
+            self._connected = False
+            try:
+                net.disconnect()
+            except Exception:
+                pass
+            raise
+
+    def _connect(self):
+        port     = self._port.GetStringSelection()
+        motor_id = int(self._motor_choice.GetStringSelection())
+        enc_id   = int(self._enc_choice.GetStringSelection())
+        self._set_status("Connecting…", 180, 120, 0)
+        wx.Yield()
+        try:
+            self._open_bus(port, motor_id, enc_id)
 
             self._btn_scan.Disable()
             self._motor_choice.Disable()
@@ -537,6 +577,7 @@ class FurutaPIDFrame(wx.Frame):
         try:
             with self._lock:
                 self._puck1_pos = self._node1.tpdo[1]['PositionFeedback'].raw
+            self._last_rx[0] = time.monotonic()
         except Exception:
             pass
         now = time.monotonic()
@@ -548,6 +589,7 @@ class FurutaPIDFrame(wx.Frame):
         try:
             with self._lock:
                 self._puck2_pos = self._node2.tpdo[1]['PositionFeedback'].raw
+            self._last_rx[1] = time.monotonic()
         except Exception:
             pass
 
@@ -571,12 +613,13 @@ class FurutaPIDFrame(wx.Frame):
 
     # ───────────────────────────────────────────────── auto-zero ────────
 
-    def _auto_zero_thread(self):
+    def _auto_zero_thread(self, timeout_s=15.0):
+        """Zero the pendulum once it hangs still.  timeout_s=None waits forever."""
         WINDOW = 80
         THRESH = 12
         history = []
-        deadline = time.monotonic() + 15.0
-        while self._connected and time.monotonic() < deadline:
+        deadline = None if timeout_s is None else time.monotonic() + timeout_s
+        while self._connected and (deadline is None or time.monotonic() < deadline):
             with self._lock:
                 pos = self._puck2_pos
             history.append(pos)
@@ -586,8 +629,7 @@ class FurutaPIDFrame(wx.Frame):
                 avg = sum(history) // len(history)
                 with self._lock:
                     self._puck2_zero = avg
-                wx.CallAfter(self._set_status,
-                             "Auto-zeroed at rest  |  ready to enable")
+                wx.CallAfter(self._on_auto_zeroed)
                 return
             time.sleep(1.0 / SYNC_HZ)
         if self._connected:
@@ -595,12 +637,16 @@ class FurutaPIDFrame(wx.Frame):
                          "Pendulum didn't settle — click Zero when hanging at rest",
                          180, 120, 0)
 
+    def _on_auto_zeroed(self):
+        self._set_status("Auto-zeroed at rest  |  ready to enable")
+
     # ───────────────────────────────────────────────── temperature ───────
 
     def _temp_monitor_thread(self):
         while self._connected:
             try:
-                temp_c = self._node1.sdo['Amplifier']['Temperature'].raw
+                with self._sdo_lock:
+                    temp_c = self._node1.sdo['Amplifier']['Temperature'].raw
                 if temp_c >= self.TEMP_SHUTDOWN_C:
                     wx.CallAfter(self._on_overtemp, temp_c)
                     return
@@ -645,62 +691,78 @@ class FurutaPIDFrame(wx.Frame):
         else:
             self._enable_motor()
 
-    def _enable_motor(self):
-        try:
-            n = self._node1
+    def _enable_drive(self):
+        """Remap RPDO2 to TargetTorque, enable the drive in CST mode at zero
+        torque.  Raises on failure; SYNC is running again either way."""
+        n = self._node1
+        with self._sdo_lock:
             self._network.sync.stop()
             time.sleep(0.04)
+            try:
+                self._enable_drive_locked(n)
+            finally:
+                self._network.sync.start(1.0 / SYNC_HZ)
 
-            cur = n.sdo["PositionFeedback"].raw   # still used to seed puck1_zero
+    def _enable_drive_locked(self, n):
+        cur = n.sdo["PositionFeedback"].raw   # still used to seed puck1_zero
 
-            # ── Remap RPDO2 to TargetTorque (0x6071, INT16) ──────────────
-            # puck4.eds only maps TargetPosition/TargetVelocity in RPDO2;
-            # 0x6071 is absent from its PDO-mappable object list.  We remap
-            # at the drive level via SDO.  DS402 requires PRE-OPERATIONAL.
-            n.nmt.state = 'PRE-OPERATIONAL'
-            time.sleep(0.05)
+        # ── Remap RPDO2 to TargetTorque (0x6071, INT16) ──────────────
+        # puck4.eds only maps TargetPosition/TargetVelocity in RPDO2;
+        # 0x6071 is absent from its PDO-mappable object list.  We remap
+        # at the drive level via SDO.  DS402 requires PRE-OPERATIONAL.
+        n.nmt.state = 'PRE-OPERATIONAL'
+        time.sleep(0.05)
+        # Back up only the ORIGINAL mapping: on a re-enable (e.g. fault
+        # recovery) RPDO2 may already hold our TargetTorque mapping.
+        if self._rpdo2_backup is None:
             orig_count = n.sdo[0x1601][0].raw
-            self._rpdo2_backup = {0: orig_count}
+            backup = {0: orig_count}
             for i in range(1, orig_count + 1):
-                self._rpdo2_backup[i] = n.sdo[0x1601][i].raw
-            n.sdo[0x1601][0].raw = 0            # disable mapping
-            n.sdo[0x1601][1].raw = 0x60710010  # 0x6071 sub 0, INT16 (0x10 bits)
-            n.sdo[0x1601][0].raw = 1            # re-enable with 1 object
-            n.nmt.state = 'OPERATIONAL'
-            time.sleep(0.05)
-            # ─────────────────────────────────────────────────────────────
+                backup[i] = n.sdo[0x1601][i].raw
+            self._rpdo2_backup = backup
+        n.sdo[0x1601][0].raw = 0            # disable mapping
+        n.sdo[0x1601][1].raw = 0x60710010  # 0x6071 sub 0, INT16 (0x10 bits)
+        n.sdo[0x1601][0].raw = 1            # re-enable with 1 object
+        n.nmt.state = 'OPERATIONAL'
+        time.sleep(0.05)
+        # ─────────────────────────────────────────────────────────────
 
-            n.sdo["ControlWord"].raw = CLEAR_FAULT;  time.sleep(0.05)
-            n.sdo["ControlWord"].raw = SHUTDOWN;      time.sleep(0.05)
-            n.sdo["ControlWord"].raw = OP_ENABLED
+        n.sdo["ControlWord"].raw = CLEAR_FAULT;  time.sleep(0.05)
+        n.sdo["ControlWord"].raw = SHUTDOWN;      time.sleep(0.05)
+        n.sdo["ControlWord"].raw = OP_ENABLED
 
-            # Switch to Cyclic Synchronous Torque mode
-            n.rpdo[1]["SetModeOfOperation"].raw = MODE_CYCLIC_SYNC_TORQUE
-            n.rpdo[1]["ControlWord"].raw = OP_ENABLED
-            n.rpdo[1].transmit()
+        # Switch to Cyclic Synchronous Torque mode
+        n.rpdo[1]["SetModeOfOperation"].raw = MODE_CYCLIC_SYNC_TORQUE
+        n.rpdo[1]["ControlWord"].raw = OP_ENABLED
+        n.rpdo[1].transmit()
 
-            # Zero torque.  Write 2-byte INT16 directly via send_message so
-            # we bypass the EDS name lookup (0x6071 not in puck4.eds names).
-            self._network.send_message(n.rpdo[2].cob_id, struct.pack('<h', 0))
+        # Zero torque.  Write 2-byte INT16 directly via send_message so
+        # we bypass the EDS name lookup (0x6071 not in puck4.eds names).
+        self._network.send_message(n.rpdo[2].cob_id, struct.pack('<h', 0))
 
-            with self._lock:
-                self._puck1_zero = cur
+        with self._lock:
+            self._puck1_zero = cur
 
-            self._enabled = True
+        self._enabled = True
+
+    def _enable_motor(self):
+        try:
+            self._enable_drive()
             self._btn_en.SetLabel("Disable Motor")
             self._btn_ctrl.Enable()
             self._set_status("Motor enabled  |  zero torque — arm moves freely")
-            self._network.sync.start(1.0 / SYNC_HZ)
-
         except Exception as ex:
             traceback.print_exc()
             self._set_status(f"Enable failed ({type(ex).__name__}): {ex}", 180, 0, 0)
-            try:
-                self._network.sync.start(1.0 / SYNC_HZ)
-            except Exception:
-                pass
 
-    def _disable_motor(self, quiet=False):
+    def _disable_drive(self):
+        """Disable the drive and restore RPDO2.  Best effort, never raises.
+        Leaves SYNC stopped (as v4.1 did)."""
+        with self._sdo_lock:
+            self._disable_drive_locked()
+        self._enabled = False
+
+    def _disable_drive_locked(self):
         try:
             if self._node1:
                 self._node1.rpdo[1]["SetModeOfOperation"].raw = MODE_IDLE
@@ -727,7 +789,9 @@ class FurutaPIDFrame(wx.Frame):
                 self._rpdo2_backup = None
         except Exception:
             pass
-        self._enabled = False
+
+    def _disable_motor(self, quiet=False):
+        self._disable_drive()
         if not quiet:
             self._btn_en.SetLabel("Enable Motor")
             self._btn_ctrl.Disable()
@@ -760,31 +824,35 @@ class FurutaPIDFrame(wx.Frame):
         else:
             self._start_control()
 
-    def _start_control(self):
-        try:
-            kp        = float(self._kp.GetValue())
-            ki        = float(self._ki.GetValue())
-            kd        = float(self._kd.GetValue())
-            adz       = float(self._adz.GetValue())
-            bi        = float(self._bi)
-            kt        = float(self._kt.GetValue())
-            kf        = float(self._kf.GetValue())
-            pdz       = float(self._pdz.GetValue())
-            tmax      = float(self._tmax.GetValue())
-            ks        = float(self._ks.GetValue())
-            kb        = float(self._kb.GetValue())
-            kv        = float(self._kv.GetValue())
-            kda            = float(self._kda.GetValue())
-            torque_lim_swing = float(self._torque_lim_swing.GetValue())
-            torque_lim_bal   = float(self._torque_lim_bal.GetValue())
-        except ValueError:
-            self._set_status("Invalid gain — use numeric values", 180, 0, 0)
-            return
+    def _read_gains(self):
+        """Controller gains in _control_loop argument order.  Raises ValueError."""
+        return (float(self._kp.GetValue()), float(self._ki.GetValue()),
+                float(self._kd.GetValue()), float(self._adz.GetValue()),
+                float(self._bi),
+                float(self._kt.GetValue()), float(self._kf.GetValue()),
+                float(self._pdz.GetValue()), float(self._tmax.GetValue()),
+                float(self._ks.GetValue()), float(self._kb.GetValue()),
+                float(self._kv.GetValue()), float(self._kda.GetValue()),
+                float(self._torque_lim_swing.GetValue()),
+                float(self._torque_lim_bal.GetValue()))
 
+    def _launch_control(self, gains):
+        """Start _control_loop on its own thread with the given gains."""
         self._in_balance      = False
         self._ramping_balance = False
         self._in_braking      = False
         self._controlling     = True
+        self._ctrl_thread = threading.Thread(
+            target=self._control_loop, args=gains, daemon=True)
+        self._ctrl_thread.start()
+
+    def _start_control(self):
+        try:
+            gains = self._read_gains()
+        except ValueError:
+            self._set_status("Invalid gain — use numeric values", 180, 0, 0)
+            return
+
         self._btn_bias.Disable()
         self._btn_swing.Disable()
         self._btn_ctrl.SetLabel("Stop")
@@ -798,12 +866,7 @@ class FurutaPIDFrame(wx.Frame):
         else:
             self._set_status("Swingup…", 200, 130, 0)
 
-        self._ctrl_thread = threading.Thread(
-            target=self._control_loop,
-            args=(kp, ki, kd, adz, bi, kt, kf, pdz, tmax, ks, kb, kv, kda,
-                  torque_lim_swing, torque_lim_bal),
-            daemon=True)
-        self._ctrl_thread.start()
+        self._launch_control(gains)
 
     def _stop_control(self):
         self._controlling = False
@@ -1072,6 +1135,15 @@ def _wrap(angle):
 # ──────────────────────────────────────────────────────── entry point ─────
 
 if __name__ == "__main__":
-    app = wx.App()
-    FurutaPIDFrame().Show()
-    app.MainLoop()
+    import argparse
+    ap = argparse.ArgumentParser(description="Furuta pendulum controller (CST)")
+    ap.add_argument('--touchscreen', action='store_true',
+                    help='full-screen customer kiosk for the Raspberry Pi touch display')
+    args = ap.parse_args()
+    if args.touchscreen:
+        import furuta_kiosk
+        furuta_kiosk.main()
+    else:
+        app = wx.App()
+        FurutaPIDFrame().Show()
+        app.MainLoop()
