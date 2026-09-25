@@ -184,6 +184,11 @@ class FurutaCanvas(wx.Panel):
         cx   = int(tx0 + tw * (0.5 + 0.5 * frac))
         cw, ch = int(46 * s), int(22 * s)
 
+        # upright guide first, so the cart and pendulum draw over it
+        guide = wx.Colour(255, 124, 27) if self._kiosk else wx.Colour(80, 180, 80, 90)
+        dc.SetPen(wx.Pen(guide, 1, wx.PENSTYLE_DOT))
+        dc.DrawLine(cx, ty + 2, cx, ty + 2 - int(H * 0.56))
+
         dc.SetBrush(wx.Brush(self.CART))
         dc.SetPen(wx.Pen(self.CART_EDGE, max(2, int((1.5 if self._kiosk else 2) * s))))
         dc.DrawRoundedRectangle(cx - cw // 2, ty, cw, ch, int(5 * s))
@@ -228,9 +233,6 @@ class FurutaCanvas(wx.Panel):
         dc.SetBrush(wx.Brush(self.PIVOT))
         dc.DrawCircle(px, py, int(5 * s))
 
-        guide = wx.Colour(255, 124, 27) if self._kiosk else wx.Colour(80, 180, 80, 90)
-        dc.SetPen(wx.Pen(guide, 1, wx.PENSTYLE_DOT))
-        dc.DrawLine(px, py, px, py - arm_len)
 
         if self._kiosk:
             info = getattr(self, '_info', "")
