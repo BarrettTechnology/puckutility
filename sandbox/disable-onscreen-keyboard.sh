@@ -263,6 +263,31 @@ EOF
     fi
 fi
 
+# ── 8. third-party on-screen-keyboard GNOME extensions ──────────────────────
+say "8. Third-party keyboard extensions (e.g. GJS OSK)"
+if command -v gnome-extensions >/dev/null 2>&1; then
+    osk_ext=$(gnome-extensions list 2>/dev/null | grep -i -E 'osk|keyboard|kbd' | grep -v -x "$EXT_UUID")
+    if [ -z "$osk_ext" ]; then ok "none installed"; fi
+    for e in $osk_ext; do
+        st=$(gnome-extensions info "$e" 2>/dev/null | awk '/Enabled:/{print $2}')
+        if [ "$st" = "No" ] && ! gs get org.gnome.shell enabled-extensions | grep -q "$e"; then
+            ok "$e already disabled"; continue
+        fi
+        info "found enabled: $e"
+        if act "disable $e"; then
+            gnome-extensions disable "$e" 2>/dev/null
+            new=$(gs get org.gnome.shell enabled-extensions | python3 -c "
+import ast, sys
+cur = sys.stdin.read().strip(); cur = cur.split(' ', 1)[1] if cur.startswith('@as') else cur
+items = [x for x in (ast.literal_eval(cur) if cur else []) if x != sys.argv[1]]
+print(str(items))" "$e")
+            gs set org.gnome.shell enabled-extensions "$new" && ok "disabled $e"
+        fi
+    done
+else
+    ok "gnome-extensions not available -- skipping"
+fi
+
 say "Done"
 if [ $CHECK = 1 ]; then
     echo "    Nothing was changed (--check). Run without --check to apply."

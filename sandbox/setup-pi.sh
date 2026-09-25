@@ -314,22 +314,74 @@ setup_wallpaper() {
 }
 
 setup_touch_display_only() {
-    say "10. Display: Touch Display only (HDMI outputs off in Linux)"
-    # video=HDMI-A-n:d disables that connector in the kernel's KMS driver, so the
-    # desktop can only ever use the DSI Touch Display. (The Pi 5 bootloader's
-    # own error screen still goes to HDMI -- it runs before Linux.)
-    for c in /boot/firmware/cmdline.txt /boot/cmdline.txt; do
-        [ -e "$c" ] || continue
-        if grep -q 'video=HDMI-A-1:d' "$c"; then
-            ok "already set in $c"
-        else
-            $SUDO cp -n "$c" "$c.bak-pendulum-display"
-            $SUDO sed -i '1 s/$/ video=HDMI-A-1:d video=HDMI-A-2:d/' "$c" \
-                && ok "HDMI-A-1/2 disabled in $c (backup: $c.bak-pendulum-display; applies at next boot)"
+    say "10. Display: Touch Display only, configured explicitly"
+    # Why: with display_auto_detect=1 the firmware probes for the panel at every
+    # power-on and sometimes misses it (seen on this Pi: those boots have NO
+    # drm-rp1-dsi / ili9881 driver in the kernel log). Linux then runs with only
+    # HDMI -> black touch screen, which looks like a hung boot. Fix: load the
+    # panel overlay explicitly and turn auto-detect off; then disable HDMI in
+    # Linux so the desktop can only ever use the Touch Display.
+    CFG=/boot/firmware/config.txt
+    CMD=/boot/firmware/cmdline.txt
+    [ -e "$CFG" ] || { warn "no $CFG -- not a Raspberry Pi boot layout?"; return; }
+
+    # Read the panel + port from the running system (must be a GOOD boot).
+    RP1=$(ls -d /proc/device-tree/axi/pcie@*/rp1 2>/dev/null | head -1)
+    PORT="" ; PANEL=""
+    for n in 110000:dsi0 128000:dsi1; do
+        node="$RP1/dsi@${n%%:*}"
+        if [ "$(tr -d '\0' <"$node/status" 2>/dev/null)" = okay ]; then
+            PORT=${n##*:}
+            PANEL=$(tr '\0' ' ' <"$node/dsi_panel@0/compatible" 2>/dev/null)
         fi
-        return
     done
-    warn "no cmdline.txt found -- not a Raspberry Pi boot layout?"
+    case "$PANEL" in
+        *dsi-7inch*) OVL=vc4-kms-dsi-ili9881-7inch ;;
+        *dsi-5inch*) OVL=vc4-kms-dsi-ili9881-5inch ;;
+        *) OVL="" ;;
+    esac
+    if [ -z "$PORT" ] || [ -z "$OVL" ]; then
+        warn "the Touch Display isn't active on THIS boot (port='$PORT' panel='$PANEL')."
+        warn "Nothing changed. Reboot/power-cycle until the touch screen shows the desktop, then re-run."
+        return
+    fi
+    PARAM=""; [ "$PORT" = dsi0 ] && PARAM=",dsi0"      # the overlay defaults to dsi1
+    LINE="dtoverlay=$OVL$PARAM"
+    ok "detected: $PANEL on $PORT -> $LINE"
+
+    $SUDO cp -n "$CFG" "$CFG.bak-pendulum-display"
+    if grep -q "^$LINE\$" "$CFG" && grep -q '^display_auto_detect=0' "$CFG"; then
+        ok "config.txt already set"
+    else
+        # Edit only the first [all] block (before the per-model sections).
+        $SUDO python3 - "$CFG" "$LINE" <<'PYEOF'
+import re, sys
+path, line = sys.argv[1], sys.argv[2]
+text = open(path).read()
+m = re.search(r'^\[(?!all\])', text, re.M)          # first non-[all] section
+head, tail = (text[:m.start()], text[m.start():]) if m else (text, '')
+head = re.sub(r'^display_auto_detect=.*$', 'display_auto_detect=0', head, flags=re.M)
+if 'display_auto_detect=0' not in head:
+    head += '\ndisplay_auto_detect=0\n'
+if not re.search(r'^' + re.escape(line) + r'$', head, re.M):
+    head = re.sub(r'^(dtoverlay=vc4-kms-v3d.*)$',
+                  r'\1\n# Touch Display 2, loaded explicitly (auto-detect missed it on some boots)\n' + line,
+                  head, count=1, flags=re.M)
+    if line not in head:
+        head += '\n' + line + '\n'
+open(path, 'w').write(head + tail)
+PYEOF
+        ok "config.txt: display_auto_detect=0 + $LINE (backup: $CFG.bak-pendulum-display)"
+    fi
+
+    if grep -q 'video=HDMI-A-1:d' "$CMD"; then
+        ok "HDMI already disabled in cmdline.txt"
+    else
+        $SUDO cp -n "$CMD" "$CMD.bak-pendulum-display"
+        $SUDO sed -i '1 s/$/ video=HDMI-A-1:d video=HDMI-A-2:d/' "$CMD" \
+            && ok "HDMI-A-1/2 disabled in cmdline.txt (backup: $CMD.bak-pendulum-display)"
+    fi
+    echo "    Applies at the next boot. To undo: copy the two .bak-pendulum-display files back."
 }
 
 setup_autologin() {
