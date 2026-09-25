@@ -21,9 +21,10 @@ MODE="${1:-prompt}"
 [ $# -gt 0 ] && shift
 case "$MODE" in
     prompt)
-        # Autostart fires as the desktop comes up; give the compositor and
-        # the CAN bring-up (can-up@can0.service) a moment first.
-        sleep "${PENDULUM_START_DELAY:-3}"
+        # Start as soon as the desktop is up (no delay): the prompt doesn't
+        # need CAN, and the kiosk connects/retries on its own.
+        # PENDULUM_START_DELAY=<s> adds a delay if ever needed.
+        sleep "${PENDULUM_START_DELAY:-0}"
         exec "$PY" boot_prompt.py "$@" >>"$LOG" 2>&1 ;;
     kiosk) exec "$PY" furuta_pendulum.py --touchscreen "$@" >>"$LOG" 2>&1 ;;
     gui)   exec "$PY" furuta_pendulum.py >>"$LOG" 2>&1 ;;

@@ -6,6 +6,7 @@
 #   ./setup-pi.sh --check           diagnostics only -- changes nothing
 #   ./setup-pi.sh --remove-autostart  stop the YES/NO prompt appearing at login
 #   ./setup-pi.sh --desktop-icon      (re)create just the Barrett Pendulum desktop icon
+#   ./setup-pi.sh --autostart         (re)write just the boot-prompt autostart entry
 #   ./setup-pi.sh --touch-display-only  just switch HDMI off (Touch Display only)
 #   ./setup-pi.sh --reliable-display    explicit panel overlay (no more missed-panel
 #                                       boots) + touch guard; --undo-reliable-display
@@ -161,7 +162,6 @@ Name=Barrett Pendulum boot prompt
 Comment=Asks whether to start the pendulum demo
 Exec=$HERE/pendulum-launch.sh prompt
 X-GNOME-Autostart-enabled=true
-X-GNOME-Autostart-Delay=2
 NoDisplay=true
 EOF
     ok "$AUTOSTART"
@@ -489,6 +489,7 @@ case "${1:-}" in
     --check) check; exit 0 ;;
     --remove-autostart) rm -f "$AUTOSTART"; echo "Removed $AUTOSTART"; exit 0 ;;
     --desktop-icon) setup_desktop_icon; exit 0 ;;
+    --autostart) setup_autostart; exit 0 ;;
     --touch-display-only) setup_touch_display_only; exit 0 ;;
     --reliable-display) setup_reliable_display; exit 0 ;;
     --undo-reliable-display) undo_reliable_display; exit 0 ;;
