@@ -16,7 +16,13 @@ import sys
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOGO_WIDE = os.path.join(REPO_ROOT, 'images', 'BarrettLogo.png')           # white bg, full name
-LOGO_SMALL = os.path.join(REPO_ROOT, 'images', 'BarrettLogoScaled-NoBG.png')
+LOGO_SMALL = os.path.join(REPO_ROOT, 'images', 'BarrettLogoScaled-NoBG.png')  # "Barrett(TM)", as on the splash
+BACKDROP = os.path.join(REPO_ROOT, 'images', 'Background.png')              # faded BarrettHand (splash)
+
+# Layouts are designed for the Touch Display 2 in landscape; everything is
+# scaled by screen_scale() so they also fit whatever size the desktop reports
+# (e.g. with display scaling on).
+DESIGN_W, DESIGN_H = 1280, 720
 
 NAVY = (13, 51, 110)
 WHITE = (255, 255, 255)
@@ -87,6 +93,37 @@ def load_logo(height, path=LOGO_WIDE, max_width=None):
     return wx.Bitmap(img.Scale(new_w, new_h, wx.IMAGE_QUALITY_HIGH))
 
 
+def screen_scale(window=None):
+    """Size of the screen `window` is on (or the primary one) relative to
+    the 1280x720 design size."""
+    idx = wx.Display.GetFromWindow(window) if window else wx.NOT_FOUND
+    area = wx.Display(idx if idx != wx.NOT_FOUND else 0).GetGeometry()
+    return min(area.width / DESIGN_W, area.height / DESIGN_H)
+
+
+def px_font(px, bold=False):
+    """Font sized in pixels (not points), so text scales with the bitmaps."""
+    f = wx.Font(wx.FontInfo().Family(wx.FONTFAMILY_SWISS).Bold(bold))
+    f.SetPixelSize(wx.Size(0, max(8, int(px))))
+    return f
+
+
+def fit_font(gc_or_dc, text, max_w, max_h, bold=True):
+    """Largest pixel font (up to max_h) whose `text` fits in max_w."""
+    px = max_h
+    while px > 8:
+        f = px_font(px, bold)
+        if isinstance(gc_or_dc, wx.GraphicsContext):
+            gc_or_dc.SetFont(f, wx.BLACK)
+        else:
+            gc_or_dc.SetFont(f)
+        w = max(gc_or_dc.GetTextExtent(line)[0] for line in text.split('\n'))
+        if w <= max_w:
+            return f
+        px = int(px * 0.9)
+    return px_font(8, bold)
+
+
 class LogoPanel(wx.Panel):
     """Draws a bitmap; fires on_long_press after the user holds it for
     `hold_s` seconds.  A plain wx.StaticBitmap is a no-window widget on GTK
@@ -143,13 +180,12 @@ class BigButton(wx.Panel):
     """Large rounded touch button.  on_click fires on release inside the button."""
 
     def __init__(self, parent, label, colour, on_click, size=(300, 140),
-                 font_pt=40, text_colour=WHITE):
+                 text_colour=WHITE):
         super().__init__(parent, size=size)
         self._label = label
         self._colour = colour
         self._text_colour = text_colour
         self._on_click = on_click
-        self._font_pt = font_pt
         self._pressed = False
         self._enabled = True
         self.SetMinSize(size)
@@ -184,8 +220,8 @@ class BigButton(wx.Panel):
         gc.SetBrush(wx.Brush(wx.Colour(r, g, b)))
         gc.SetPen(wx.TRANSPARENT_PEN)
         gc.DrawRoundedRectangle(2, 2, W - 4, H - 4, min(W, H) * 0.14)
-        font = wx.Font(self._font_pt, wx.FONTFAMILY_SWISS,
-                       wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD)
+        n_lines = self._label.count('\n') + 1
+        font = fit_font(gc, self._label, W * 0.8, H * 0.42 / n_lines)
         gc.SetFont(font, wx.Colour(*(self._text_colour if self._enabled
                                      else (245, 245, 245))))
         lines = self._label.split('\n')

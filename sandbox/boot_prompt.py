@@ -2,7 +2,8 @@
 """
 Boot-time prompt for the Raspberry Pi pendulum demo.
 
-Full-screen Barrett logo + "Start the pendulum demo?" with YES / NO.
+Full screen, in the style of the puckutility splash: the faded BarrettHand
+backdrop, the Barrett logo, "Start the pendulum demo?" and YES / NO.
   YES -> replaces this process with the pendulum kiosk (furuta_pendulum.py --touchscreen)
   NO  -> exits, leaving the normal desktop
 
@@ -25,39 +26,115 @@ GREEN = (34, 160, 84)
 GREY  = (120, 126, 145)
 
 
+class PromptCanvas(wx.Panel):
+    """The whole prompt is painted in one panel, sized from the actual window,
+    so it fits any screen and the buttons sit cleanly on the backdrop."""
+
+    def __init__(self, parent, on_pick):
+        super().__init__(parent)
+        self._on_pick = on_pick
+        self._countdown = ""
+        self._pressed = None
+        self._buttons = {}          # 'yes'/'no' -> wx.Rect (set while painting)
+        self._backdrop = wx.Image(kw.BACKDROP)
+        self._logo_cache = self._back_cache = None
+        self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
+        self.Bind(wx.EVT_PAINT, self._on_paint)
+        self.Bind(wx.EVT_SIZE, lambda e: (self.Refresh(), e.Skip()))
+        self.Bind(wx.EVT_LEFT_DOWN, self._on_down)
+        self.Bind(wx.EVT_LEFT_DCLICK, self._on_down)
+        self.Bind(wx.EVT_LEFT_UP, self._on_up)
+
+    def set_countdown(self, text):
+        self._countdown = text
+        self.Refresh()
+
+    def _scaled(self, W, H):
+        if self._back_cache and self._back_cache[0] == (W, H):
+            return self._back_cache[1], self._logo_cache
+        back = None
+        if self._backdrop.IsOk():
+            bh = H
+            bw = round(self._backdrop.GetWidth() * bh / self._backdrop.GetHeight())
+            back = wx.Bitmap(self._backdrop.Scale(bw, bh, wx.IMAGE_QUALITY_HIGH))
+        self._logo_cache = kw.load_logo(int(H * 0.15), kw.LOGO_SMALL, max_width=int(W * 0.55))
+        self._back_cache = ((W, H), back)
+        return back, self._logo_cache
+
+    def _on_paint(self, _):
+        dc = wx.AutoBufferedPaintDC(self)
+        W, H = self.GetClientSize()
+        dc.SetBackground(wx.Brush(wx.Colour(*kw.WHITE)))
+        dc.Clear()
+        if W < 50 or H < 50:
+            return
+        back, logo = self._scaled(W, H)
+        if back:
+            dc.DrawBitmap(back, W - back.GetWidth(), 0, True)    # anchored right, like the splash
+
+        gc = wx.GraphicsContext.Create(dc)
+        y = H * 0.14
+        if logo:
+            lw, lh = logo.GetSize()
+            gc.DrawBitmap(logo, (W - lw) / 2, y, lw, lh)
+            y += lh
+        y += H * 0.10
+
+        q = "Start the pendulum demo?"
+        gc.SetFont(kw.fit_font(gc, q, W * 0.8, H * 0.075), wx.Colour(*kw.NAVY))
+        tw, th = gc.GetTextExtent(q)
+        gc.DrawText(q, (W - tw) / 2, y)
+        y += th + H * 0.06
+
+        bw, bh, gap = W * 0.24, H * 0.20, W * 0.04
+        x0 = (W - (2 * bw + gap)) / 2
+        for key, label, colour, x in (('yes', "YES", GREEN, x0),
+                                      ('no',  "NO",  GREY,  x0 + bw + gap)):
+            rect = wx.Rect(int(x), int(y), int(bw), int(bh))
+            self._buttons[key] = rect
+            r, g, b = colour
+            if self._pressed == key:
+                r, g, b = int(r * 0.75), int(g * 0.75), int(b * 0.75)
+            gc.SetBrush(wx.Brush(wx.Colour(r, g, b)))
+            gc.SetPen(wx.TRANSPARENT_PEN)
+            gc.DrawRoundedRectangle(rect.x, rect.y, rect.width, rect.height, bh * 0.14)
+            gc.SetFont(kw.fit_font(gc, label, bw * 0.8, bh * 0.42), wx.WHITE)
+            lw, lh = gc.GetTextExtent(label)
+            gc.DrawText(label, rect.x + (bw - lw) / 2, rect.y + (bh - lh) / 2)
+        y += bh + H * 0.03
+
+        if self._countdown:
+            gc.SetFont(kw.px_font(H * 0.03), wx.Colour(*GREY))
+            tw, _ = gc.GetTextExtent(self._countdown)
+            gc.DrawText(self._countdown, (W - tw) / 2, y)
+
+    def _hit(self, pos):
+        for key, rect in self._buttons.items():
+            if rect.Contains(pos):
+                return key
+        return None
+
+    def _on_down(self, evt):
+        self._pressed = self._hit(evt.GetPosition())
+        self.Refresh()
+
+    def _on_up(self, evt):
+        key, self._pressed = self._pressed, None
+        self.Refresh()
+        if key and self._hit(evt.GetPosition()) == key:
+            self._on_pick(key == 'yes')
+
+
 class BootPrompt(wx.Frame):
 
     def __init__(self, auto_yes_s=0):
         super().__init__(None, title="Barrett Pendulum")
         self.choice = None
         self._remaining = auto_yes_s
-        root = wx.Panel(self)
-        root.SetBackgroundColour(wx.Colour(*kw.WHITE))
-        vsz = wx.BoxSizer(wx.VERTICAL)
-        vsz.AddStretchSpacer(3)
-        vsz.Add(kw.LogoPanel(root, kw.load_logo(150, max_width=1000)), 0, wx.EXPAND)
-        vsz.AddStretchSpacer(2)
-
-        q = wx.StaticText(root, label="Start the pendulum demo?")
-        q.SetFont(wx.Font(34, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
-        q.SetForegroundColour(wx.Colour(*kw.NAVY))
-        vsz.Add(q, 0, wx.ALIGN_CENTER)
-        vsz.AddSpacer(36)
-
-        row = wx.BoxSizer(wx.HORIZONTAL)
-        row.Add(kw.BigButton(root, "YES", GREEN, lambda: self._pick(True),
-                             size=(320, 150), font_pt=48), 0, wx.RIGHT, 40)
-        row.Add(kw.BigButton(root, "NO", GREY, lambda: self._pick(False),
-                             size=(320, 150), font_pt=48))
-        vsz.Add(row, 0, wx.ALIGN_CENTER)
-
-        self._countdown = wx.StaticText(root, label="")
-        self._countdown.SetFont(wx.Font(16, wx.FONTFAMILY_SWISS,
-                                        wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
-        self._countdown.SetForegroundColour(wx.Colour(*GREY))
-        vsz.Add(self._countdown, 0, wx.ALIGN_CENTER | wx.TOP, 20)
-        vsz.AddStretchSpacer(3)
-        root.SetSizer(vsz)
+        self._canvas = PromptCanvas(self, self._pick)
+        sz = wx.BoxSizer(wx.VERTICAL)
+        sz.Add(self._canvas, 1, wx.EXPAND)
+        self.SetSizer(sz)
 
         if auto_yes_s > 0:
             self._timer = wx.Timer(self)
@@ -66,8 +143,7 @@ class BootPrompt(wx.Frame):
             self._update_countdown()
 
     def _update_countdown(self):
-        self._countdown.SetLabel(f"Starting automatically in {self._remaining} s")
-        self._countdown.GetParent().Layout()
+        self._canvas.set_countdown(f"Starting automatically in {self._remaining} s")
 
     def _tick(self, _):
         self._remaining -= 1

@@ -68,6 +68,13 @@ LOOP_PHRASES = {
 }
 
 
+class ConnectProblem(RuntimeError):
+    """A connect failure with a plain-language hint for the screen."""
+    def __init__(self, reason, hint):
+        super().__init__(reason)
+        self.hint = hint
+
+
 def log(msg):
     print(f"[pendulum-kiosk {time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
@@ -89,6 +96,10 @@ class FurutaKioskFrame(fp.FurutaPIDFrame):
     # ───────────────────────────────────────────────── UI ───────────────
 
     def _build_ui(self):
+        # Designed at 1280x720; scaled to the screen the desktop actually reports.
+        sc = self._scale = kw.screen_scale()
+        S = lambda v: max(1, int(v * sc))
+        self.TEXT_WIDTH = S(370)
         root = wx.Panel(self)
         root.SetBackgroundColour(wx.Colour(*BG))
         self._root = root
@@ -96,37 +107,35 @@ class FurutaKioskFrame(fp.FurutaPIDFrame):
 
         # Top bar: logo (5 s hold = staff menu) + status line
         top = wx.BoxSizer(wx.HORIZONTAL)
-        self._logo = kw.LogoPanel(root, kw.load_logo(64), align=wx.ALIGN_LEFT,
+        self._logo = kw.LogoPanel(root, kw.load_logo(S(60), kw.LOGO_SMALL), align=wx.ALIGN_LEFT,
                                   hold_s=STAFF_HOLD_S, on_long_press=self._staff_menu)
-        top.Add(self._logo, 0, wx.EXPAND | wx.ALL, 18)
+        top.Add(self._logo, 0, wx.EXPAND | wx.ALL, S(18))
         top.AddStretchSpacer()
         vsz.Add(top, 0, wx.EXPAND)
 
         body = wx.BoxSizer(wx.HORIZONTAL)
         self._canvas = fp.FurutaCanvas(root, kiosk=True)
-        body.Add(self._canvas, 1, wx.EXPAND | wx.LEFT | wx.BOTTOM, 24)
+        body.Add(self._canvas, 1, wx.EXPAND | wx.LEFT | wx.BOTTOM, S(24))
 
         side = wx.BoxSizer(wx.VERTICAL)
         self._status = wx.StaticText(root, label="", style=wx.ALIGN_CENTRE_HORIZONTAL)
-        self._status.SetFont(wx.Font(30, wx.FONTFAMILY_SWISS,
-                                     wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
-        side.Add(self._status, 0, wx.ALIGN_CENTER | wx.TOP, 10)
+        self._status.SetFont(kw.px_font(S(46), bold=True))
+        side.Add(self._status, 0, wx.ALIGN_CENTER | wx.TOP, S(10))
         self._hint = wx.StaticText(root, label="", style=wx.ALIGN_CENTRE_HORIZONTAL)
-        self._hint.SetFont(wx.Font(16, wx.FONTFAMILY_SWISS,
-                                   wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+        self._hint.SetFont(kw.px_font(S(28)))
         self._hint.SetForegroundColour(wx.Colour(*MUTED))
-        side.Add(self._hint, 0, wx.ALIGN_CENTER | wx.TOP, 12)
+        side.Add(self._hint, 0, wx.ALIGN_CENTER | wx.TOP, S(12))
         side.AddStretchSpacer()
 
         self._btn_main = kw.BigButton(root, "START", GREEN, self._on_main_button,
-                                      size=(380, 220), font_pt=54)
-        side.Add(self._btn_main, 0, wx.EXPAND | wx.TOP, 16)
+                                      size=(S(380), S(220)))
+        side.Add(self._btn_main, 0, wx.EXPAND | wx.TOP, S(16))
         self._btn_connect = kw.BigButton(root, "CONNECT", BLUE, self._on_connect_button,
-                                         size=(380, 110), font_pt=32)
-        side.Add(self._btn_connect, 0, wx.EXPAND | wx.TOP, 16)
+                                         size=(S(380), S(110)))
+        side.Add(self._btn_connect, 0, wx.EXPAND | wx.TOP, S(16))
         side.AddStretchSpacer()
 
-        body.Add(side, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 24)
+        body.Add(side, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, S(24))
         vsz.Add(body, 1, wx.EXPAND)
         root.SetSizer(vsz)
         self._btn_connect.Hide()
@@ -141,8 +150,6 @@ class FurutaKioskFrame(fp.FurutaPIDFrame):
             self._btn_main.set("START", GREEN, state in (READY, FAULT))
         self._root.Layout()
         log(f"{state}: {status} {hint}".strip())
-
-    TEXT_WIDTH = 370     # px; the right-hand column is 380 wide
 
     def _show_text(self, status, colour, hint=None):
         self._status.SetLabel(status)
@@ -188,7 +195,8 @@ class FurutaKioskFrame(fp.FurutaPIDFrame):
     def _pick_port():
         ports = sorted(os.path.basename(p) for p in fp.glob.glob('/sys/class/net/can*'))
         if not ports:
-            raise RuntimeError("no CAN adapter (no can* interface)")
+            raise ConnectProblem("no can* interface",
+                                 "No CAN adapter found. Is the CANable plugged in?")
         return 'can0' if 'can0' in ports else ports[0]
 
     @staticmethod
@@ -198,7 +206,16 @@ class FurutaKioskFrame(fp.FurutaPIDFrame):
         if len(nodes) == 2:
             lo, hi = sorted(nodes)
             return lo, hi
-        raise RuntimeError(f"expected pucks {MOTOR_NODE_ID}+{ENC_NODE_ID}, found {sorted(nodes)}")
+        if not nodes:
+            raise ConnectProblem("scan found no pucks",
+                                 "No pucks are answering. Check that the pendulum is "
+                                 "powered and the CAN cable is plugged in.")
+        found = ", ".join(str(n) for n in sorted(nodes))
+        raise ConnectProblem(
+            f"expected pucks {MOTOR_NODE_ID}+{ENC_NODE_ID}, found [{found}]",
+            f"Found {len(nodes)} puck{'s' if len(nodes) != 1 else ''} (ID {found}). "
+            f"The pendulum needs two: the motor (ID {MOTOR_NODE_ID}) and the "
+            f"encoder (ID {ENC_NODE_ID}).")
 
     def _connect_worker(self):
         while not self._closing and not self._connected:
@@ -209,20 +226,23 @@ class FurutaKioskFrame(fp.FurutaPIDFrame):
                 log(f"connected on {port}: motor={motor_id} encoder={enc_id}")
                 wx.CallAfter(self._on_bus_up)
                 return
+            except ConnectProblem as ex:
+                self._connect_failures += 1
+                wx.CallAfter(self._on_connect_failed, self._connect_failures, str(ex), ex.hint)
             except Exception as ex:
                 self._connect_failures += 1
-                wx.CallAfter(self._on_connect_failed, self._connect_failures, str(ex))
+                wx.CallAfter(self._on_connect_failed, self._connect_failures, str(ex),
+                             "Check that the pendulum is powered and the CAN cable "
+                             "is plugged in, then tap CONNECT.")
             self._retry_now.wait(RETRY_S)
             self._retry_now.clear()
 
-    def _on_connect_failed(self, failures, reason):
+    def _on_connect_failed(self, failures, reason, hint):
         if self._closing or self._connected:
             return
         log(f"connect attempt {failures} failed: {reason}")
         if failures >= SHOW_CONNECT_AFTER:
-            self._set_state(CONNECTING, "Can't reach the pendulum", RED,
-                            "Check that the pendulum is powered and the CAN cable "
-                            "is plugged in, then tap CONNECT.")
+            self._set_state(CONNECTING, "Can't reach the pendulum", RED, hint)
             self._btn_connect.set(enabled=True)
             self._btn_connect.Show()
             self._root.Layout()
@@ -466,17 +486,17 @@ class StaffMenu(wx.Dialog):
         super().__init__(parent, style=wx.BORDER_SIMPLE | wx.STAY_ON_TOP)
         self.SetBackgroundColour(wx.Colour(*BG))
         sz = wx.BoxSizer(wx.VERTICAL)
+        S = lambda v: max(1, int(v * kw.screen_scale(parent)))
         title = wx.StaticText(self, label="Staff menu")
-        title.SetFont(wx.Font(24, wx.FONTFAMILY_SWISS,
-                              wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
-        sz.Add(title, 0, wx.ALIGN_CENTER | wx.ALL, 20)
+        title.SetFont(kw.px_font(S(32), bold=True))
+        sz.Add(title, 0, wx.ALIGN_CENTER | wx.ALL, S(20))
         for label, colour, rc in (("Exit to desktop", NAVY, self.EXIT),
                                   ("Reboot", AMBER, self.REBOOT),
                                   ("Shut down", RED, self.POWEROFF),
                                   ("Cancel", (150, 155, 170), wx.ID_CANCEL)):
             btn = kw.BigButton(self, label, colour, lambda rc=rc: self.EndModal(rc),
-                               size=(420, 80), font_pt=24)
-            sz.Add(btn, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 20)
+                               size=(S(420), S(80)))
+            sz.Add(btn, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, S(20))
         self.SetSizerAndFit(sz)
         self.CentreOnParent()
         # Don't leave the menu up for customers if staff walk away.
