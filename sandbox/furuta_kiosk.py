@@ -51,7 +51,8 @@ STAFF_MENU_TIMEOUT_S = 30    # staff menu closes itself if left open
 # Swing-up guards (kiosk only; the engineering GUI runs plain v4.1). The first
 # swing-up from rest pumps at full torque every half-swing and could spin the
 # arm several revolutions and fling the pendulum over the top.
-SOFT_START_S       = 3.0     # swing torque ramps from SOFT_START_FROM to 100% over this
+SOFT_START_S       = 0.0     # OFF (was 3.0): at 35% the pendulum wouldn't start from rest
+                             # without a tap. The arm speed limit alone curbs the runaway.
 SOFT_START_FROM    = 0.35
 ARM_SPEED_LIMIT    = 12.0    # [rad/s] (~1.9 rev/s) no swing torque that speeds the arm past this
 AUTO_STOP_S        = 60      # a run stops itself (arm limp) after this long; 0 = never
