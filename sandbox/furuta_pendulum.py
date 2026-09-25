@@ -118,7 +118,15 @@ class FurutaCanvas(wx.Panel):
         self._pend_rad = 0.0
         self._arm_cts  = 0
         self._mode     = "idle"
-        self._kiosk    = kiosk      # bigger drawing, no numeric labels
+        self._kiosk    = kiosk      # bigger drawing, no numeric labels, Barrett colours
+        if kiosk:
+            # Barrett branding on a light background (navy would vanish on the dark one)
+            self.BG        = wx.Colour(244, 246, 250)
+            self.TRACK     = wx.Colour(170, 176, 190)
+            self.CART      = wx.Colour(10, 47, 101)       # Barrett navy
+            self.CART_EDGE = wx.Colour(10, 47, 101)
+            self.WHEEL     = wx.Colour(60, 66, 82)
+            self.PIVOT     = wx.Colour(255, 255, 255)
         self.SetBackgroundColour(self.BG)
         self.SetMinSize((-1, 290))
         self.Bind(wx.EVT_PAINT, self._on_paint)
@@ -175,9 +183,15 @@ class FurutaCanvas(wx.Panel):
         ey = int(py - arm_len * math.cos(ang))
 
         nearness = max(0.0, 1.0 - abs(ang) / math.pi)
-        r = int(255 * (1.0 - nearness ** 1.5))
-        g = int(210 * nearness)
-        arm_col = wx.Colour(r, g, 40)
+        if self._kiosk:
+            # grey when hanging -> Barrett orange (#FF7C1B) at upright
+            k = nearness ** 1.5
+            arm_col = wx.Colour(int(150 + (255 - 150) * k), int(156 + (124 - 156) * k),
+                                int(170 + (27 - 170) * k))
+        else:
+            r = int(255 * (1.0 - nearness ** 1.5))
+            g = int(210 * nearness)
+            arm_col = wx.Colour(r, g, 40)
 
         dc.SetPen(wx.Pen(arm_col, int(7 * s)))
         dc.DrawLine(px, py, ex, ey)
@@ -189,7 +203,8 @@ class FurutaCanvas(wx.Panel):
         dc.SetBrush(wx.Brush(self.PIVOT))
         dc.DrawCircle(px, py, int(5 * s))
 
-        dc.SetPen(wx.Pen(wx.Colour(80, 180, 80, 90), 1, wx.PENSTYLE_DOT))
+        guide = wx.Colour(255, 124, 27) if self._kiosk else wx.Colour(80, 180, 80, 90)
+        dc.SetPen(wx.Pen(guide, 1, wx.PENSTYLE_DOT))
         dc.DrawLine(px, py, px, py - arm_len)
 
         if self._kiosk:
