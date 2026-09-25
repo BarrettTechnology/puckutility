@@ -56,6 +56,20 @@ def note_name(n):
     return '{}{}'.format(NAMES[n % 12], n // 12 - 1)
 
 
+def sounding_notes(held, voices):
+    """The *voices* most recently struck distinct pitches, lowest first.
+
+    A unison between parts is one pitch, so it takes one voice.
+    """
+    notes = []
+    for _, n in reversed(held):
+        if n not in notes:
+            notes.append(n)
+        if len(notes) == voices:
+            break
+    return tuple(sorted(notes)) or None
+
+
 def load_midi(path, bpm=None, transpose=0, voices=len(VOICE_SUBS)):
     """Reduce *path* to at most *voices* notes at a time.
 
@@ -71,7 +85,7 @@ def load_midi(path, bpm=None, transpose=0, voices=len(VOICE_SUBS)):
                       if m.type == 'set_tempo'), 500000)
         scale = mido.bpm2tempo(bpm) / first
 
-    segs, held = [], []        # held: notes down, in the order struck
+    segs, held = [], []        # held: (channel, note) down, in order struck
     now, start, sounding = 0.0, 0.0, None
 
     def change(to):
@@ -86,11 +100,14 @@ def load_midi(path, bpm=None, transpose=0, voices=len(VOICE_SUBS)):
         now += msg.time * scale
         if msg.type not in ('note_on', 'note_off') or msg.channel == 9:
             continue
-        if msg.note in held:
-            held.remove(msg.note)
+        # Keyed by channel as well as note: two parts on the same pitch are
+        # separate notes, and one part letting go must not end the other's.
+        key = (msg.channel, msg.note)
+        if key in held:
+            held.remove(key)
         if msg.type == 'note_on' and msg.velocity > 0:
-            held.append(msg.note)
-        change(tuple(sorted(held[-voices:])) if held else None)
+            held.append(key)
+        change(sounding_notes(held, voices))
     change(None)
 
     plan = []
