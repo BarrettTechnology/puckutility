@@ -132,6 +132,14 @@ class FurutaCanvas(wx.Panel):
         self.Bind(wx.EVT_PAINT, self._on_paint)
         self.Bind(wx.EVT_SIZE, lambda _: self.Refresh())
 
+    def set_info(self, text, corner_radius=0, outer_bg=None):
+        """Kiosk: small data line drawn along the bottom of the panel, and
+        rounded panel corners (outer_bg = the colour showing around them)."""
+        self._info = text
+        self._corner = corner_radius
+        self._outer_bg = outer_bg
+        self.Refresh()
+
     def update(self, pend_rad, arm_cts, mode):
         self._pend_rad = pend_rad
         self._arm_cts  = arm_cts
@@ -141,8 +149,18 @@ class FurutaCanvas(wx.Panel):
     def _on_paint(self, _):
         dc = wx.BufferedPaintDC(self)
         W, H = self.GetClientSize()
-        dc.SetBackground(wx.Brush(self.BG))
-        dc.Clear()
+        corner = getattr(self, '_corner', 0)
+        if self._kiosk and corner:
+            # rounded panel: outer colour first, then the panel as a rounded rect
+            dc.SetBackground(wx.Brush(self._outer_bg or self.BG))
+            dc.Clear()
+            gc = wx.GraphicsContext.Create(dc)
+            gc.SetBrush(wx.Brush(self.BG)); gc.SetPen(wx.TRANSPARENT_PEN)
+            gc.DrawRoundedRectangle(0, 0, W, H, corner)
+            del gc
+        else:
+            dc.SetBackground(wx.Brush(self.BG))
+            dc.Clear()
 
         # ── track ────────────────────────────────────────────────────────
         ty  = int(H * 0.68)
@@ -208,6 +226,15 @@ class FurutaCanvas(wx.Panel):
         dc.DrawLine(px, py, px, py - arm_len)
 
         if self._kiosk:
+            info = getattr(self, '_info', "")
+            if info:        # data line along the bottom edge
+                f = wx.Font(wx.FontInfo().Family(wx.FONTFAMILY_SWISS))
+                f.SetPixelSize(wx.Size(0, max(10, int(H * 0.036))))
+                dc.SetFont(f)
+                dc.SetTextForeground(wx.Colour(96, 104, 124))
+                tw, th = dc.GetTextExtent(info)
+                pad = max(corner, int(H * 0.03))
+                dc.DrawText(info, (W - tw) // 2, H - th - int(H * 0.035))
             return      # the kiosk shows state in its own status line
 
         # ── labels ───────────────────────────────────────────────────────

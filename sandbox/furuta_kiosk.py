@@ -129,15 +129,11 @@ class FurutaKioskFrame(fp.FurutaPIDFrame):
         vsz.Add(top, 0, wx.EXPAND)
 
         body = wx.BoxSizer(wx.HORIZONTAL)
-        left = wx.BoxSizer(wx.VERTICAL)
         self._canvas = fp.FurutaCanvas(root, kiosk=True)
-        left.Add(self._canvas, 1, wx.EXPAND)
-        # Small live data line: temperature, angles, mode, run time
-        self._telemetry = wx.StaticText(root, label="", style=wx.ST_NO_AUTORESIZE)
-        self._telemetry.SetFont(kw.px_font(S(22)))
-        self._telemetry.SetForegroundColour(wx.Colour(*MUTED))
-        left.Add(self._telemetry, 0, wx.EXPAND | wx.TOP, S(8))
-        body.Add(left, 1, wx.EXPAND | wx.LEFT | wx.BOTTOM, S(24))
+        # Rounded corners matching the big buttons (radius = 0.14 x a 220 px button)
+        self._canvas_corner = S(31)
+        self._canvas.set_info("", self._canvas_corner, wx.Colour(*BG))
+        body.Add(self._canvas, 1, wx.EXPAND | wx.LEFT | wx.BOTTOM, S(24))
 
         side = wx.BoxSizer(wx.VERTICAL)
         self._status = wx.StaticText(root, label="", style=wx.ALIGN_CENTRE_HORIZONTAL)
@@ -165,7 +161,6 @@ class FurutaKioskFrame(fp.FurutaPIDFrame):
         self._btn_connect = kw.BigButton(root, "CONNECT", BLUE, self._on_connect_button,
                                          size=(S(380), S(110)))
         side.Add(self._btn_connect, 0, wx.EXPAND | wx.TOP, S(16))
-        side.AddStretchSpacer()
 
         body.Add(side, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, S(24))
         vsz.Add(body, 1, wx.EXPAND)
@@ -180,8 +175,8 @@ class FurutaKioskFrame(fp.FurutaPIDFrame):
 
     def _update_telemetry(self, _=None):
         if not self._connected:
-            if self._telemetry.GetLabel():
-                self._telemetry.SetLabel("")
+            if getattr(self._canvas, '_info', ""):
+                self._canvas.set_info("", self._canvas_corner, wx.Colour(*BG))
             return
         with self._lock:
             p1 = self._puck1_pos - self._puck1_zero
@@ -200,7 +195,7 @@ class FurutaKioskFrame(fp.FurutaPIDFrame):
         if self._run_t0 is not None and self._state in (RUNNING, PARKING):
             secs = int(time.monotonic() - self._run_t0)
             parts.append(f"{secs // 60}:{secs % 60:02d}")
-        self._telemetry.SetLabel("   \u00b7   ".join(parts))
+        self._canvas.set_info("   \u00b7   ".join(parts), self._canvas_corner, wx.Colour(*BG))
 
     def _set_state(self, state, status, colour, hint=""):
         self._state = state
