@@ -5,6 +5,7 @@
 #                                   it calls sudo for the system parts)
 #   ./setup-pi.sh --check           diagnostics only -- changes nothing
 #   ./setup-pi.sh --remove-autostart  stop the YES/NO prompt appearing at login
+#   ./setup-pi.sh --desktop-icon      (re)create just the Barrett Pendulum desktop icon
 #
 # What the full setup does (re-runnable; every step is idempotent):
 #   1. apt: wxPython, venv, can-utils          5. screen never blanks / locks / sleeps
@@ -12,6 +13,7 @@
 #   3. CAN: CANable (gs_usb) -> can0 @ 1 Mbit  7. desktop auto-login (so the prompt
 #      via ../scripts/setup-socketcan.sh          appears after a power cycle)
 #   4. login autostart: YES/NO boot prompt     8. app-menu entries: kiosk + engineering GUI
+#                                              9. "Barrett Pendulum" icon on the desktop
 #
 # Works on Ubuntu (GNOME) and Raspberry Pi OS (labwc / wayfire / X11).
 set -u
@@ -178,6 +180,46 @@ Categories=Utility;
 EOF
     done
     ok "$APPS/barrett-pendulum-{kiosk,gui}.desktop"
+    setup_desktop_icon
+}
+
+setup_desktop_icon() {
+    say "9. Desktop icon: Barrett Pendulum"
+    DESK="$(xdg-user-dir DESKTOP 2>/dev/null)"
+    if [ -z "$DESK" ] || [ "$DESK" = "$HOME" ]; then DESK="$HOME/Desktop"; fi   # xdg-user-dir falls back to $HOME
+    mkdir -p "$DESK"
+    ICON="$DESK/barrett-pendulum.desktop"
+    cat > "$ICON" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Barrett Pendulum
+Comment=Start the pendulum demo
+Exec=$HERE/pendulum-launch.sh kiosk
+Icon=$REPO/images/BarrettIcon.png
+Terminal=false
+EOF
+    chmod +x "$ICON"
+    # GNOME (Ubuntu's desktop-icons extension) only launches "trusted" .desktop
+    # files -- otherwise it shows them greyed out with "Allow Launching".
+    if command -v gio >/dev/null 2>&1; then
+        if [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
+            gio set "$ICON" metadata::trusted true 2>/dev/null
+        else
+            dbus-run-session -- gio set "$ICON" metadata::trusted true 2>/dev/null
+        fi
+        if [ $? -eq 0 ]; then ok "marked trusted (GNOME launches it without 'Allow Launching')"
+        else warn "couldn't mark it trusted -- right-click the icon > Allow Launching"; fi
+    fi
+    # Raspberry Pi OS / pcmanfm: run launchers without the "Execute?" dialog.
+    if command -v pcmanfm >/dev/null 2>&1; then
+        LIBFM="$HOME/.config/libfm/libfm.conf"
+        mkdir -p "$(dirname "$LIBFM")"
+        [ -e "$LIBFM" ] || printf '[config]\n' > "$LIBFM"
+        if grep -q '^quick_exec=' "$LIBFM"; then sed -i 's/^quick_exec=.*/quick_exec=1/' "$LIBFM"
+        else sed -i '/^\[config\]/a quick_exec=1' "$LIBFM"; fi
+        ok "pcmanfm: launch without the Execute prompt"
+    fi
+    ok "$ICON"
 }
 
 setup_no_blanking() {
@@ -305,6 +347,7 @@ EOF
 case "${1:-}" in
     --check) check; exit 0 ;;
     --remove-autostart) rm -f "$AUTOSTART"; echo "Removed $AUTOSTART"; exit 0 ;;
+    --desktop-icon) setup_desktop_icon; exit 0 ;;
     "") ;;
     *) sed -n '2,20p' "$0"; exit 2 ;;
 esac

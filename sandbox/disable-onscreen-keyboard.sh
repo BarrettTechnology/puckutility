@@ -13,6 +13,11 @@
 #   4. systemd user services
 #   5. the packages: uninstalled only when apt would remove nothing else
 #   6. whatever is still running
+#   7. GNOME (Ubuntu): its keyboard is built into gnome-shell and pops up on ANY
+#      touch regardless of the setting in step 1 (keyboard.js: enabled =
+#      setting || (touch_mode && lastDeviceIsTouchscreen)). A tiny extension,
+#      no-touch-osk@barrett.com, makes that touch check return false.
+#      Undo: gnome-extensions disable no-touch-osk@barrett.com
 # Every file it edits gets a .bak-keyboard backup first. Reboot afterwards.
 set -u
 NAMES='xvkbd|onboard|squeekboard|wvkbd|matchbox-keyboard|florence|caribou'
@@ -163,6 +168,99 @@ if act "stop running keyboard processes"; then
     still=$(pgrep -a -f -i "$PROC_RE" | grep -v -E 'disable-onscreen-keyboard|pgrep')
     if [ -z "$still" ]; then ok "none running"
     else warn "still running (probably respawned; the reboot applies steps 1-4):"; echo "$still" | sed 's/^/        /'; fi
+fi
+
+# ── 7. GNOME: stop the built-in keyboard auto-showing on touch ──────────────
+say "7. GNOME built-in keyboard (auto-shows on touch, ignoring step 1)"
+EXT_UUID="no-touch-osk@barrett.com"
+EXT_DIR="$HOME/.local/share/gnome-shell/extensions/$EXT_UUID"
+if ! command -v gnome-shell >/dev/null 2>&1; then
+    ok "not a GNOME desktop -- nothing to do"
+else
+    GMAJOR=$(gnome-shell --version 2>/dev/null | grep -o '[0-9]\+' | head -1)
+    info "GNOME Shell ${GMAJOR:-?}"
+    enabled_list=$(gs get org.gnome.shell enabled-extensions 2>/dev/null)
+    if [ -e "$EXT_DIR/extension.js" ] && echo "$enabled_list" | grep -q "$EXT_UUID"; then
+        ok "$EXT_UUID installed and enabled"
+    elif act "install + enable $EXT_UUID"; then
+        mkdir -p "$EXT_DIR"
+        cat > "$EXT_DIR/metadata.json" <<EOF
+{
+  "uuid": "$EXT_UUID",
+  "name": "No touch on-screen keyboard (Barrett pendulum)",
+  "description": "Stops GNOME's on-screen keyboard popping up on touch. The accessibility 'Screen Keyboard' switch still works.",
+  "shell-version": ["${GMAJOR:-46}"]
+}
+EOF
+        if [ "${GMAJOR:-46}" -ge 45 ]; then
+            cat > "$EXT_DIR/extension.js" <<'EOF'
+// GNOME 45+: KeyboardManager._syncEnabled() enables the OSK when
+// screen-keyboard-enabled OR (touch mode && last device is a touchscreen).
+// Make the touchscreen check always false, so only the setting counts.
+import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
+
+export default class NoTouchOsk extends Extension {
+    enable() {
+        const km = Main.keyboard;
+        this._orig = km._lastDeviceIsTouchscreen;
+        km._lastDeviceIsTouchscreen = () => false;
+        km._syncEnabled();
+    }
+
+    disable() {
+        const km = Main.keyboard;
+        if (this._orig)
+            km._lastDeviceIsTouchscreen = this._orig;
+        this._orig = null;
+        km._syncEnabled();
+    }
+}
+EOF
+        else
+            cat > "$EXT_DIR/extension.js" <<'EOF'
+// GNOME 42-44 (legacy extension format): same override as the 45+ version.
+const Main = imports.ui.main;
+
+class NoTouchOsk {
+    enable() {
+        const km = Main.keyboard;
+        this._orig = km._lastDeviceIsTouchscreen;
+        km._lastDeviceIsTouchscreen = () => false;
+        km._syncEnabled();
+    }
+
+    disable() {
+        const km = Main.keyboard;
+        if (this._orig)
+            km._lastDeviceIsTouchscreen = this._orig;
+        this._orig = null;
+        km._syncEnabled();
+    }
+}
+
+function init() {
+    return new NoTouchOsk();
+}
+EOF
+        fi
+        ok "installed $EXT_DIR"
+        # Enable via the settings list (works before GNOME has rescanned
+        # extensions; it loads at the next login).
+        gs set org.gnome.shell disable-user-extensions false
+        new_list=$(python3 - "$enabled_list" "$EXT_UUID" <<'EOF'
+import ast, sys
+cur, uuid = sys.argv[1].strip(), sys.argv[2]
+cur = cur.split(' ', 1)[1] if cur.startswith('@as') else cur
+items = ast.literal_eval(cur) if cur else []
+if uuid not in items:
+    items.append(uuid)
+print(str(items))
+EOF
+)
+        gs set org.gnome.shell enabled-extensions "$new_list" && ok "enabled (takes effect after the reboot)"
+        gnome-extensions enable "$EXT_UUID" 2>/dev/null && ok "also enabled in the running session"
+    fi
 fi
 
 say "Done"
