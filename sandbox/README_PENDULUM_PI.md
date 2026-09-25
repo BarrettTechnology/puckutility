@@ -42,7 +42,7 @@ last log lines.
 - The kiosk connects by itself and retries forever. If it can't connect after a few tries,
   a **CONNECT** button appears.
 - It zeroes the pendulum once it hangs still, then **START** swings it up and balances it.
-  **STOP** = zero torque (arm goes limp). Each run also **stops itself after 60 s** and
+  **STOP** = zero torque (arm goes limp). Auto-stop is **off by default**; with `--auto-stop SECONDS` each run stops itself and
   goes back to START. Change it with `--auto-stop SECONDS` (`0` = never), e.g. in the
   autostart entry `~/.config/autostart/barrett-pendulum.desktop`:
   `Exec=…/pendulum-launch.sh prompt --auto-stop 120`.

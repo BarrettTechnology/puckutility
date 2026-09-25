@@ -11,7 +11,7 @@ CAN/drive code are reused unchanged); only the screen differs:
     after a few failed tries, to force an immediate retry.
   * One big START / STOP button.  Gains are the v4.1 defaults, fixed and hidden.
   * STOP = zero torque, arm limp.  Each run also stops itself after
-    --auto-stop SECONDS (default 60; 0 = never) and returns to START.
+    --auto-stop SECONDS (default 0 = never) and returns to START.
   * Faults (drive fault bit, dead control loop, over-temperature, lost CAN)
     stop the pendulum and show a plain-language message; START clears the
     drive fault and re-enables.
@@ -56,7 +56,8 @@ SOFT_START_S       = 0.0     # OFF (was 3.0): at 35% the pendulum wouldn't start
 SOFT_START_FROM    = 0.35
 ARM_SPEED_LIMIT    = 0.0     # OFF (tried 12 and 18 rad/s on 2026-09-25: too weak to swing up,
                              # and didn't stop the wild first swing). 0 = plain v4.1 swing-up.
-AUTO_STOP_S        = 60      # a run stops itself (arm limp) after this long; 0 = never
+AUTO_STOP_S        = 0       # a run stops itself after this long; 0 = never (default: every
+                             # restart means another hard first swing-up, so don't auto-stop)
                              # (set from the command line: --auto-stop SECONDS)
 
 # Palette
