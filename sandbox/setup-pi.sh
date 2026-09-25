@@ -6,6 +6,8 @@
 #   ./setup-pi.sh --check           diagnostics only -- changes nothing
 #   ./setup-pi.sh --remove-autostart  stop the YES/NO prompt appearing at login
 #   ./setup-pi.sh --desktop-icon      (re)create just the Barrett Pendulum desktop icon
+#   ./setup-pi.sh --lan-link          fixed 192.168.100.66 on the Ethernet port + SSH
+#                                     (laptop side: sandbox/pi-connect.sh)
 #   ./setup-pi.sh --autostart         (re)write just the boot-prompt autostart entry
 #   ./setup-pi.sh --touch-display-only  just switch HDMI off (Touch Display only)
 #   ./setup-pi.sh --reliable-display    explicit panel overlay (no more missed-panel
@@ -492,6 +494,7 @@ case "${1:-}" in
     --check) check; exit 0 ;;
     --remove-autostart) rm -f "$AUTOSTART"; echo "Removed $AUTOSTART"; exit 0 ;;
     --desktop-icon) setup_desktop_icon; exit 0 ;;
+    --lan-link) "$HERE/setup-lan-link.sh"; exit $? ;;
     --autostart) setup_autostart; exit 0 ;;
     --touch-display-only) setup_touch_display_only; exit 0 ;;
     --reliable-display)
@@ -517,6 +520,8 @@ setup_wallpaper
 setup_autologin
 setup_launchers
 setup_touch_display_only
+say "11. Maintenance link over the Ethernet cable (192.168.100.66 + SSH)"
+"$HERE/setup-lan-link.sh" || warn "setup-lan-link.sh failed -- run it again by hand"
 
 say "Done"
 echo "    Reboot to test the full boot flow:  sudo reboot"
