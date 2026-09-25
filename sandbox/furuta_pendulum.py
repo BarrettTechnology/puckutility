@@ -185,12 +185,12 @@ class FurutaCanvas(wx.Panel):
         cw, ch = int(46 * s), int(22 * s)
 
         dc.SetBrush(wx.Brush(self.CART))
-        dc.SetPen(wx.Pen(self.CART_EDGE, int((3 if self._kiosk else 2) * s)))
+        dc.SetPen(wx.Pen(self.CART_EDGE, max(2, int((1.5 if self._kiosk else 2) * s))))
         dc.DrawRoundedRectangle(cx - cw // 2, ty, cw, ch, int(5 * s))
 
         dc.SetBrush(wx.Brush(self.WHEEL))
         dc.SetPen(wx.Pen(wx.Colour(255, 255, 255) if self._kiosk else wx.Colour(85, 90, 115),
-                         int(2 * s) if self._kiosk else 1))
+                         max(1, int(1 * s)) if self._kiosk else 1))
         for wx_ in (cx - int(14 * s), cx + int(14 * s)):
             dc.DrawCircle(wx_, ty + ch + int(4 * s), int(6 * s))
 
@@ -213,7 +213,7 @@ class FurutaCanvas(wx.Panel):
             arm_col = wx.Colour(r, g, 40)
 
         if self._kiosk:                      # bold white outline under the link
-            outline = wx.Pen(wx.WHITE, int(7 * s) + 2 * max(2, int(2 * s)))
+            outline = wx.Pen(wx.WHITE, int(7 * s) + 2 * max(1, int(1 * s)))
             outline.SetCap(wx.CAP_ROUND)
             dc.SetPen(outline)
             dc.DrawLine(px, py, ex, ey)
@@ -222,7 +222,7 @@ class FurutaCanvas(wx.Panel):
 
         dc.SetBrush(wx.Brush(arm_col))
         dc.SetPen(wx.Pen(wx.Colour(240, 240, 240) if not self._kiosk else wx.WHITE,
-                         max(2, int(3 * s)) if self._kiosk else 1))
+                         max(2, int(1.5 * s)) if self._kiosk else 1))
         dc.DrawCircle(ex, ey, int(11 * s))
 
         dc.SetBrush(wx.Brush(self.PIVOT))
