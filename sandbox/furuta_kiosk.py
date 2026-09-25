@@ -124,9 +124,13 @@ class FurutaKioskFrame(fp.FurutaPIDFrame):
         top = wx.BoxSizer(wx.HORIZONTAL)
         self._logo = kw.LogoPanel(root, S(60), align=wx.ALIGN_LEFT,
                                   hold_s=STAFF_HOLD_S, on_long_press=self._staff_menu)
-        top.Add(self._logo, 0, wx.EXPAND | wx.ALL, S(18))
+        # Left edge lines up with the drawing panel below (both S(24) in);
+        # a little more air above than below so it sits with the panel.
+        top.AddSpacer(S(24))
+        top.Add(self._logo, 0, wx.EXPAND | wx.TOP, S(22))
+        top.AddSpacer(S(24))
         top.AddStretchSpacer()
-        vsz.Add(top, 0, wx.EXPAND)
+        vsz.Add(top, 0, wx.EXPAND | wx.BOTTOM, S(18))
 
         body = wx.BoxSizer(wx.HORIZONTAL)
         self._canvas = fp.FurutaCanvas(root, kiosk=True)
