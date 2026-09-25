@@ -241,6 +241,12 @@ setup_no_blanking() {
         gs set org.gnome.settings-daemon.plugins.power sleep-inactive-battery-type 'nothing'
         # Customer-facing: no notification banners over the demo.
         gs set org.gnome.desktop.notifications show-banners false
+        # Ubuntu's Pi power-notification helper (pemmican) hangs on this Pi,
+        # which holds graphical-session.target -> the desktop portal waits ->
+        # every app (Terminal!) stalls up to 120 s at launch. The display guard
+        # logs power instead.
+        systemctl --user mask pemmican-reset.service pemmican-monitor.service >/dev/null 2>&1 \
+            && ok "pemmican user services masked (apps no longer stall at launch)"
         ok "GNOME: idle/lock/dim/sleep off, notification banners off"
         ;;
     *)
