@@ -10,7 +10,8 @@ CAN/drive code are reused unchanged); only the screen differs:
   * Auto-connect on launch, retrying forever.  A CONNECT button appears only
     after a few failed tries, to force an immediate retry.
   * One big START / STOP button.  Gains are the v4.1 defaults, fixed and hidden.
-  * STOP = zero torque, arm limp.
+  * STOP = zero torque, arm limp.  Each run also stops itself after
+    --auto-stop SECONDS (default 60; 0 = never) and returns to START.
   * Faults (drive fault bit, dead control loop, over-temperature, lost CAN)
     stop the pendulum and show a plain-language message; START clears the
     drive fault and re-enables.
@@ -46,6 +47,8 @@ TEMP_RESUME_C      = 70      # after an over-temp stop, START returns below this
 FAULT_BIT          = 0x0008  # DS402 StatusWord: Fault
 STAFF_HOLD_S       = 5.0
 STAFF_MENU_TIMEOUT_S = 30    # staff menu closes itself if left open
+AUTO_STOP_S        = 60      # a run stops itself (arm limp) after this long; 0 = never
+                             # (set from the command line: --auto-stop SECONDS)
 
 # Palette
 BG        = kw.WHITE
@@ -89,6 +92,9 @@ class FurutaKioskFrame(fp.FurutaPIDFrame):
         self._bus_gen = 0                  # bumped per connection; stale threads exit
         self._needs_reenable = False
         self._connect_failures = 0
+        self._run_id = 0                   # identifies the current run for the auto-stop timer
+        self._auto_stop_timer = None
+        self._auto_stopped = False
         self._retry_now = threading.Event()
         self._connect_thread = None
         super().__init__()
@@ -414,6 +420,7 @@ class FurutaKioskFrame(fp.FurutaPIDFrame):
             return
         log(f"connection lost: {reason}")
         self._bus_gen += 1                      # retire this connection's threads
+        self._cancel_auto_stop()
         self._controlling = False
         if self._ctrl_thread:
             self._ctrl_thread.join(timeout=1.5)
@@ -433,6 +440,7 @@ class FurutaKioskFrame(fp.FurutaPIDFrame):
     def _halt(self, disable_drive):
         """Stop the control loop and command zero torque; optionally disable
         the drive (SYNC is restarted so the display and watchdog keep running)."""
+        self._cancel_auto_stop()
         self._controlling = False
         if self._ctrl_thread:
             self._ctrl_thread.join(timeout=1.5)
@@ -499,13 +507,38 @@ class FurutaKioskFrame(fp.FurutaPIDFrame):
             return
         self._launch_control(self._read_gains())
         self._set_state(RUNNING, "Swinging up…", AMBER, "Tap STOP at any time")
+        self._run_id += 1
+        self._auto_stopped = False
+        self._cancel_auto_stop()
+        if AUTO_STOP_S > 0:
+            self._auto_stop_timer = wx.CallLater(int(AUTO_STOP_S * 1000),
+                                                 self._auto_stop, self._run_id)
+
+    def _cancel_auto_stop(self):
+        if self._auto_stop_timer:
+            self._auto_stop_timer.Stop()
+            self._auto_stop_timer = None
+
+    def _auto_stop(self, run_id):
+        # Only the run that armed this timer (a STOP + START re-arms it).
+        self._auto_stop_timer = None
+        if run_id != self._run_id or self._state != RUNNING or self._closing:
+            return
+        log(f"auto-stop after {AUTO_STOP_S:g} s")
+        self._auto_stopped = True
+        self._stop_control()                # -> _on_ctrl_stopped
 
     def _on_ctrl_stopped(self):
         # Base _stop_control() schedules this.  STOP = zero torque, arm limp.
+        self._cancel_auto_stop()
         self._in_balance = self._ramping_balance = self._in_braking = False
         self._send_zero_torque()
         if self._state == RUNNING:
-            self._set_state(READY, "Stopped", NAVY, "Tap START to begin")
+            if self._auto_stopped:
+                self._set_state(READY, "Stopped automatically", NAVY,
+                                "Tap START to go again")
+            else:
+                self._set_state(READY, "Stopped", NAVY, "Tap START to begin")
 
     # ───────────────────────────────────────────────── staff menu ───────
 
@@ -528,6 +561,7 @@ class FurutaKioskFrame(fp.FurutaPIDFrame):
         if self._closing:
             return
         self._closing = True
+        self._cancel_auto_stop()
         self._retry_now.set()
         self._controlling = False
         if self._ctrl_thread:
@@ -580,7 +614,11 @@ class StaffMenu(wx.Dialog):
         return super().Destroy()
 
 
-def main():
+def main(auto_stop_s=None):
+    global AUTO_STOP_S
+    if auto_stop_s is not None:
+        AUTO_STOP_S = max(0.0, auto_stop_s)
+    log(f"auto-stop: {f'{AUTO_STOP_S:g} s' if AUTO_STOP_S > 0 else 'off'}")
     app = wx.App()
     frame = FurutaKioskFrame()
     frame.Show()
@@ -589,4 +627,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    ap = argparse.ArgumentParser(description="Furuta pendulum kiosk")
+    ap.add_argument('--auto-stop', type=float, default=AUTO_STOP_S, metavar='SECONDS',
+                    help=f'stop each run after SECONDS (default {AUTO_STOP_S}; 0 = never)')
+    main(ap.parse_args().auto_stop)

@@ -9,7 +9,8 @@ the orange glow, the Barrett logo, "Start the pendulum demo?" and YES / NO.
 
 Launched at login by the XDG autostart entry that setup-pi.sh installs.
 
-  --auto-yes N   pick YES automatically after N seconds (default: wait forever)
+  --auto-yes N         pick YES automatically after N seconds (default: wait forever)
+  --auto-stop SECONDS  passed to the kiosk (default 60; 0 = never)
 """
 
 import argparse
@@ -163,6 +164,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[1])
     ap.add_argument('--auto-yes', type=int, default=0, metavar='N',
                     help='choose YES automatically after N seconds (0 = wait)')
+    ap.add_argument('--auto-stop', type=float, default=60, metavar='SECONDS',
+                    help='kiosk: stop each run after SECONDS (default 60; 0 = never)')
     args = ap.parse_args()
 
     app = wx.App()
@@ -174,7 +177,8 @@ def main():
 
     if frame.choice:
         kiosk = os.path.join(HERE, 'furuta_pendulum.py')
-        os.execv(sys.executable, [sys.executable, kiosk, '--touchscreen'])
+        os.execv(sys.executable, [sys.executable, kiosk, '--touchscreen',
+                                  '--auto-stop', f'{args.auto_stop:g}'])
 
 
 if __name__ == "__main__":

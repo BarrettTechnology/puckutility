@@ -36,6 +36,8 @@ Usage:
   python3 furuta_pendulum.py --touchscreen   # full-screen customer kiosk (see
                                              # furuta_kiosk.py): auto-connect,
                                              # START/STOP only, fixed gains
+      [--auto-stop SECONDS]                  # each run stops itself after this
+                                             # long (default 60; 0 = never)
 """
 
 import kiosk_widgets  # noqa: F401  -- sets the Linux display env; must precede wx
@@ -1139,10 +1141,13 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Furuta pendulum controller (CST)")
     ap.add_argument('--touchscreen', action='store_true',
                     help='full-screen customer kiosk for the Raspberry Pi touch display')
+    ap.add_argument('--auto-stop', type=float, default=60, metavar='SECONDS',
+                    help='--touchscreen only: stop each run after SECONDS and go back '
+                         'to START (default 60; 0 = never)')
     args = ap.parse_args()
     if args.touchscreen:
         import furuta_kiosk
-        furuta_kiosk.main()
+        furuta_kiosk.main(args.auto_stop)
     else:
         app = wx.App()
         FurutaPIDFrame().Show()

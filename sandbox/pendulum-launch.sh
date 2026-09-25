@@ -3,6 +3,9 @@
 #   pendulum-launch.sh prompt   boot-time YES/NO prompt (what the login autostart runs)
 #   pendulum-launch.sh kiosk    straight into the full-screen pendulum kiosk
 #   pendulum-launch.sh gui      engineering GUI (gains, scan, zero, bias)
+# Extra options pass through, e.g.
+#   pendulum-launch.sh prompt --auto-stop 120   (runs stop after 2 min; 0 = never)
+#   pendulum-launch.sh kiosk  --auto-stop 0
 # Output goes to ~/.cache/barrett-pendulum/pendulum.log (last run) for SSH debugging.
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PY="$HERE/.venv/bin/python"
@@ -22,7 +25,7 @@ case "$MODE" in
         # the CAN bring-up (can-up@can0.service) a moment first.
         sleep "${PENDULUM_START_DELAY:-3}"
         exec "$PY" boot_prompt.py "$@" >>"$LOG" 2>&1 ;;
-    kiosk) exec "$PY" furuta_pendulum.py --touchscreen >>"$LOG" 2>&1 ;;
+    kiosk) exec "$PY" furuta_pendulum.py --touchscreen "$@" >>"$LOG" 2>&1 ;;
     gui)   exec "$PY" furuta_pendulum.py >>"$LOG" 2>&1 ;;
     *) echo "usage: $0 [prompt|kiosk|gui]" >&2; exit 2 ;;
 esac

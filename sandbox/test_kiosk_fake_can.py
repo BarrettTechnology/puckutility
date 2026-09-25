@@ -2,7 +2,7 @@
 
   python3 sandbox/test_kiosk_fake_can.py
 
-Covers: no adapter -> CONNECT button, connect + auto-zero, START/STOP,
+Covers: no adapter -> CONNECT button, connect + auto-zero, START/STOP, auto-stop,
 drive fault + recovery, over-temperature cool-down, lost CAN + reconnect.
 """
 import sys, threading, time, types
@@ -121,6 +121,18 @@ def script():
     check("still exactly one SYNC task", len(net().sync.tasks) == 1)
     k._on_main_button()
     check("STOP -> READY", wait(lambda: k._state == fk.READY))
+    fk.AUTO_STOP_S = 1.0
+    k._on_main_button()
+    check("START again -> RUNNING", wait(lambda: k._state == fk.RUNNING))
+    check("auto-stop after AUTO_STOP_S -> READY", wait(lambda: k._state == fk.READY, 5)
+          and "automatically" in k._status.GetLabel())
+    check("auto-stop leaves the arm limp (zero torque)",
+          [m for m in net().sent if m[0] == 0x301][-1][1] == b'\x00\x00')
+    fk.AUTO_STOP_S = 0
+    k._on_main_button(); wait(lambda: k._state == fk.RUNNING)
+    time.sleep(1.5); wait(lambda: False, 0.3)
+    check("--auto-stop 0 -> never stops on its own", k._state == fk.RUNNING)
+    k._on_main_button(); wait(lambda: k._state == fk.READY)
     check("last torque sent was zero", [m for m in net().sent if m[0] == 0x301][-1][1] == b'\x00\x00')
     net().temp = 90
     check("over-temp -> COOLING", wait(lambda: k._state == fk.COOLING))

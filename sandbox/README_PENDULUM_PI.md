@@ -40,7 +40,10 @@ last log lines.
 - The kiosk connects by itself and retries forever. If it can't connect after a few tries,
   a **CONNECT** button appears.
 - It zeroes the pendulum once it hangs still, then **START** swings it up and balances it.
-  **STOP** = zero torque (arm goes limp).
+  **STOP** = zero torque (arm goes limp). Each run also **stops itself after 60 s** and
+  goes back to START. Change it with `--auto-stop SECONDS` (`0` = never), e.g. in the
+  autostart entry `~/.config/autostart/barrett-pendulum.desktop`:
+  `Exec=…/pendulum-launch.sh prompt --auto-stop 120`.
 - If something goes wrong (drive fault, CAN send failure, lost CAN), the pendulum stops
   and the screen says "Stopped — tap START to try again". START clears the drive fault. If
   the motor gets too hot (≥85 °C), the kiosk cools down and comes back below 70 °C.
