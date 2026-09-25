@@ -243,6 +243,7 @@ class FurutaPIDFrame(wx.Frame):
         self._ramping_balance  = False
         self._in_braking       = False
         self._ctrl_thread      = None
+        self._parking          = False
         self._bi = 0.0
         self._rpdo2_backup     = None   # saved before remapping to TargetTorque
         # canopen's SDO client isn't thread-safe: serialise the enable/disable
@@ -1144,6 +1145,110 @@ class FurutaPIDFrame(wx.Frame):
             elapsed = time.monotonic() - t0
             if elapsed < dt_target:
                 time.sleep(dt_target - elapsed)
+
+    # ───────────────────────────────────────────────── park ─────────────
+    #
+    # A gentle "stop": tip a balanced pendulum over, remove its energy as it
+    # swings down (same sign convention as the swing-up's braking), then walk
+    # the arm back to its enable/zero position (unwinding any turns) and go
+    # limp. Low torque limits + a hard timeout; the caller can abort by setting
+    # self._parking = False.
+    PARK_TIP_TORQUE = 80       # [torque] brief push that tips a balanced pendulum over
+    PARK_TIP_S      = 1.0      # max tip time
+    PARK_BRAKE      = 150      # [torque] peak energy-removal torque
+    PARK_HOME_SPEED = 1.5      # [rad/s] speed of the arm reference back to home
+    PARK_HOME_KP    = 80       # [torque/rad]      arm -> moving reference
+    PARK_HOME_KD    = 30       # [torque/(rad/s)]
+    PARK_TORQUE_MAX = 200      # [torque] clamp for every park phase
+    PARK_TIMEOUT_S  = 15.0
+
+    def _park_loop(self, kda, kv, on_done):
+        dt_target = 1.0 / SYNC_HZ
+        slew = kv / SYNC_HZ
+        a_slow = min(1.0, 2 * math.pi * 3.0 / SYNC_HZ)
+        t_start = prev_t = time.monotonic()
+        prev_pend = prev_arm = None
+        vel_slow = arm_vel = 0.0
+        prev_torque = 0.0
+        phase, phase_t0, settled = None, t_start, 0.0
+        arm_ref = 0.0
+        tip_dir = 1.0
+        result = "timeout"
+
+        while self._parking and self._enabled:
+            t0 = time.monotonic()
+            dt = max(t0 - prev_t, 1e-4); prev_t = t0
+            with self._lock:
+                p1 = self._puck1_pos - self._puck1_zero
+                p2 = self._puck2_pos - self._puck2_zero
+            pend_rad = _wrap(p2 * 2.0 * math.pi / ENCODER_RES + math.pi)   # 0 = upright
+            arm_rad = p1 * 2.0 * math.pi / ENCODER_RES
+            if prev_pend is None:                    # first sample: no velocity spike
+                prev_pend, prev_arm = pend_rad, arm_rad
+            delta = _wrap(pend_rad - prev_pend); prev_pend = pend_rad
+            vel_slow = a_slow * (delta / dt) + (1.0 - a_slow) * vel_slow
+            arm_vel = a_slow * ((arm_rad - prev_arm) / dt) + (1.0 - a_slow) * arm_vel
+            prev_arm = arm_rad
+
+            from_bottom = abs(_wrap(pend_rad - math.pi))     # 0 = hanging straight down
+            energy = 0.5 * vel_slow ** 2 + OMEGA_N_SQ * (1.0 + math.cos(pend_rad))
+            brake = 0.0
+            if abs(vel_slow) > 0.05:
+                brake = (self.PARK_BRAKE * min(1.0, energy / (2.0 * OMEGA_N_SQ))
+                         * math.copysign(1.0, vel_slow * math.cos(pend_rad)))
+
+            if phase is None:
+                phase = 'tip' if abs(pend_rad) < math.radians(30) and abs(vel_slow) < 1.0 else 'damp'
+                tip_dir = 1.0 if pend_rad >= 0 else -1.0
+                phase_t0 = t0
+            if phase == 'tip':
+                raw_t = self.PARK_TIP_TORQUE * tip_dir
+                if abs(pend_rad) > math.radians(30) or t0 - phase_t0 > self.PARK_TIP_S:
+                    phase, phase_t0 = 'damp', t0
+            elif phase == 'damp':
+                raw_t = brake - kda * arm_vel
+                settled = settled + dt if (from_bottom < math.radians(8)
+                                           and abs(vel_slow) < 0.5) else 0.0
+                if settled > 0.5:
+                    phase, phase_t0, arm_ref = 'home', t0, arm_rad
+            else:  # home
+                step = self.PARK_HOME_SPEED * dt
+                arm_ref = arm_ref - max(-step, min(step, arm_ref))
+                raw_t = (-self.PARK_HOME_KP * (arm_rad - arm_ref)
+                         - self.PARK_HOME_KD * arm_vel + 0.5 * brake)
+                if (abs(arm_ref) < 1e-3 and abs(arm_rad) < math.radians(4)
+                        and abs(arm_vel) < 0.3):
+                    result = "home"
+                    break
+
+            d = max(-slew, min(slew, raw_t - prev_torque))
+            torque = max(-self.PARK_TORQUE_MAX, min(self.PARK_TORQUE_MAX, prev_torque + d))
+            if p1 > MAX_ARM_CTS:
+                torque = min(0.0, torque)
+            elif p1 < -MAX_ARM_CTS:
+                torque = max(0.0, torque)
+            prev_torque = torque
+            try:
+                self._network.send_message(
+                    self._node1.rpdo[2].cob_id,
+                    struct.pack('<h', max(-32768, min(32767, int(torque)))))
+            except Exception:
+                result = "send failed"
+                break
+            if t0 - t_start > self.PARK_TIMEOUT_S:
+                break
+            elapsed = time.monotonic() - t0
+            if elapsed < dt_target:
+                time.sleep(dt_target - elapsed)
+
+        if not self._parking and result == "timeout":
+            result = "aborted"
+        try:                                         # always end limp
+            self._network.send_message(self._node1.rpdo[2].cob_id, struct.pack('<h', 0))
+        except Exception:
+            pass
+        self._parking = False
+        on_done(result, phase)
 
     # ───────────────────────────────────────────────── close ────────────
 

@@ -67,8 +67,8 @@ BLUE      = (30, 110, 200)
 NAVY      = kw.NAVY
 
 # Kiosk states
-CONNECTING, SETTLING, READY, STARTING, RUNNING, FAULT, COOLING = (
-    'connecting', 'settling', 'ready', 'starting', 'running', 'fault', 'cooling')
+CONNECTING, SETTLING, READY, STARTING, RUNNING, FAULT, COOLING, PARKING = (
+    'connecting', 'settling', 'ready', 'starting', 'running', 'fault', 'cooling', 'parking')
 
 # Control-loop status messages (FurutaPIDFrame._control_loop) -> kiosk wording.
 LOOP_PHRASES = {
@@ -171,6 +171,8 @@ class FurutaKioskFrame(fp.FurutaPIDFrame):
             self._show_diag("")
         if state == RUNNING:
             self._btn_main.set("STOP", RED, True)
+        elif state == PARKING:
+            self._btn_main.set("STOP\nNOW", RED, True)       # tap = limp immediately
         else:
             self._btn_main.set("START", GREEN, state in (READY, FAULT))
         self._root.Layout()
@@ -385,7 +387,7 @@ class FurutaKioskFrame(fp.FurutaPIDFrame):
                     next_status = now + STATUS_POLL_S
                     with self._sdo_lock:
                         sw = self._node1.sdo['StatusWord'].raw
-                    if sw & FAULT_BIT and self._state in (RUNNING, READY):
+                    if sw & FAULT_BIT and self._state in (RUNNING, READY, PARKING):
                         wx.CallAfter(self._kiosk_fault, f"drive fault (StatusWord 0x{sw:04X})")
                 if now >= next_temp:
                     next_temp = now + TEMP_POLL_S
@@ -429,6 +431,7 @@ class FurutaKioskFrame(fp.FurutaPIDFrame):
         log(f"connection lost: {reason}")
         self._bus_gen += 1                      # retire this connection's threads
         self._cancel_auto_stop()
+        self._parking = False
         self._controlling = False
         if self._ctrl_thread:
             self._ctrl_thread.join(timeout=1.5)
@@ -449,6 +452,7 @@ class FurutaKioskFrame(fp.FurutaPIDFrame):
         """Stop the control loop and command zero torque; optionally disable
         the drive (SYNC is restarted so the display and watchdog keep running)."""
         self._cancel_auto_stop()
+        self._end_park_now()
         self._controlling = False
         if self._ctrl_thread:
             self._ctrl_thread.join(timeout=1.5)
@@ -483,7 +487,10 @@ class FurutaKioskFrame(fp.FurutaPIDFrame):
 
     def _on_main_button(self):
         if self._state == RUNNING:
-            self._stop_control()            # -> _on_ctrl_stopped
+            self._begin_park()
+        elif self._state == PARKING:
+            log("STOP pressed during park -> limp now")
+            self._end_park_now()
         elif self._state in (READY, FAULT):
             self._set_state(STARTING, "Starting…", MUTED)
             threading.Thread(target=self._start_worker, daemon=True).start()
@@ -534,7 +541,36 @@ class FurutaKioskFrame(fp.FurutaPIDFrame):
             return
         log(f"auto-stop after {AUTO_STOP_S:g} s")
         self._auto_stopped = True
-        self._stop_control()                # -> _on_ctrl_stopped
+        self._begin_park()
+
+    # ── park: bring the pendulum down and the arm home before going limp ──
+    def _begin_park(self):
+        self._set_state(PARKING, "Stopping…", MUTED, "Bringing the pendulum down")
+        self._stop_control()                # ends the control loop (-> _on_ctrl_stopped)
+        self._parking = True
+        self._park_thread = threading.Thread(
+            target=self._park_loop,
+            args=(fp.KDA_DEFAULT, fp.KV_DEFAULT,
+                  lambda result, phase: wx.CallAfter(self._on_parked, result, phase)),
+            daemon=True)
+        self._park_thread.start()
+
+    def _end_park_now(self):
+        """Abort a park (STOP again, fault, lost CAN, exit): limp immediately."""
+        self._parking = False
+        t = getattr(self, '_park_thread', None)
+        if t and t.is_alive() and t is not threading.current_thread():
+            t.join(timeout=1.0)
+        self._send_zero_torque()
+
+    def _on_parked(self, result, phase):
+        log(f"park: {result} (last phase: {phase})")
+        self._send_zero_torque()
+        if self._state == PARKING:
+            if self._auto_stopped:
+                self._set_state(READY, "Stopped automatically", NAVY, "Tap START to go again")
+            else:
+                self._set_state(READY, "Stopped", NAVY, "Tap START to begin")
 
     def _log_run_stats(self):
         peak = getattr(self, '_run_peak_arm_vel', None)
@@ -580,6 +616,7 @@ class FurutaKioskFrame(fp.FurutaPIDFrame):
             return
         self._closing = True
         self._cancel_auto_stop()
+        self._end_park_now()
         self._retry_now.set()
         self._controlling = False
         if self._ctrl_thread:

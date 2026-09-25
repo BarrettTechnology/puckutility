@@ -120,11 +120,12 @@ def script():
     check("RPDO2 backup is still the ORIGINAL mapping", k._rpdo2_backup == {0: 2, 1: 0x607A0020, 2: 0x60FF0020})
     check("still exactly one SYNC task", len(net().sync.tasks) == 1)
     k._on_main_button()
-    check("STOP -> READY", wait(lambda: k._state == fk.READY))
+    check("STOP -> PARKING (bring it down + home)", wait(lambda: k._state == fk.PARKING, 2))
+    check("park finishes -> READY", wait(lambda: k._state == fk.READY, 8))
     fk.AUTO_STOP_S = 1.0
     k._on_main_button()
     check("START again -> RUNNING", wait(lambda: k._state == fk.RUNNING))
-    check("auto-stop after AUTO_STOP_S -> READY", wait(lambda: k._state == fk.READY, 5)
+    check("auto-stop after AUTO_STOP_S -> park -> READY", wait(lambda: k._state == fk.READY, 10)
           and "automatically" in k._status.GetLabel())
     check("auto-stop leaves the arm limp (zero torque)",
           [m for m in net().sent if m[0] == 0x301][-1][1] == b'\x00\x00')
@@ -132,7 +133,10 @@ def script():
     k._on_main_button(); wait(lambda: k._state == fk.RUNNING)
     time.sleep(1.5); wait(lambda: False, 0.3)
     check("--auto-stop 0 -> never stops on its own", k._state == fk.RUNNING)
-    k._on_main_button(); wait(lambda: k._state == fk.READY)
+    k._on_main_button(); wait(lambda: k._state == fk.PARKING, 2)
+    k._on_main_button()                                  # STOP again during the park
+    check("STOP during park -> limp immediately -> READY", wait(lambda: k._state == fk.READY, 2)
+          and not k._parking)
     check("last torque sent was zero", [m for m in net().sent if m[0] == 0x301][-1][1] == b'\x00\x00')
     net().temp = 90
     check("over-temp -> COOLING", wait(lambda: k._state == fk.COOLING))
