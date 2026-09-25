@@ -494,7 +494,10 @@ case "${1:-}" in
     --desktop-icon) setup_desktop_icon; exit 0 ;;
     --autostart) setup_autostart; exit 0 ;;
     --touch-display-only) setup_touch_display_only; exit 0 ;;
-    --reliable-display) setup_reliable_display; exit 0 ;;
+    --reliable-display)
+        echo "--reliable-display is disabled: on the pendulum Pi the explicit panel overlay"
+        echo "gives a black screen (2026-09-25). Only --undo-reliable-display is allowed."
+        exit 1 ;;
     --undo-reliable-display) undo_reliable_display; exit 0 ;;
     "") ;;
     *) sed -n '2,20p' "$0"; exit 2 ;;
