@@ -17,6 +17,7 @@ from canopen.sdo import SdoAbortedError
 from can_backend import sdo_contention_message
 from paths import _resolve_path, FIRMWARE_DIR, CONFIG_DIR
 import ezero
+import flashp4
 
 # TODO - No active issues
 
@@ -8389,10 +8390,6 @@ class calibrate():
         self.choice_id.SetSelection(indexID) # Return to starting ID after completion
         self.select_id(None)
 
-    def get_version(self, vers): # Convert uint32_t to semantic version: Major.Minor.Patch
-        return "{0}.{1}.{2}".format(
-            (vers >> 24) & 0xFF, (vers >> 8) & 0xFFFF, (vers & 0xFF))
-
     def system_config(self, event, filepath=False): 
         if self.check_for_node() == False: #len(self.network.scanner.nodes) == 0:
             return False
@@ -8436,7 +8433,7 @@ class calibrate():
             self.choice_id.SetSelection(idx)
             self.select_id(None)
 
-            version = self.get_version(self.node.sdo['MfgSoftwareVersion'].raw)
+            version = flashp4.read_version(self.node)
             if fw_version and fwpath and version != fw_version:
                 print('Version {} found. Updating firmware to {}'.format(version, fw_version))
                 self.browse_fw(None, fwpath)

@@ -14,7 +14,6 @@ import configparser
 import canopen
 import canopen_runner
 import flashp4
-from flashp4 import get_version
 from canopen_runner import (
     CLEAR_FAULT, SHUTDOWN, OP_ENABLED,
     MODE_IDLE, MODE_PHASE_VOLTAGE_ANGLE,
@@ -396,11 +395,14 @@ def _cli_info(can_device, node_ids=None):
             except Exception:
                 return default
 
-        fw_raw = _sdo('MfgSoftwareVersion')
+        try:
+            fw_str = flashp4.read_version(node)
+        except Exception:
+            fw_str = 'unknown'
         pc     = _sdo(0x1018, 2)
         infos.append({
             'node_id':  node_id,
-            'fw_str':   get_version(fw_raw) if fw_raw is not None else 'unknown',
+            'fw_str':   fw_str,
             'pc':       pc,
             'model':    _PRODUCT_CODE_MODELS.get(pc, 'unknown') if pc is not None else 'unknown',
             'settling': _sdo('Amp', 'MaxSettlingTime'),
@@ -456,7 +458,7 @@ def _cli_system_config(can_device, ini_path):
         if fw_version and fw_path:
             ver_net  = _cli_make_network(can_device)
             ver_node = ver_net.add_node(node_id, 'puck4.eds')
-            version  = get_version(ver_node.sdo['MfgSoftwareVersion'].raw)
+            version  = flashp4.read_version(ver_node)
             ver_net.disconnect()
             if version != fw_version:
                 print(f"  Firmware {version} → updating to {fw_version}...")

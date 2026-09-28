@@ -46,6 +46,20 @@ def get_version(vers): # Convert uint32_t to semantic version: Major.Minor.Patch
     return "{0}.{1}.{2}".format(
         (vers >> 24) & 0xFF, (vers >> 8) & 0xFFFF, (vers & 0xFF))
 
+def read_version(node):
+    """0x100A as "Major.Minor.Patch", in whichever form the node publishes it.
+
+    Applications since the DS301 port publish a VISIBLE_STRING; older
+    applications and every flashloader publish the packed U32 that
+    get_version() decodes.  The two are told apart by length: the U32 is four
+    bytes and the shortest string, "0.0.0", is five.  Reads with a raw upload
+    so the answer does not depend on which type the EDS declares.
+    """
+    raw = node.sdo.upload(0x100A, 0)
+    if len(raw) == 4:
+        return get_version(int.from_bytes(raw, 'little'))
+    return raw.rstrip(b'\0').decode('ascii')
+
 def write(node, progress, data=[]):
     # Only draw the live \r progress bar for a STANDALONE terminal run with no
     # other progress sink. When a `progress` sink is present (the GUI gauge queue,

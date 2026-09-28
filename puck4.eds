@@ -311,9 +311,9 @@ DefaultValue=2
 [100A]
 ParameterName=MfgSoftwareVersion
 ObjectType=0x07
-DataType=0x0007
+DataType=0x0009
 AccessType=ro
-DefaultValue=0
+DefaultValue=0.0.0
 
 [1010]
 ParameterName=Save

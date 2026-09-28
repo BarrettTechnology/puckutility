@@ -1609,7 +1609,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
         self.text_id.ChangeValue(str(node_id))
 
-        version = get_version(self.node.sdo['MfgSoftwareVersion'].raw)
+        version = flashp4.read_version(self.node)
         self.text_version.ChangeValue(version)
 
         # Detect flashloader by attempting to read SetModeOfOperation, which only
