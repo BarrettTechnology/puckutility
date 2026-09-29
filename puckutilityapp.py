@@ -2276,7 +2276,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         else:
             print(f"Drive NOT enabled. StatusWord: {hex(status)}")
             # DS402 bit 3 = FAULT. A drive mode CANNOT be set while faulted -- the firmware
-            # rejects SetModeOfOperation with SDO abort 0x05040001, which used to crash this
+            # rejects SetModeOfOperation with SDO abort 0x08000022 (0x05040001 before stm32
+            # 'State refusals abort with 0x08000022'), which used to crash this
             # handler with a traceback. Abort cleanly with an actionable message instead.
             if status & 0x08:
                 print("  Drive is FAULTED -- clear the fault before starting a test.")
