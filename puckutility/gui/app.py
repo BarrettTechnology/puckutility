@@ -237,9 +237,14 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             _orig_textctrl = wx.TextCtrl
             wx.Choice = widgets.WindowsFriendlyChoice
             wx.TextCtrl = widgets.TallTextCtrl
+        # frame.py (wxGlade) loads "images/..." relative to the working
+        # directory; the images are package data, so build it from there.
+        _cwd = os.getcwd()
         try:
+            os.chdir(paths.data())
             puckutilityapp_frame.__init__(self, *args, **kwds)
         finally:
+            os.chdir(_cwd)
             if wx.Platform == '__WXMSW__':
                 wx.Choice = _orig_choice
                 wx.TextCtrl = _orig_textctrl
