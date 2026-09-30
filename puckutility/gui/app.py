@@ -79,7 +79,7 @@ import logging
 
 from .. import paths, __version__
 from ..paths import resource_path
-from ..controllers import device
+from p4core import worker
 
 #: The P4 object dictionary (p4core's copy).
 EDS = paths.eds()
@@ -1832,7 +1832,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         # Using multithreading!
         self.OnStartTask(None) # need this to show!! 
 
-        process = multiprocessing.Process(target=device.flash_child,args=(can_device, int(node_id),pathname,self.update_queue,))
+        process = multiprocessing.Process(target=worker.flash_child,args=(can_device, int(node_id),pathname,self.update_queue,))
         process.start()
         self.progress.Show()
 
@@ -2022,7 +2022,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
         # Using multithreading!
         self.OnStartTask(None) # need this to show!! 
-        process = multiprocessing.Process(target=device.config_child,args=(can_device, int(node_id),pathname,self.update_queue,))
+        process = multiprocessing.Process(target=worker.config_child,args=(can_device, int(node_id),pathname,self.update_queue,))
         process.start()
         self.progress.Show()
 
