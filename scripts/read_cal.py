@@ -37,11 +37,12 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-import can_backend
+from p4core import can_backend
+from p4core.paths import puck4_eds
 
 # Where the per-model "blank" templates (and real configs) live.
 BASELINE_DIR = "/home/bailey/pucktuner"
-EDS = os.path.join(ROOT, "puck4.eds")
+EDS = puck4_eds()
 
 # ----------------------------------------------------------------------------- #
 # Baseline (blank template) loader

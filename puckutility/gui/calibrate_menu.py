@@ -8,18 +8,25 @@ import threading
 import webbrowser
 import configparser
 import platform
-from canopen_runner import (
+from p4core.cia402 import (
     CLEAR_FAULT, SHUTDOWN, OP_ENABLED,
     MODE_IDLE, MODE_PHASE_VOLTAGE_ANGLE, MODE_PROFILE_TRQ, MODE_PROFILE_VEL,
     MODE_PROFILE_POS,
 )
 from canopen.sdo import SdoAbortedError
-from can_backend import sdo_contention_message
-from paths import _resolve_path, FIRMWARE_DIR, CONFIG_DIR
-import ezero
-import flashp4
+from p4core.can_backend import sdo_contention_message
+from p4core import ezero
+from p4core import flash as flashp4
+from ..paths import _resolve_path, FIRMWARE_DIR, CONFIG_DIR
 
 # TODO - No active issues
+
+
+def _yield():
+    """Let the window repaint during a long wait; a no-op without a wx.App
+    (the command line runs these routines headless)."""
+    if wx.GetApp() is not None:
+        wx.Yield()
 
 
 def _sleep_responsive(seconds, chunk=0.05):
@@ -29,7 +36,7 @@ def _sleep_responsive(seconds, chunk=0.05):
     end = time.time() + seconds
     while time.time() < end:
         time.sleep(min(chunk, max(0, end - time.time())))
-        wx.Yield()
+        _yield()
 
 
 class _PVCATorqueDialog(wx.Dialog):
@@ -882,7 +889,7 @@ class calibrate():
 
         self.frame_statusbar.SetStatusText("Calibrating ibias...", 1)
         self.frame_statusbar.Update()
-        wx.Yield()
+        _yield()
 
         try:
             # Clear faults, RTSO, OpEnabled
@@ -923,7 +930,7 @@ class calibrate():
                 _frac = 1.0 - (_settle_end - time.time()) / _SETTLE
                 _upd(int(_frac * 55))  # 0→55%
                 time.sleep(0.05)
-                wx.Yield()
+                _yield()
 
             # Average N_AVG fresh reads of Filtered (Q12.4); store as-is (no /16)
             _sum = {'Alpha': 0, 'Beta': 0}
@@ -931,7 +938,7 @@ class calibrate():
                 _upd(55 + _i * 40 // _N_AVG)  # 55→95%
                 for _ch in ['Alpha', 'Beta']:
                     _sum[_ch] += self.node.sdo[_ch]['Filtered'].raw
-                wx.Yield()
+                _yield()
 
             _q12_4 = self._fw_at_least(4, 4, 0)
 
@@ -1035,7 +1042,7 @@ class calibrate():
 
         self.frame_statusbar.SetStatusText("Calibrating igainfactor...", 1)
         self.frame_statusbar.Update()
-        wx.Yield()
+        _yield()
 
         try:
             # Set Alpha & Beta gainfactors to 1.0 in Q4.12 (keep the pre-cal values to restore on reject)
@@ -1100,7 +1107,7 @@ class calibrate():
                 motor_ud = min(motor_ud + _ramp_step, 32000)
                 self.node.sdo['Motor']['ud'].raw = motor_ud
                 time.sleep(0.05)
-                wx.Yield() # keep wx event loop alive so Windows doesn't mark the app "Not Responding"
+                _yield() # keep wx event loop alive so Windows doesn't mark the app "Not Responding"
 
             # --- Rotating-vector fundamental fit (drift-immune gain measurement) ---
             # The old 2-angle method stalled at Theta_e=+pi (alpha) and -pi/2 (beta); if the
@@ -1136,7 +1143,7 @@ class calibrate():
                 _Bc += _b * math.cos(_th);  _Bs += _b * math.sin(_th)
                 _ids.append(self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak)
                 _upd(30 + int(65 * _k / _M))   # 30 -> 95%
-                wx.Yield()
+                _yield()
             self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
 
             _Aamp   = math.hypot(_Ac, _As) * 2.0 / _M
@@ -1264,7 +1271,7 @@ class calibrate():
 
         self.frame_statusbar.SetStatusText("Calibrating current timing...", 1)
         self.frame_statusbar.Update()
-        wx.Yield()
+        _yield()
 
         import math, os
 
@@ -1428,7 +1435,7 @@ class calibrate():
                 _p0 = self.node.sdo['Encoder']['RawPosition'].raw
                 _t0 = time.time(); _stable = 0
                 while time.time() - _t0 < timeout:
-                    time.sleep(0.06); wx.Yield()
+                    time.sleep(0.06); _yield()
                     _p1 = self.node.sdo['Encoder']['RawPosition'].raw
                     if abs(_p1 - _p0) <= 2:
                         _stable += 1
@@ -1474,7 +1481,7 @@ class calibrate():
             for _ in range(_NB):   # feeds straight into every per-settling offset — average it down.
                 _sa0 += self.node.sdo['Alpha']['Raw'].raw   # RAW ADC (not Filtered) — see the ring
                 _sb0 += self.node.sdo['Beta']['Raw'].raw
-                wx.Yield()
+                _yield()
             alpha_bias0 = _sa0 / _NB
             beta_bias0  = _sb0 / _NB
             print("  fresh zero-current bias: A={:.1f} B={:.1f} (self-contained; RAW ADC zero)"
@@ -1496,7 +1503,7 @@ class calibrate():
                 motor_ud = min(motor_ud + 150, _UD_CEILING)
                 self.node.sdo['Motor']['ud'].raw = motor_ud
                 time.sleep(0.04)
-                wx.Yield()
+                _yield()
                 if _check_fault("drive ramp (ud={})".format(motor_ud)):
                     _restore_idle()
                     raise RuntimeError("Itiming cal ABORTED: puck faulted / comms lost while "
@@ -1574,7 +1581,7 @@ class calibrate():
                             time.sleep(0.002)
                         _aa += _a; _bb += _b
                         _av.append((_a * _a + _b * _b) ** 0.5)
-                        wx.Yield()
+                        _yield()
                     if fp: fp.sync_off()                 # SYNC off before the next angle's SDO
                     _n = len(_av) or 1
                     _am = _aa / _n; _bm = _bb / _n        # per-angle MEAN vector (α, β)
@@ -1679,7 +1686,7 @@ class calibrate():
                 for s_idx, t in enumerate(settle_values):
                     self.frame_statusbar.SetStatusText(
                         "Timing cal — {}/{} ({} ns)".format(s_idx + 1, len(settle_values), t), 1)
-                    self.frame_statusbar.Update(); wx.Yield()
+                    self.frame_statusbar.Update(); _yield()
                     self.node.sdo['Amp']['MaxSettlingTime'].raw = t      # applies live (fw>=4.4.0)
                     _readback = self.node.sdo['Amp']['MaxSettlingTime'].raw
                     _r = _spin.scan_offset(drive_ud, alpha_bias=alpha_bias0, a_sens=1.0,
@@ -1707,7 +1714,7 @@ class calibrate():
             # the slope/spin use). Falls back to SDO if PDO can't set up. ---------------------------
             fp = None
             try:
-                from fast_pdo import FastPDO
+                from .fast_pdo import FastPDO
                 _fp = FastPDO(self.node, pair='alphabeta_raw', sync_period_ms=0.5)
                 _fp.__enter__()
                 if getattr(_fp, 'ok', False):
@@ -1727,7 +1734,7 @@ class calibrate():
                 # One mode-transition + measurement (no dedup, no store) -> returns the row for the caller.
                 t = int(max(0, min(t, half_period_ns - 1)))
                 self.frame_statusbar.SetStatusText("Timing cal — {} ns".format(t), 1)
-                self.frame_statusbar.Update(); wx.Yield()
+                self.frame_statusbar.Update(); _yield()
                 self.node.sdo['Motor']['ud'].raw = 0
                 self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
                 self.node.sdo['Amp']['MaxSettlingTime'].raw = t
@@ -2183,7 +2190,7 @@ class calibrate():
 
                 plt.tight_layout()
                 # Store in the session log (timing/images/) like the other cal plots, not the cwd.
-                from paths import session_path
+                from ..paths import session_path
                 import datetime as _dt
                 _pc2 = None
                 try:
@@ -2352,7 +2359,7 @@ class calibrate():
                 _p0 = self.node.sdo['Encoder']['RawPosition'].raw
                 _t0 = time.time(); _stable = 0
                 while time.time() - _t0 < timeout:
-                    time.sleep(0.06); wx.Yield()
+                    time.sleep(0.06); _yield()
                     _p1 = self.node.sdo['Encoder']['RawPosition'].raw
                     if abs(_p1 - _p0) <= 2:
                         _stable += 1
@@ -2378,7 +2385,7 @@ class calibrate():
                 motor_ud += 150
                 self.node.sdo['Motor']['ud'].raw = motor_ud
                 time.sleep(0.04)
-                wx.Yield()
+                _yield()
                 _cur = _imag() or 0.0
             _wait_settled()
             _cur = _imag() or 0.0
@@ -2405,7 +2412,7 @@ class calibrate():
                         _siq += self.node.sdo['CurrentFeedback'].raw
                         _saf += self.node.sdo['Alpha']['Filtered'].raw
                         _sbf += self.node.sdo['Beta']['Filtered'].raw
-                        time.sleep(0.003); wx.Yield()
+                        time.sleep(0.003); _yield()
                     _idm = (_sid / _M) / 1000.0 * i_peak
                     _iqm = (_siq / _M) / 1000.0 * i_peak
                     _idl.append(_idm); _iql.append(_iqm)
@@ -2447,7 +2454,7 @@ class calibrate():
                 while _cur < _lvl and _ud < 16000:
                     _ud += 150
                     self.node.sdo['Motor']['ud'].raw = _ud
-                    time.sleep(0.04); wx.Yield()
+                    time.sleep(0.04); _yield()
                     _cur = _imag() or 0.0
                 _wait_settled()
                 _mnv, _pk, _offv, _oa, _ob, _a1, _a2, _rawoff = _sweep_offset()
@@ -2717,7 +2724,7 @@ class calibrate():
                 _p0 = self.node.sdo['Encoder']['RawPosition'].raw
                 _t0 = time.time(); _stable = 0
                 while time.time() - _t0 < timeout:
-                    time.sleep(0.03); wx.Yield()
+                    time.sleep(0.03); _yield()
                     _p1 = self.node.sdo['Encoder']['RawPosition'].raw
                     if abs(_p1 - _p0) <= 2:
                         _stable += 1
@@ -2743,7 +2750,7 @@ class calibrate():
                 print("  Slope on SDO path (FastPDO skipped after a prior comms glitch).")
             else:
                 try:
-                    from fast_pdo import FastPDO
+                    from .fast_pdo import FastPDO
                     _fp = FastPDO(self.node, sync_period_ms=_sync_ms)
                     _fp.__enter__()
                     if getattr(_fp, 'ok', False):
@@ -2799,7 +2806,7 @@ class calibrate():
                             _sid += self.node.sdo['Motor']['id'].raw
                             _siq += self.node.sdo['CurrentFeedback'].raw
                             time.sleep(0.003)
-                        wx.Yield()
+                        _yield()
                     if fp: fp.sync_off()                 # SYNC off before the next angle's SDO
                     return (_sid / _M) / 1000.0 * i_peak, (_siq / _M) / 1000.0 * i_peak
 
@@ -2859,7 +2866,7 @@ class calibrate():
                 while _cur < _lvl and _cur < _i_top and _ud < 16000:
                     _ud += 300
                     self.node.sdo['Motor']['ud'].raw = _ud
-                    time.sleep(0.02); wx.Yield()
+                    time.sleep(0.02); _yield()
                     _cur = _imag() or 0.0
                 _wait_settled()
                 _mnv, _oa, _ob = _sweep_offset()
@@ -2991,7 +2998,7 @@ class calibrate():
                 ax.set_title('Current Sense Slope: mag={:.3f} mA/mA, dir={:.0f} deg'.format(
                     slope_mag, direction_deg))
                 ax.grid(True, alpha=0.3); ax.legend(fontsize=8)
-                from paths import session_path
+                from ..paths import session_path
                 import datetime as _dt
                 _pc = None
                 try:
@@ -3105,7 +3112,7 @@ class calibrate():
                 _p0 = n.sdo['Encoder']['RawPosition'].raw
                 _t0 = time.time(); _st = 0
                 while time.time() - _t0 < timeout:
-                    time.sleep(0.05); wx.Yield()
+                    time.sleep(0.05); _yield()
                     _p1 = n.sdo['Encoder']['RawPosition'].raw
                     if abs(_p1 - _p0) <= 2:
                         _st += 1
@@ -3162,7 +3169,7 @@ class calibrate():
                     _sa = _sb = 0.0
                     for _ in range(N_AVG):
                         _a, _b = _ab_ma(); _sa += _a; _sb += _b
-                        time.sleep(0.003); wx.Yield()
+                        time.sleep(0.003); _yield()
                     _xs.append(_sa / N_AVG); _ys.append(_sb / N_AVG)
                 _cx, _cy, _R = _circle_fit(_xs, _ys)
                 return _ud, _cx, _cy, _R
@@ -3266,7 +3273,7 @@ class calibrate():
 
         self.frame_statusbar.SetStatusText("Calibrating encoder zero (one revolution each way)...", 1)
         self.frame_statusbar.Update()
-        wx.Yield()
+        _yield()
 
         def _finish():
             if self.ADC_ON == False and self.adcWasON == True:
@@ -3368,7 +3375,7 @@ class calibrate():
 
         self.frame_statusbar.SetStatusText("Calibrating Encoder Lag (max-velocity / field-weakening)...", 1)
         self.frame_statusbar.Update()
-        wx.Yield()
+        _yield()
 
         try:
             if calAll == False:
@@ -3433,14 +3440,14 @@ class calibrate():
                 while time.time() - _t0 < SETTLE_TIMEOUT:
                     if _imag_mA() <= I_TRANSIENT:
                         break
-                    time.sleep(0.3); wx.Yield()
+                    time.sleep(0.3); _yield()
                 else:
                     print("  (current still elevated after {:.0f}s -- proceeding; transient steps are "
                           "excluded anyway)".format(SETTLE_TIMEOUT))
                 series = []; run_max = 0.0; lag = 0
                 while lag <= LAG_HARD_CAP:
                     self.node.sdo[0x3013][5].raw = lag
-                    time.sleep(SETTLE); wx.Yield()
+                    time.sleep(SETTLE); _yield()
                     sw = self.node.sdo['StatusWord'].raw
                     if sw & 0x08:
                         print("  drive FAULT (StatusWord={:#06x}) at lag {} -> stop".format(sw, lag)); break
@@ -3449,7 +3456,7 @@ class calibrate():
                     for _ in range(N_AVG):
                         acc_v += abs(self.node.sdo['VelocityFeedback'].raw)
                         acc_i += _imag_mA()
-                        wx.Yield()
+                        _yield()
                     vel = acc_v / N_AVG; imag = acc_i / N_AVG
                     _tag = "" if imag <= I_TRANSIENT else "  (i2t transient, excluded)"
                     print("  dir {:+d}  Lag: {:3d}  vel: {:9.0f} ({:6.0f} RPM)  |I|: {:6.1f} mA  bus: {:.1f} V{}"
@@ -3571,7 +3578,7 @@ class calibrate():
           self.Disable()
         self.frame_statusbar.SetStatusText("Testing Encoder...", 1)
         self.frame_statusbar.Update()
-        wx.Yield()
+        _yield()
 
         if self.ADC_ON == True:
             self.adcWasON = True
@@ -3587,7 +3594,7 @@ class calibrate():
         Pos = []
         while time.time() < timeEnd:
           Pos.append(self.node.sdo['PositionFeedback'].raw)
-          wx.Yield() # keep wx event loop alive so Windows doesn't mark the app "Not Responding"
+          _yield() # keep wx event loop alive so Windows doesn't mark the app "Not Responding"
         posDif = max(Pos) - min(Pos)
         print("Max Pos: {} Min Pos: {} Diff: {}".format(max(Pos), min(Pos), posDif))
         maxDif = 8
@@ -3651,7 +3658,7 @@ class calibrate():
             self.node.sdo["SetModeOfOperation"].raw = MODE_PHASE_VOLTAGE_ANGLE
             self.node.sdo['Theta_e'].raw = 0
             time.sleep(0.3)
-            wx.Yield()
+            _yield()
 
             motor_ud = 0
             while (self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak) < cal_current and motor_ud < 32000:
@@ -3663,7 +3670,7 @@ class calibrate():
                 motor_ud = min(motor_ud + _step, 32000)
                 self.node.sdo['Motor']['ud'].raw = motor_ud
                 time.sleep(0.05)
-                wx.Yield()
+                _yield()
 
             _sleep_responsive(0.3)
 
@@ -3689,7 +3696,7 @@ class calibrate():
                 theta_e_raw = theta_e_u if theta_e_u < 32768 else theta_e_u - 65536
                 self.node.sdo['Theta_e'].raw = theta_e_raw
                 time.sleep(STEP_S)
-                wx.Yield()
+                _yield()
 
                 enc = self.node.sdo['Encoder']['RawPosition'].raw
                 delta = enc - enc_prev
@@ -3741,7 +3748,7 @@ class calibrate():
                 import matplotlib.pyplot as plt
                 import matplotlib.gridspec as gridspec
                 import datetime, os
-                from paths import resource_path
+                from ..paths import resource_path
 
                 mech_all = [r[0] for r in results]
                 err_all  = [r[3] for r in results]
@@ -3853,7 +3860,7 @@ class calibrate():
 
                 plt.tight_layout()
                 ts = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-                from paths import session_path
+                from ..paths import session_path
                 plot_path = session_path('enc_linearity_{}.png'.format(ts))
                 os.makedirs(os.path.dirname(plot_path), exist_ok=True)
                 plt.savefig(plot_path, dpi=100)
@@ -3952,7 +3959,7 @@ class calibrate():
         try:
             import cmath as _cm
             import datetime, os
-            from paths import resource_path, session_path
+            from ..paths import resource_path, session_path
             ts = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
 
             e_zero         = self.node.sdo['Calibration']['e_zero'].raw
@@ -4029,7 +4036,7 @@ class calibrate():
             self.node.sdo["SetModeOfOperation"].raw = MODE_PHASE_VOLTAGE_ANGLE
             self.node.sdo['Theta_e'].raw = 0
             time.sleep(0.3)
-            wx.Yield()
+            _yield()
 
             motor_ud = 0
             while (self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak) < cal_current \
@@ -4042,7 +4049,7 @@ class calibrate():
                 motor_ud = min(motor_ud + _step, 32000)
                 self.node.sdo['Motor']['ud'].raw = motor_ud
                 time.sleep(0.05)
-                wx.Yield()
+                _yield()
             _sleep_responsive(0.3)
 
             # Report the drive the sweep actually runs at + how it got there. Too little holding current
@@ -4078,7 +4085,7 @@ class calibrate():
                 self.node.sdo['Theta_e'].raw = theta_e_raw
                 time.sleep(_step_s)
                 self.UpdateUI(5 + step * 30 // (_sw_n_total + 1))
-                wx.Yield()
+                _yield()
                 enc   = self.node.sdo['Encoder'][_sweep_pos_key].raw
                 delta = enc - enc_prev
                 if delta >  enc_resolution / 2: delta -= enc_resolution
@@ -4109,7 +4116,7 @@ class calibrate():
                 self.node.sdo['Theta_e'].raw = theta_e_raw
                 time.sleep(_step_s)
                 self.UpdateUI(35 + step * 30 // (_sw_n_total + 1))
-                wx.Yield()
+                _yield()
                 enc_r   = self.node.sdo['Encoder'][_sweep_pos_key].raw
                 delta_r = enc_r - enc_prev_rev
                 if delta_r >  enc_resolution / 2: delta_r -= enc_resolution
@@ -4881,7 +4888,7 @@ class calibrate():
                 print("\n  Retesting linearity with compensation active ...")
                 self.node.sdo['Theta_e'].raw = 0
                 _sleep_responsive(0.3)
-                wx.Yield()
+                _yield()
 
                 # Sweep: use RawPosition for delta tracking and EncPos for compensation.
                 # Forward pass.
@@ -4899,7 +4906,7 @@ class calibrate():
                     self.node.sdo['Theta_e'].raw = _rts_ter
                     time.sleep(RETEST_STEP_S)
                     self.UpdateUI(70 + _rts * 13 // (RETEST_N_TOTAL + 1))
-                    wx.Yield()
+                    _yield()
                     _rt_raw = self.node.sdo['Encoder']['RawPosition'].raw
                     _rt_enc = self.node.sdo['Encoder']['EncPos'].raw
                     _rt_d   = _rt_raw - _rt_raw_prev
@@ -4931,7 +4938,7 @@ class calibrate():
                     self.node.sdo['Theta_e'].raw = _rts_ter_r
                     time.sleep(RETEST_STEP_S)
                     self.UpdateUI(83 + _rts * 13 // (RETEST_N_TOTAL + 1))
-                    wx.Yield()
+                    _yield()
                     _rt_raw_r = self.node.sdo['Encoder']['RawPosition'].raw
                     _rt_enc_r = self.node.sdo['Encoder']['EncPos'].raw
                     _rt_d_r   = _rt_raw_r - _rt_raw_prev_r
@@ -5014,7 +5021,7 @@ class calibrate():
                             _imax = max(_imax, (_id * _id + _iq * _iq) ** 0.5)
                             if self.node.sdo['StatusWord'].raw & 0x08:          # drive faulted -> unstable
                                 return None, _imax
-                            _vs.append(_v); wx.Yield()
+                            _vs.append(_v); _yield()
                         return _vs, _imax
                     def _measure(_tag):
                         _hv, _hi = _sample(0, 2.2)                              # 0-cmd HOLD
@@ -5605,12 +5612,12 @@ class calibrate():
         self.Disable()
         self.frame_statusbar.SetStatusText("Cogging characterisation sweep...", 1)
         self.frame_statusbar.Update()
-        wx.Yield()
+        _yield()
 
         try:
             import cmath as _cm
             import datetime, os
-            from paths import resource_path, session_path
+            from ..paths import resource_path, session_path
             ts = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
 
             enc_resolution = self.node.sdo['EncoderConfig']['Resolution'].raw
@@ -5782,7 +5789,7 @@ class calibrate():
                 self.node.sdo["ControlWord"].raw = OP_ENABLED
                 self.node.sdo["SetModeOfOperation"].raw = MODE_PROFILE_VEL
             time.sleep(0.2)
-            wx.Yield()
+            _yield()
 
             def _sample_pass(vel_cmd, label, upd_start, upd_end, settle_s=SETTLE_S):
                 """Collect (angle_deg, iq_mA) at each sample tick over N_REVS.
@@ -5794,7 +5801,7 @@ class calibrate():
                     label, vel_cmd, abs(vel_cmd) * 60.0 / enc_resolution, N_REVS))
                 self.node.sdo['TargetVelocity'].raw = vel_cmd
                 _sleep_responsive(settle_s)
-                wx.Yield()
+                _yield()
 
                 samples = []  # list of (angle_deg, iq_mA)
                 # IIR filter (α=15/16) group delay = 15 samples at 8 kHz update
@@ -5834,7 +5841,7 @@ class calibrate():
                     angle_deg = enc_corr / enc_resolution * 360.0
                     samples.append((angle_deg, iq_ma))
                     _upd(upd_start + step * (upd_end - upd_start) // n_samples)
-                    wx.Yield()
+                    _yield()
                 return samples
 
             def _check_vel_quality(samples, is_fwd):
@@ -5929,7 +5936,7 @@ class calibrate():
                     _samps.append((sum(_angs) / len(_angs), sum(_iqs) / len(_iqs)))
                     if callable(_upd):
                         _upd(upd_start + _si * (upd_end - upd_start) // N_STEP)
-                    wx.Yield()
+                    _yield()
                 return _samps
 
             if STEPPED_MEASURE:
@@ -5945,7 +5952,7 @@ class calibrate():
 
                     self.node.sdo['TargetVelocity'].raw = 0
                     _sleep_responsive(1.5)
-                    wx.Yield()
+                    _yield()
 
                     samples_rev = _sample_pass(-vel_cts_per_sec, 'reverse', 47, 86)
                     _check_vel_quality(samples_rev, is_fwd=False)
@@ -5954,7 +5961,7 @@ class calibrate():
                 except RuntimeError as _stall_exc:
                     self.node.sdo['TargetVelocity'].raw = 0
                     _sleep_responsive(1.0)
-                    wx.Yield()
+                    _yield()
                     if 'stalled' not in str(_stall_exc).lower():
                         raise
                     if TARGET_RPM >= MAX_SWEEP_RPM:
@@ -5975,7 +5982,7 @@ class calibrate():
             self.node.sdo['TargetVelocity'].raw = 0
             _sleep_responsive(1.0)
             self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
-            wx.Yield()
+            _yield()
 
             _upd(88)
 
@@ -6645,20 +6652,20 @@ class calibrate():
                     self.node.sdo["ControlWord"].raw = OP_ENABLED
                     self.node.sdo["SetModeOfOperation"].raw = MODE_PROFILE_VEL
                     time.sleep(0.2)
-                    wx.Yield()
+                    _yield()
 
                     _retest_settle = SETTLE_S
                     samples_fwd_rt = _sample_pass(+vel_cts_per_sec, 'retest fwd', 94, 97,
                                                   settle_s=_retest_settle)
                     self.node.sdo['TargetVelocity'].raw = 0
                     _sleep_responsive(1.0)
-                    wx.Yield()
+                    _yield()
                     samples_rev_rt = _sample_pass(-vel_cts_per_sec, 'retest rev', 97, 99,
                                                   settle_s=_retest_settle)
                     self.node.sdo['TargetVelocity'].raw = 0
                     _sleep_responsive(1.0)
                     self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
-                    wx.Yield()
+                    _yield()
 
                     fwd_bins_rt = [[] for _ in range(N_BINS)]
                     rev_bins_rt = [[] for _ in range(N_BINS)]
@@ -6948,12 +6955,12 @@ class calibrate():
         self.Disable()
         self.frame_statusbar.SetStatusText("Cogging position-hold sweep...", 1)
         self.frame_statusbar.Update()
-        wx.Yield()
+        _yield()
 
         try:
             import cmath as _cm
             import datetime, os
-            from paths import resource_path, session_path
+            from ..paths import resource_path, session_path
             ts = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
 
             enc_resolution = self.node.sdo['EncoderConfig']['Resolution'].raw
@@ -7050,7 +7057,7 @@ class calibrate():
             self.node.sdo["ControlWord"].raw        = OP_ENABLED
             self.node.sdo["SetModeOfOperation"].raw = MODE_PROFILE_VEL
             time.sleep(0.2)
-            wx.Yield()
+            _yield()
 
             # ── Detect velocity-to-raw-position sign ───────────────────────────
             # Positive TargetVelocity may increase OR decrease RawPosition
@@ -7101,7 +7108,7 @@ class calibrate():
                         samples.append(-a_mA * math.sin(th_e)
                                        + b_mA * math.cos(th_e))
                         actual_raws.append(raw_now)
-                    wx.Yield()
+                    _yield()
                 iq_mean  = sum(samples)     / len(samples)     if samples     else 0.0
                 pos_mean = sum(actual_raws) / len(actual_raws) if actual_raws else float(target_raw)
                 return iq_mean, pos_mean
@@ -7157,7 +7164,7 @@ class calibrate():
             self.node.sdo["TargetVelocity"].raw = 0
             _sleep_responsive(0.5)
             self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
-            wx.Yield()
+            _yield()
 
             n_empty_fwd = sum(1 for b in fwd_bins if not b)
             n_empty_rev = sum(1 for b in rev_bins if not b)
@@ -7431,7 +7438,7 @@ class calibrate():
                     self.node.sdo["ControlWord"].raw        = OP_ENABLED
                     self.node.sdo["SetModeOfOperation"].raw = MODE_PROFILE_VEL
                     time.sleep(0.2)
-                    wx.Yield()
+                    _yield()
 
                     print("\n  Retest (compensation active, bidirectional) ...")
                     rt_fwd_bins = [[] for _ in range(N_BINS)]
@@ -7663,7 +7670,7 @@ class calibrate():
                      else "Cogging firmware DFT calibration...")
         self.frame_statusbar.SetStatusText(_task_lbl, 1)
         self.frame_statusbar.Update()
-        wx.Yield()
+        _yield()
 
         COG_CAL_DONE     = 2
         COG_CAL_ERROR    = 3
@@ -7676,7 +7683,7 @@ class calibrate():
 
         try:
             import datetime, os
-            from paths import session_path
+            from ..paths import session_path
             ts = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
 
             enc_resolution  = int(self.node.sdo['EncoderConfig']['Resolution'].raw)
@@ -7712,13 +7719,13 @@ class calibrate():
                     TARGET_MOTOR_RPM, settle_s, comp_label))
                 self.node.sdo['TargetVelocity'].raw = vel_cts_per_sec
                 _sleep_responsive(settle_s)
-                wx.Yield()
+                _yield()
                 print("  Triggering DFT ({} revs) ...".format(n_revs_actual))
                 self.node.sdo[0x3029][1].raw = 1
                 _t0, _tout = time.time(), 120.0
                 while True:
                     time.sleep(0.25)
-                    wx.Yield()
+                    _yield()
                     _st = int(self.node.sdo[0x3029][1].raw)
                     _el = time.time() - _t0
                     if _st == COG_CAL_DONE:
@@ -7853,7 +7860,7 @@ class calibrate():
                 self.node.sdo["ControlWord"].raw        = OP_ENABLED
                 self.node.sdo["SetModeOfOperation"].raw = MODE_PROFILE_VEL
                 time.sleep(0.2)
-                wx.Yield()
+                _yield()
 
             # ================================================================ #
             #  RETEST ONLY — velocity sweep before (comp OFF) and after       #
@@ -7984,7 +7991,7 @@ class calibrate():
                 TARGET_MOTOR_RPM, SETTLE_S))
             self.node.sdo['TargetVelocity'].raw = vel_cts_per_sec
             _sleep_responsive(SETTLE_S)
-            wx.Yield()
+            _yield()
             _upd(27)
 
             # Trigger firmware DFT.
@@ -7995,7 +8002,7 @@ class calibrate():
 
             while True:
                 time.sleep(0.25)
-                wx.Yield()
+                _yield()
                 _status  = int(self.node.sdo[0x3029][1].raw)
                 _elapsed = time.time() - _t_start
                 if _status == COG_CAL_DONE:
@@ -8014,7 +8021,7 @@ class calibrate():
             self.node.sdo['TargetVelocity'].raw = 0
             _sleep_responsive(0.5)
             self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
-            wx.Yield()
+            _yield()
             _upd(78)
 
             # Read and display DFT results.
@@ -8192,7 +8199,7 @@ class calibrate():
     def _load_enc_correction_table(self):
         """Return (table, path) from the most recent enc_correction_full CSV, or (None, None)."""
         import os, glob
-        from paths import resource_path
+        from ..paths import resource_path
         log_dir = resource_path('logs')
         hits = sorted(glob.glob(os.path.join(log_dir, '**', 'enc_correction_full_*.csv'),
                                 recursive=True))
@@ -8340,7 +8347,7 @@ class calibrate():
 
         self.frame_statusbar.SetStatusText("Please turn motor in positive (+) direction...", 1)
         self.frame_statusbar.Update()
-        wx.Yield()
+        _yield()
 
         done = False
         while not done:

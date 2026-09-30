@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Regenerate this app's wxGlade GUI (*_gui.py) from its configure-*.wxg.
+# Regenerate this app's wxGlade GUI (puckutility/gui/frame.py) from its configure-*.wxg.
 #
 # Why this exists:
 #   * The plain `wxglade -g python file.wxg` CLI dies with "wx.App object must be

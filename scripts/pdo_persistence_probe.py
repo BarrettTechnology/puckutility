@@ -33,7 +33,8 @@ import sys
 import time
 
 sys.path.insert(0, __file__.rsplit('/scripts/', 1)[0])
-import can_backend  # noqa: E402
+from p4core import can_backend  # noqa: E402
+from p4core.paths import puck4_eds  # noqa: E402
 
 RPDO = {1: (0x1400, 0x200), 2: (0x1401, 0x300), 3: (0x1402, 0x400), 4: (0x1403, 0x500)}
 TPDO = {1: (0x1800, 0x180), 2: (0x1801, 0x280), 3: (0x1802, 0x380), 4: (0x1803, 0x480)}
@@ -253,7 +254,7 @@ def main():
             if len(found) != 1:
                 print("Need exactly one node (or pass --node); found: {}".format(found)); return 1
             node_id = found[0]
-        node = net.add_node(node_id, 'puck4.eds')
+        node = net.add_node(node_id, puck4_eds())
         print("node id = {}".format(node_id))
 
         # Phase 0 -- application firmware vs flashloader

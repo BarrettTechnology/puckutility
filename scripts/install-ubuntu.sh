@@ -8,7 +8,7 @@ sudo rm -rf /usr/local/bin/PuckUtilityApp
 sudo rm -f /usr/share/applications/PuckUtilityApp.desktop
 sudo rm -f ~/Desktop/PuckUtilityApp.desktop
 sudo cp -r "$SCRIPT_DIR" /usr/local/bin/PuckUtilityApp
-sudo cp images/BarrettIcon.png /usr/share/pixmaps/PuckUtilityApp.png
+sudo cp puckutility/data/images/BarrettIcon.png /usr/share/pixmaps/PuckUtilityApp.png
 sudo cp PuckUtilityApp.desktop ~/.local/share/applications/
 sudo cp PuckUtilityApp.desktop /usr/share/applications/
 cp PuckUtilityApp.desktop ~/Desktop

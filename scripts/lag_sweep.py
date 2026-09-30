@@ -23,8 +23,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-import can_backend
-from canopen_runner import CLEAR_FAULT, SHUTDOWN, OP_ENABLED, MODE_IDLE, MODE_PROFILE_VEL
+from p4core import can_backend
+from p4core.paths import puck4_eds
+from p4core.cia402 import CLEAR_FAULT, SHUTDOWN, OP_ENABLED, MODE_IDLE, MODE_PROFILE_VEL
 
 SAVE_MAGIC = 0x65766173  # 'save'
 
@@ -49,7 +50,7 @@ def main():
     ap.add_argument('dev', nargs='?', default='can0')
     ap.add_argument('node', nargs='?', type=int, default=127)
     a = ap.parse_args()
-    eds = os.path.join(ROOT, 'puck4.eds')
+    eds = puck4_eds()
 
     net = can_backend.make_network(a.dev, bitrate=1_000_000)
     node = None

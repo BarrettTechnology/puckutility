@@ -37,9 +37,10 @@ REPO_ROOT = os.path.dirname(
 sys.path.insert(0, REPO_ROOT)
 
 import canopen          # noqa: E402  (after sys.path tweak)
-import can_backend      # noqa: E402
+from p4core import can_backend      # noqa: E402
+from p4core.paths import puck4_eds   # noqa: E402
 
-EDS_PATH = os.path.join(REPO_ROOT, 'puck4.eds')
+EDS_PATH = puck4_eds()
 
 PRODUCT_CODE_INDEX = 0x1018
 PRODUCT_CODE_SUB   = 2
