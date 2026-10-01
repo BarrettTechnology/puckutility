@@ -53,8 +53,6 @@ class puckutilityapp_frame(wx.Frame):
         self.Bind(wx.EVT_MENU, self.test_encoder, item)
         item = wxglade_tmp_menu.Append(wx.ID_ANY, "Encoder Error Compensation", "")
         self.Bind(wx.EVT_MENU, self.generate_enc_correction_table, item)
-        item = wxglade_tmp_menu.Append(wx.ID_ANY, "Cogging Error Compensation", "")
-        self.Bind(wx.EVT_MENU, self.cogging_calibrate_auto, item)
         item = wxglade_tmp_menu.Append(wx.ID_ANY, "Current Sense Bias", "")
         self.Bind(wx.EVT_MENU, self.calibrate_ibias, item)
         item = wxglade_tmp_menu.Append(wx.ID_ANY, "Current Sense Gainfactor", "")
@@ -78,12 +76,6 @@ class puckutilityapp_frame(wx.Frame):
         self.frame_menubar.OFF = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "OFF", "", wx.ITEM_RADIO)
         self.Bind(wx.EVT_MENU, self.error_compensation_state, self.frame_menubar.OFF)
         wxglade_tmp_menu.Append(wx.ID_ANY, "Encoder Error Compensation", wxglade_tmp_menu_sub, "")
-        wxglade_tmp_menu_sub = wx.Menu()
-        item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "ON", "", wx.ITEM_RADIO)
-        self.Bind(wx.EVT_MENU, self.cogging_compensation_state, item)
-        item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "OFF", "", wx.ITEM_RADIO)
-        self.Bind(wx.EVT_MENU, self.cogging_compensation_state, item)
-        wxglade_tmp_menu.Append(wx.ID_ANY, "Cogging Error Compensation", wxglade_tmp_menu_sub, "")
         item = wxglade_tmp_menu.Append(wx.ID_ANY, "Set User Direction...", "")
         self.Bind(wx.EVT_MENU, self.set_user_dir, item)
         item = wxglade_tmp_menu.Append(wx.ID_ANY, "Tune Gains...", "")
@@ -320,10 +312,6 @@ class puckutilityapp_frame(wx.Frame):
         print("Event handler 'generate_enc_correction_table' not implemented!")
         event.Skip()
 
-    def cogging_calibrate_auto(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
-        print("Event handler 'cogging_calibrate_auto' not implemented!")
-        event.Skip()
-
     def calibrate_ibias(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
         print("Event handler 'calibrate_ibias' not implemented!")
         event.Skip()
@@ -358,10 +346,6 @@ class puckutilityapp_frame(wx.Frame):
 
     def error_compensation_state(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
         print("Event handler 'error_compensation_state' not implemented!")
-        event.Skip()
-
-    def cogging_compensation_state(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
-        print("Event handler 'cogging_compensation_state' not implemented!")
         event.Skip()
 
     def set_user_dir(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>

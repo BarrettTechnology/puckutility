@@ -332,7 +332,7 @@ PYICON
     </p>
     <p>
       It supports firmware flashing, CANopen object dictionary configuration,
-      encoder and cogging calibration, and CAN adapter setup.
+      encoder and current-sense calibration, and CAN adapter setup.
     </p>
   </description>
   <icon type="stock">PuckUtilityApp</icon>

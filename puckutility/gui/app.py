@@ -249,46 +249,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 wx.Choice = _orig_choice
                 wx.TextCtrl = _orig_textctrl
 
-        # Cache references to the cogging compensation ON/OFF radio items on
-        # frame_menubar so the handler and startup sync can use them without
-        # storing them in frame.py.  Find the "Cogging Error
-        # Compensation" submenu item (the one with a sub-menu, not the bare
-        # calibration entry of the same name), then take the first two items.
-        try:
-            _items = list(self.frame_menubar.GetMenu(0).GetMenuItems())
-            for _it in _items:
-                if (_it.GetItemLabel() == "Cogging Error Compensation"
-                        and _it.GetSubMenu() is not None):
-                    _sub_items = list(_it.GetSubMenu().GetMenuItems())
-                    if len(_sub_items) >= 2:
-                        self.frame_menubar.COG_ON  = _sub_items[0]
-                        self.frame_menubar.COG_OFF = _sub_items[1]
-                    break
-        except Exception:
-            pass
-
-        # ── Cogging compensation greyed out in the menu (2026-06-17) ─────────────
-        # Cogging comp is blocked on the noisy velocity-feedback estimate (the FF
-        # measured against that loop validates net neutral-to-harmful — see the
-        # cogging-comp investigation). DISABLE both menu-0 "Cogging Error Compensation"
-        # entries — (a) the ON/OFF submenu (dropdown) and (b) the bare calibration
-        # item — so they're greyed and inert until the velocity feedback is fixed.
-        #
-        # We DISABLE rather than Remove(): the submenu's ON/OFF radio items are cached
-        # (frame_menubar.COG_ON/COG_OFF) and referenced in ~10 places. Remove() detaches
-        # then GC-destroys them, leaving those refs dangling → use-after-free segfault on
-        # the next menu interaction. Enable(False) keeps the items alive (no dangling),
-        # greys them, and prevents the submenu from opening. Fully reversible: comment
-        # out this block and relaunch to re-enable. (Underlying calibrate_menu.py
-        # cogging_* functions are untouched.)
-        try:
-            _cog_menu0 = self.frame_menubar.GetMenu(0)
-            for _cog_it in list(_cog_menu0.GetMenuItems()):
-                if _cog_it.GetItemLabel() == "Cogging Error Compensation":
-                    _cog_it.Enable(False)
-        except Exception:
-            pass
-
         # Frame-level Tab/Shift-Tab interception. EVT_CHAR_HOOK on the focused
         # window bubbles up to the frame; binding here gives us a single hook
         # that fires for keystrokes from ANY control (buttons, choices, the
@@ -1008,14 +968,6 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             comp_on = bool(self.node.sdo[0x3027][1].raw)
             self.frame_menubar.ON.Check(comp_on)
             self.frame_menubar.OFF.Check(not comp_on)
-        except Exception:
-            pass
-
-        # Sync the Cogging Compensation menu to the puck's current state.
-        try:
-            cog_on = bool(self.node.sdo[0x3028][1].raw)
-            self.frame_menubar.COG_ON.Check(cog_on)
-            self.frame_menubar.COG_OFF.Check(not cog_on)
         except Exception:
             pass
 
