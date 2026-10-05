@@ -469,27 +469,44 @@ class calibrate():
     # 0x3027 encoder compensation: sub1 = active, then per bin i: 2+3i A_s (INT16),
     # 3+3i k (UNSIGNED16), 4+3i A_c (INT16).  The bin count is whatever the firmware
     # has - v4.4 builds have 2 (ENC_COMP_BINS; bins cost ~1 us each in the PWM ISR),
-    # older experimental builds had 10 - so it is read from sub0, never assumed.  Raw
-    # SDO throughout, so an EDS with a different sub count cannot get in the way.
-    def _enc_comp_bins(self):
-        """Number of encoder-compensation bins the node implements (0 if it has no 0x3027)."""
+    # older experimental builds had 10 - so it is read from sub0, never assumed.  Newer
+    # firmware follows the bins with two UNSIGNED16 subs for the encoder's tracking filter
+    # (fn Hz, zeta x1000: 0x3027,8-9 on a 2-bin build), which scale each bin with speed;
+    # sub0 = 3n+1 means bins only, 3n+3 bins plus filter.  Raw SDO throughout, so an EDS
+    # with a different sub count cannot get in the way.
+    def _enc_comp_count(self):
         try:
-            _hi = self.node.sdo.upload(0x3027, 0)[0]
+            return int(self.node.sdo.upload(0x3027, 0)[0])
         except Exception:
             return 0
-        return max(0, (int(_hi) - 1) // 3)
+
+    def _enc_comp_bins(self):
+        """Number of encoder-compensation bins the node implements (0 if it has no 0x3027)."""
+        return max(0, (self._enc_comp_count() - 1) // 3)
+
+    def _enc_filt_subs(self):
+        """(fn sub, zeta sub) of the encoder-filter model, or None if the firmware has none."""
+        _hi = self._enc_comp_count()
+        if _hi >= 4 and (_hi - 1) % 3 == 2:
+            _n = (_hi - 1) // 3
+            return (2 + 3 * _n, 3 + 3 * _n)
+        return None
+
+    def _enc_comp_signed(self, sub):
+        return 2 <= sub < 2 + 3 * self._enc_comp_bins() and (sub - 2) % 3 != 1
 
     def _enc_comp_read(self, sub):
-        _signed = sub >= 2 and (sub - 2) % 3 != 1
-        return int.from_bytes(self.node.sdo.upload(0x3027, sub)[:2], 'little', signed=_signed)
+        return int.from_bytes(self.node.sdo.upload(0x3027, sub)[:2], 'little',
+                              signed=self._enc_comp_signed(sub))
 
     def _enc_comp_write(self, sub, value):
-        _signed = sub >= 2 and (sub - 2) % 3 != 1
-        self.node.sdo.download(0x3027, sub, int(value).to_bytes(2, 'little', signed=_signed))
+        self.node.sdo.download(0x3027, sub, int(value).to_bytes(2, 'little',
+                                                                signed=self._enc_comp_signed(sub)))
 
     def _enc_comp_save(self, n_bins):
-        """Persist 0x3027 sub1 .. the last sub of n_bins bins."""
-        for _si in range(1, 2 + 3 * n_bins):
+        """Persist 0x3027 sub1 .. the last sub of n_bins bins, and the filter subs if present."""
+        _subs = list(range(1, 2 + 3 * n_bins)) + list(self._enc_filt_subs() or ())
+        for _si in _subs:
             self.node.sdo['Save']['Single'].raw = ((0x3027 << 8) | _si)
 
     def _clear_offset_reg(self):
@@ -4008,15 +4025,21 @@ class calibrate():
             time.sleep(0.3)
             _yield()
 
+            # Close in on cal_current from below. A fixed first step (32000/12 used to be one)
+            # drove 7.5 A into node 127 against a 1 A i_cal and never stepped back: the sweep
+            # heated the motor ~17 C and the stator's stray field reached the encoder as a
+            # spurious k = pp-1 term. So: grow ud geometrically until current flows, then move
+            # half-way to the proportional estimate each step, which also backs off an overshoot.
             motor_ud = 0
-            while (self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak) < cal_current \
-                  and motor_ud < 32000:
+            for _ in range(200):
                 _id_now = self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak
-                if motor_ud > 0 and _id_now > 0:
-                    _step = max(100, int((motor_ud * cal_current / _id_now - motor_ud) / 4))
+                if motor_ud > 0 and abs(_id_now - cal_current) < 0.05 * cal_current:
+                    break
+                if motor_ud > 0 and _id_now > 50:
+                    motor_ud = int(motor_ud * (1 + 0.5 * (cal_current / _id_now - 1)))
                 else:
-                    _step = max(100, 32000 // 12)
-                motor_ud = min(motor_ud + _step, 32000)
+                    motor_ud = max(motor_ud + 30, int(motor_ud * 1.5))
+                motor_ud = max(0, min(motor_ud, 32000))
                 self.node.sdo['Motor']['ud'].raw = motor_ud
                 time.sleep(0.05)
                 _yield()
@@ -4616,6 +4639,16 @@ class calibrate():
                     _der = -(amps[_kk] * _w)[_np.newaxis, :] * _np.sin(_ang)
                     return float(_np.max(_np.abs(_der.sum(axis=1))))
                 _steep = []; _ppcut = []; _budcut = []; _elec = []
+                # k = pole_pairs - 1 is the sweep's own drive current, not the encoder: the stator
+                # field (at pp x theta) reaches the sensor and beats against the magnet's 1 x theta.
+                # Node 127 (pp 7): k=6 0.40 ct at 1 A, 0.72 at 2 A, 1.6 at 7.5 A, while k=2 held
+                # still. In use that field sits on the q axis (90 deg electrical on) at a size set
+                # by load, so the sweep's bin would be wrong in both phase and amplitude.
+                _stray = [_k for _k in _cap_ks if pole_pairs >= 2 and _k == pole_pairs - 1]
+                _cap_ks = [_k for _k in _cap_ks if _k not in _stray]
+                if _stray:
+                    print("    Skipped (k = pole-pairs - 1 = {}, stator stray field at the drive current, "
+                          "{:.2f} ct): not encoder error".format(_stray[0], float(amps[_stray[0]])))
                 if _direct_drive:
                     TOTAL_SLOPE_MAX = 0.75     # real table-slope ceiling (25% margin under the 1.0 limit)
                     if pole_pairs >= 2:
@@ -4755,6 +4788,28 @@ class calibrate():
                     self._enc_comp_write(_as_sub, _A_s_val)
                     self._enc_comp_write(_k_sub, _k_val)
                     self._enc_comp_write(_ac_sub, _A_c_val)
+
+                # The sweep is quasi-static, so the table is the encoder's error at rest. At speed the
+                # MA702's own tracking filter scales and rotates it (firmware applies H(j k w), fn/zeta
+                # in 0x3027,8-9). Node 127 at filter setting 0xA0: fn 150 Hz, zeta 0.88, fitted from
+                # coasts to 12k rpm (stm32 notes/field_weakening_collapse.md). Other settings change
+                # the bandwidth and have no fit yet, so leave the model off there.
+                _filt = self._enc_filt_subs()
+                if _filt:
+                    try:
+                        _hwf = self.node.sdo.upload(0x3013, 6)[0]
+                    except Exception:
+                        _hwf = None
+                    _fn, _zt = (150, 880) if _hwf == 0xA0 else (0, 0)
+                    self._enc_comp_write(_filt[0], _fn)
+                    self._enc_comp_write(_filt[1], _zt)
+                    if _fn:
+                        print("  Encoder filter model: fn {} Hz, zeta {:.2f} (0x3027,{}-{})".format(
+                            _fn, _zt / 1000.0, _filt[0], _filt[1]))
+                    else:
+                        print("  Encoder filter model OFF: no fit for encoder filter setting {} "
+                              "(0x3013,6); the table is exact at rest only".format(
+                                  "unknown" if _hwf is None else "{:#04x}".format(_hwf)))
 
                 # Enable compensation
                 self._enc_comp_write(1, 1)
