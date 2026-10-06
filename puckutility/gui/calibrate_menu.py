@@ -16,6 +16,7 @@ from p4core.cia402 import (
 from canopen.sdo import SdoAbortedError
 from p4core.can_backend import sdo_contention_message
 from p4core import ezero
+from p4core.calibrate import firmware_version
 from p4core import flash as flashp4
 from ..paths import _resolve_path, FIRMWARE_DIR, CONFIG_DIR
 
@@ -460,8 +461,7 @@ class calibrate():
         dlg.Destroy()
 
     def _fw_ver_tuple(self):
-        raw = self.node.sdo['MfgSoftwareVersion'].raw
-        return ((raw >> 24) & 0xFF, (raw >> 8) & 0xFFFF, raw & 0xFF)
+        return firmware_version(self.node)
 
     def _fw_at_least(self, major, minor, patch):
         return self._fw_ver_tuple() >= (major, minor, patch)
@@ -4649,6 +4649,14 @@ class calibrate():
                 if _stray:
                     print("    Skipped (k = pole-pairs - 1 = {}, stator stray field at the drive current, "
                           "{:.2f} ct): not encoder error".format(_stray[0], float(amps[_stray[0]])))
+                # Orders the caller has shown are not encoder error. P4-42 HFM (12 slots, pp 7):
+                # the sweep reads 5-6 ct at k=12, but zero-current coasts at 1-3k rpm show
+                # <= 0.3 ct raw, and a k=12 bin put 3-7 ct INTO the compensated angle (2026-10-06).
+                _user = [_k for _k in _cap_ks if _k in set(getattr(self, 'enc_comp_skip_k', ()))]
+                _cap_ks = [_k for _k in _cap_ks if _k not in _user]
+                if _user:
+                    print("    Skipped (enc_comp_skip_k): "
+                          + ", ".join("k={}({:.2f}ct)".format(_k, float(amps[_k])) for _k in _user))
                 if _direct_drive:
                     TOTAL_SLOPE_MAX = 0.75     # real table-slope ceiling (25% margin under the 1.0 limit)
                     if pole_pairs >= 2:
