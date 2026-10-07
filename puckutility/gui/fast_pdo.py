@@ -84,7 +84,7 @@ The proven cure (RPDOWriter mirrors it exactly):
 import struct
 import time
 
-# DS402 (mirror of canopen_runner.py; kept local so this module stays dependency-light).
+# DS402 (mirror of p4core.cia402; kept local so this module stays dependency-light).
 CLEAR_FAULT, SHUTDOWN, OP_ENABLED = 0x80, 0x06, 0x0F
 MODE_IDLE, MODE_PHASE_VOLTAGE_ANGLE = 0, 12
 

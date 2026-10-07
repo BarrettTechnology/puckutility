@@ -67,8 +67,8 @@ else
     PY=""
 fi
 
-VERSION=$(grep -m1 'SetTitle' puckutilityapp.py | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+')
-TITLE_LINE=$(grep -m1 'SetTitle' puckutilityapp.py)
+VERSION=v$(grep -m1 '^__version__' puckutility/__init__.py | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+TITLE_LINE=$(grep -m1 'SetTitle' puckutility/gui/app.py)
 if echo "$TITLE_LINE" | grep -qiE '\bDEV\b'; then
     VERSION="${VERSION}-dev"
 fi
@@ -112,7 +112,9 @@ PYINSTALLER_ARGS=(
     --hiddenimport can.util
     --hiddenimport can.bit_timing
     --hiddenimport can.typechecking
-    --hiddenimport can_backend
+    --hiddenimport p4core.can_backend
+    --hiddenimport puckutility.gui.app
+    --hiddenimport puckutility.controllers.canable
     --runtime-hook=scripts/set_x11.py
 )
 
@@ -190,23 +192,20 @@ if [ "$FORMAT" = "pyinstaller" ]; then
     rm -f "build/PuckUtilityApp-lin-${VERSION}.zip"
 
     cp -r "${BINARY_STAGE}/PuckUtilityApp/." "${OUTDIR}/"
-    cp -r images/          "${OUTDIR}/"
+    # Package data where p4core.paths.resource() looks beside the binary.
+    mkdir -p "${OUTDIR}/puckutility" "${OUTDIR}/p4core"
+    cp -r puckutility/data "${OUTDIR}/puckutility/"
+    cp -r p4core/data      "${OUTDIR}/p4core/"
     cp -r config/          "${OUTDIR}/"
-    cp puck4.eds           "${OUTDIR}/"
     cp system-config.ini   "${OUTDIR}/"
-    cp flashloader.eds     "${OUTDIR}/"
     cp scripts/reset_can.sh        "${OUTDIR}/"
     cp scripts/60-can.rules        "${OUTDIR}/"
     cp scripts/61-can-up.rules     "${OUTDIR}/"
-    cp canopen_runner.py   "${OUTDIR}/"
-    cp flashp4.py          "${OUTDIR}/"
-    cp cli_ops.py          "${OUTDIR}/"
     cp scripts/setup-socketcan.sh  "${OUTDIR}/"
     cp scripts/install-ubuntu.sh   "${OUTDIR}/"
     cp PuckUtilityApp.desktop      "${OUTDIR}/"
     cp PuckUtilityAppGuide.pdf     "${OUTDIR}/"
     cp -r firmware/        "${OUTDIR}/"
-    cp canable-candlelight-multiboard.bin "${OUTDIR}/"
 
     cd build/lin
     zip -r "../PuckUtilityApp-lin-${VERSION}.zip" "PuckUtilityApp-lin-${VERSION}"
@@ -237,18 +236,13 @@ elif [ "$FORMAT" = "deb" ]; then
     # --- App binary and data files ------------------------------------------
     cp -r "${BINARY_STAGE}/PuckUtilityApp/." "${APP_DIR}/"
     chmod 755 "${APP_DIR}/PuckUtilityApp"
-    cp -r images/        "${APP_DIR}/"
+    mkdir -p "${APP_DIR}/puckutility" "${APP_DIR}/p4core"
+    cp -r puckutility/data "${APP_DIR}/puckutility/"
+    cp -r p4core/data      "${APP_DIR}/p4core/"
     cp -r config/        "${APP_DIR}/"
-    cp puck4.eds         "${APP_DIR}/"
     cp system-config.ini "${APP_DIR}/"
-    cp flashloader.eds   "${APP_DIR}/"
     cp scripts/reset_can.sh "${APP_DIR}/"
-    cp canopen_runner.py "${APP_DIR}/"
-    cp can_backend.py   "${APP_DIR}/"
-    cp flashp4.py        "${APP_DIR}/"
-    cp cli_ops.py        "${APP_DIR}/"
     cp -r firmware/      "${APP_DIR}/"
-    cp canable-candlelight-multiboard.bin "${APP_DIR}/"
 
     # reset_can.sh at /usr/bin so the old udev rule path and manual invocation
     # both work (script uses sudo internally for manual use).
@@ -259,14 +253,14 @@ elif [ "$FORMAT" = "deb" ]; then
     # tee writes to both the terminal (stdout) and a per-user log file.
     # The display environment (GDK_BACKEND=x11, GSETTINGS_BACKEND=memory,
     # GTK_IM_MODULE, NO_AT_BRIDGE) is set by the app ITSELF at startup -- see the
-    # top of puckutilityapp.py -- so it applies identically whether launched from
+    # top of puckutility/gui/app.py -- so it applies identically whether launched from
     # the dock, the terminal, or `./puckutilityapp.py` in dev. Nothing to export
     # here (and exporting GDK_BACKEND=wayland here would override the app's x11
     # default and re-break the layout on Wayland).
     cat > "${DEB_ROOT}/usr/bin/PuckUtilityApp" << 'WRAPPER'
 #!/bin/bash
 # Display env (GDK_BACKEND=x11, GSETTINGS_BACKEND=memory, GTK_IM_MODULE,
-# NO_AT_BRIDGE) is set by the app at startup -- see the top of puckutilityapp.py.
+# NO_AT_BRIDGE) is set by the app at startup -- see the top of puckutility/gui/app.py.
 # Keep this wrapper minimal so dev and packaged runs behave identically.
 cd /usr/share/puckutilityapp
 # Skip system GIO modules: the bundled (old) GLib cannot load the newer system
@@ -300,7 +294,7 @@ DESKTOP
     # drop in a crisp 256x256 (or SVG) master for sharp results. pixmaps/ is the
     # legacy fallback path.
     HICOLOR="${DEB_ROOT}/usr/share/icons/hicolor"
-    if ! "${PY:-python3}" - images/BarrettIcon.png "$HICOLOR" PuckUtilityApp <<'PYICON'
+    if ! "${PY:-python3}" - puckutility/data/images/BarrettIcon.png "$HICOLOR" PuckUtilityApp <<'PYICON'
 import os, sys
 from PIL import Image
 src, hicolor, name = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -313,9 +307,9 @@ PYICON
     then
         echo "WARNING: Pillow unavailable; installing single 48x48 icon only" >&2
         mkdir -p "${HICOLOR}/48x48/apps"
-        cp images/BarrettIcon.png "${HICOLOR}/48x48/apps/PuckUtilityApp.png"
+        cp puckutility/data/images/BarrettIcon.png "${HICOLOR}/48x48/apps/PuckUtilityApp.png"
     fi
-    cp images/BarrettIcon.png "${DEB_ROOT}/usr/share/pixmaps/PuckUtilityApp.png"
+    cp puckutility/data/images/BarrettIcon.png "${DEB_ROOT}/usr/share/pixmaps/PuckUtilityApp.png"
 
     # --- AppStream metadata -------------------------------------------------
     # Required for Ubuntu Software to show the icon, description, and version.
@@ -338,7 +332,7 @@ PYICON
     </p>
     <p>
       It supports firmware flashing, CANopen object dictionary configuration,
-      encoder and cogging calibration, and CAN adapter setup.
+      encoder and current-sense calibration, and CAN adapter setup.
     </p>
   </description>
   <icon type="stock">PuckUtilityApp</icon>

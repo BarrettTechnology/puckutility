@@ -22,7 +22,7 @@ else
 fi
 echo "Using venv python: $PY"
 
-VERSION=$(grep -m1 'SetTitle' puckutilityapp.py | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+')
+VERSION=v$(grep -m1 '^__version__' puckutility/__init__.py | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
 OUTDIR="build/win/PuckUtilityApp-win32-${VERSION}"
 
 # Wipe leftover files from a half-completed previous run so they can't
@@ -60,7 +60,9 @@ PI_COMMON=(
     --hiddenimport canopen.network
     --hiddenimport can
     --hiddenimport can.interfaces.pcan
-    --icon=images/BarrettIcon.ico
+    --hiddenimport puckutility.gui.app
+    --hiddenimport puckutility.controllers.canable
+    --icon=puckutility/data/images/BarrettIcon.ico
 )
 
 # Windowed build (no console window flashes when launched from Explorer).
@@ -69,17 +71,14 @@ PI_COMMON=(
 # Console build (stdout/stderr/input attach to the launching terminal).
 "$PY" -m PyInstaller "${PI_COMMON[@]}" --name PuckUtilityAppCLI --console
 
-cp -r images "${OUTDIR}"/
+# Package data where p4core.paths.resource() looks beside the binary.
+mkdir -p "${OUTDIR}/puckutility" "${OUTDIR}/p4core"
+cp -r puckutility/data "${OUTDIR}/puckutility/"
+cp -r p4core/data "${OUTDIR}/p4core/"
 cp -r config "${OUTDIR}"/
-cp puck4.eds "${OUTDIR}"/
 cp system-config.ini "${OUTDIR}"/
-cp flashloader.eds "${OUTDIR}"/
-cp canopen_runner.py "${OUTDIR}"/
-cp flashp4.py "${OUTDIR}"/
-cp cli_ops.py "${OUTDIR}"/
 cp PuckUtilityAppGuide.pdf "${OUTDIR}"/
 cp -r firmware "${OUTDIR}"/
-cp canable-candlelight-multiboard.bin "${OUTDIR}"/
 
 # PCAN driver installer (downloaded fresh each build)
 curl https://web.barrett.com/support/Puck_ControlLibrary/PeakOemDrv.exe -o PeakOemDrv.exe

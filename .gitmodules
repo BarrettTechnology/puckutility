@@ -1,0 +1,3 @@
+[submodule "p4core"]
+	path = p4core
+	url = ../p4core.git

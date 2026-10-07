@@ -11,8 +11,8 @@ This Python3 (wxpython) application is compatible with Barrett's P4 series of mo
 * Calibrate the motor controller
 * Test Profile Torque / Velocity / Position control
 
-The app launches a GUI when run with no arguments, or runs headlessly when CLI
-flags are provided (see [Command-line / headless mode](#command-line--headless-mode)).
+The app launches a GUI when run with no arguments, or runs a command without
+one (see [Command line](#command-line)).
 
 ## Installation
 Set up the Python virtual environment and install dependencies.
@@ -29,8 +29,9 @@ source scripts/activate
 python -m venv .
 Scripts\activate
 pip install -r requirements.txt
+pip install -e ./p4core -e .
 ```
-To flash CAN-adapter firmware (`--flash-canable`) you also need `dfu-util` on
+To flash CAN-adapter firmware (`flash-canable`) you also need `dfu-util` on
 your PATH:
 ```
 choco install dfu-util
@@ -44,7 +45,7 @@ The `libusb-package` dependency bundles the libusb DLL, so there is no need to
 install libusb system-wide.
 
 > ⚠️ **USB driver setup (Windows):** binding the WinUSB driver to the CANable /
-> DFU device is required for `--flash-canable` to work. Documentation for this
+> DFU device is required for `flash-canable` to work. Documentation for this
 > step is coming soon.
 
 ## CAN adapter setup
@@ -64,53 +65,72 @@ On Windows, CAN access goes through PCAN. Pass the PCAN channel index to
 Flash the bundled CandleLight Multiboard firmware to an STM32G431 CANable over
 USB DFU:
 ```
-python3 puckutilityapp.py --flash-canable
+puckutility flash-canable
 ```
 To flash a specific firmware file instead:
 ```
-python3 puckutilityapp.py --flash-canable path/to/custom.bin
+puckutility flash-canable path/to/custom.bin
 ```
 
 ## Usage (launch the GUI)
 ```
-./puckutilityapp.py
+./puckutilityapp.py              # from the checkout
+puckutility                      # once installed (setup-pip.sh installs it)
+puckutility --touchscreen        # fullscreen
 ```
 
-## Command-line / headless mode
-Running with CLI flags performs the requested operation without launching the
-GUI. Must be run from the puckutility directory so that `puck4.eds` is
-accessible.
+## Command line
+Every operation is also a command, and needs no display:
 
-| Flag | Description |
+```
+puckutility --can can0 scan
+puckutility --can can0 --id 1 info            # --all for every puck; --no-flashloader
+puckutility --can can0 --id 1 flash firmware/P4-4.4.0.ebin
+puckutility --can can0 --id 1 config load config/motor.csv
+puckutility --can can0 --all calibrate        # the full sequence; --quick
+puckutility --can can0 --id 1 calibrate settling slope
+puckutility --can can0 system-config system-config.ini
+puckutility --can can0 --id 5 set-id 7
+puckutility flash-canable [FIRMWARE]
+puckutility --help                            # and: puckutility COMMAND --help
+```
+
+`--id` may be left out when there is one puck on the bus. `-y` answers yes to
+every question (calibration asks before the motor turns), `--json` prints
+results as JSON. Exit status: 0 done, 1 failed, 2 usage, 3 no adapter/puck,
+130 stopped.
+
+`calibrate` runs the GUI's calibration routines, so it needs wxPython
+installed (but no display).
+
+### The old flags
+The flags of earlier versions still work and are translated to the commands
+above; `--id 1 2 3` runs the command once per puck, one after the other:
+
+| Flag | Command |
 | --- | --- |
-| `--can DEVICE` | CAN device (e.g. `can0` on Linux, `0` for `PCAN_USBBUS1` on Windows) |
-| `--id ID [ID ...]` | One or more target node IDs |
-| `--all` | Scan the bus and apply the operation to all discovered pucks |
-| `--touchscreen` | GUI mode only: launch fullscreen (e.g. for the 7" Raspberry Pi touchscreen) |
-| `--scan` | Scan the CAN bus and print all discovered node IDs |
-| `--flash FIRMWARE` | Flash a firmware file (`.bin` or `.ebin`) to the target node(s) |
-| `--config CSV` | Upload a motor configuration CSV file |
-| `--calibrate` | Run full calibration (test_encoder, ibias, igainfactor, enczero) |
-| `--system-config INI` | Apply a system configuration INI (handles firmware check, config upload, optional calibration) |
-| `--flash-canable [FIRMWARE]` | Flash CandleLight Multiboard firmware via USB DFU (uses bundled firmware when no path is given) |
-| `--verbose` | Show detailed output during `--flash-canable` |
+| `--scan` | `scan` |
+| `--info` | `info` (every puck unless `--id`) |
+| `--flash FIRMWARE` | `flash FIRMWARE` |
+| `--config CSV` | `config load CSV` |
+| `--calibrate [--quick]` | `calibrate [--quick]` |
+| `--calibrate-settling` / `--calibrate-slope` | `calibrate settling` / `calibrate slope` |
+| `--system-config INI` | `system-config INI` |
+| `--set-id NEW_ID` (with `--id CURRENT`) | `set-id NEW_ID` |
+| `--flash-canable [FIRMWARE]` | `flash-canable [FIRMWARE]` |
 
-Examples:
 ```
-# Flash firmware to node 1
-python3 puckutilityapp.py --can can0 --id 1 --flash firmware/P4-v1.1.5.bin
-
-# Upload config CSV to nodes 1 and 2
 python3 puckutilityapp.py --can can0 --id 1 2 --config config/motor.csv
+```
 
-# Calibrate all discovered pucks
-python3 puckutilityapp.py --can can0 --all --calibrate
+### Layout
+`puckutility/` is the package: `model.py` (the CAN session, from p4core),
+`controllers/` (the operations, UI-free), `cli.py` (the commands), `gui/`
+(the wx GUI). Code shared with p4gui and pucktuner (flashing, config CSVs,
+the CAN backends, the object dictionary) is in the `p4core` submodule:
 
-# Apply system config INI
-python3 puckutilityapp.py --can can0 --system-config system.ini
-
-# Flash bundled CandleLight Multiboard firmware to an STM32G431 canable via USB DFU
-python3 puckutilityapp.py --flash-canable
+```
+git submodule update --init p4core
 ```
 
 ## Building a release

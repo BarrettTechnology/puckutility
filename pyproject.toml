@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "puckutility"
+dynamic = ["version"]
+description = "Flash, configure and calibrate P4 pucks, as a GUI or a command line"
+requires-python = ">=3.9"
+# p4core is a submodule, not on an index: install it first
+# (setup-pip.sh does: pip install ./p4core .).
+dependencies = [
+    "p4core",
+    "canopen>=2.2",
+    "python-can>=4.3",
+    "semver>=3",
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+# The GUI, and the calibrations (they run the GUI's routines headless).
+gui = ["wxPython>=4.2", "matplotlib>=3.8"]
+# flash-canable
+usb = ["pyusb>=1.2", "libusb-package>=1.0"]
+
+[project.scripts]
+puckutility = "puckutility.main:main"
+
+[project.gui-scripts]
+puckutility-gui = "puckutility.main:gui_main"
+
+[tool.setuptools.dynamic]
+version = {attr = "puckutility.__version__"}
+
+[tool.setuptools.packages.find]
+include = ["puckutility*"]
+
+[tool.setuptools.package-data]
+puckutility = ["data/*.bin", "data/images/*"]

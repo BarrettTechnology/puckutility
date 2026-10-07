@@ -33,6 +33,11 @@ uv pip install --python "$REPO_ROOT/.venv" \
     --find-links "$WX_FIND_LINKS" \
     -r "$REPO_ROOT/requirements.txt"
 
+# The shared core (the p4core submodule) and puckutility itself, editable, so
+# `puckutility` / `puckutility-gui` run this checkout.
+git -C "$REPO_ROOT" submodule update --init p4core
+uv pip install --python "$REPO_ROOT/.venv" -e "$REPO_ROOT/p4core" -e "$REPO_ROOT"
+
 # --- Dev-only tools (optional) ------------------------------------------------
 # wxGlade (and any future dev tooling) for editing the GUI: it regenerates
 # *_gui.py from configure-*.wxg. Installed into the SOURCE venv only — never

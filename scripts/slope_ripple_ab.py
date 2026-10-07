@@ -25,10 +25,11 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-import can_backend
-from canopen_runner import CLEAR_FAULT, SHUTDOWN, OP_ENABLED, MODE_IDLE, MODE_PROFILE_VEL
+from p4core import can_backend
+from p4core.paths import puck4_eds
+from p4core.cia402 import CLEAR_FAULT, SHUTDOWN, OP_ENABLED, MODE_IDLE, MODE_PROFILE_VEL
 
-EDS      = os.path.join(ROOT, 'puck4.eds')
+EDS      = puck4_eds()
 SW_FAULT = 0x08
 
 

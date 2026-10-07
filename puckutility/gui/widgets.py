@@ -1,6 +1,6 @@
 import wx
 import wx.adv
-import OnOffButton as _oob
+from . import OnOffButton as _oob
 
 # Saved before any monkey-patching so TallTextCtrl can always reach the real class.
 _OrigTextCtrl = wx.TextCtrl
