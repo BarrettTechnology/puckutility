@@ -1,3 +1,6 @@
 [submodule "p4core"]
 	path = p4core
 	url = ../p4core.git
+[submodule "p4sysid"]
+	path = p4sysid
+	url = ../p4sysid.git

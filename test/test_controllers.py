@@ -18,141 +18,125 @@ from puckutility import paths                                  # noqa: E402
 from puckutility.controllers import calibrate, system_config  # noqa: E402
 
 
-class FakeCalibrate:
-    """Stands in for the calibrate_menu mixin; records what ran."""
+class Libs:
+    """Patches every library call the controller makes and records them."""
 
-    results = {}
+    def __init__(self, case, results=None):
+        self.calls = []
+        self.results = results or {}
+        targets = {
+            'clear_slope': (calibrate.cal, 'clear_slope'),
+            'clear_offset': (calibrate.drivecal, 'clear_offset_reg'),
+            'test_encoder': (calibrate.enctest, 'test_encoder'),
+            'bias': (calibrate.cal, 'calibrate_bias'),
+            'gain': (calibrate.cal, 'calibrate_gain'),
+            'slope': (calibrate.slope, 'calibrate_current_slope'),
+            'deenergise': (calibrate.cal, 'deenergise'),
+            'enczero': (calibrate.cal, 'calibrate_ezero'),
+            'fold': (calibrate.slope, 'fold_baseline_offset'),
+            'settling': (calibrate.settling, 'calibrate_settling'),
+            'fault': (calibrate.drivecal, 'fault_message'),
+        }
+        for name, (module, attr) in targets.items():
+            p = mock.patch.object(module, attr, side_effect=self._fake(name))
+            p.start()
+            case.addCleanup(p.stop)
 
-    created = []
+    def _fake(self, name):
+        def call(*args, **kw):
+            self.calls.append((name, kw))
+            result = self.results.get(name)
+            if isinstance(result, list):
+                result = result.pop(0)
+            if isinstance(result, BaseException):
+                raise result
+            if name == 'fault':
+                return 'fault: {}'.format(args[1])
+            if name == 'slope' and result is None:
+                return dict(stored=True, skipped=None, a0=1.0, b0=2.0)
+            if name == 'settling' and result is None:
+                return dict(slope_cleared=False)
+            return result
+        return call
 
-    def _run(self, name, kwargs):
-        # HeadlessCalibrator.__init__ replaces ours: start the record here.
-        if 'calls' not in self.__dict__:
-            self.calls = []
-            self.created.append(self)
-        self.calls.append((name, kwargs))
-        return self.results.get(name, True)
-
-    def test_encoder(self, event, **kw):
-        return self._run('test_encoder', kw)
-
-    def calibrate_ibias(self, event, **kw):
-        return self._run('ibias', kw)
-
-    def calibrate_igainfactor(self, event, **kw):
-        return self._run('gain', kw)
-
-    def calibrate_current_slope(self, event, **kw):
-        result = self._run('slope', kw)
-        if isinstance(result, Exception):
-            raise result
-        self._slope_stored = result
-        return result
-
-    def calibrate_enczero(self, event, **kw):
-        return self._run('enczero', kw)
-
-    def calibrate_itiming(self, event, **kw):
-        return self._run('settling', kw)
-
-    def fold_baseline_offset(self, event, **kw):
-        return self._run('fold', kw)
+    def names(self):
+        return [n for n, _kw in self.calls]
 
 
 class TestCalibrate(unittest.TestCase):
 
     def setUp(self):
-        FakeCalibrate.results = {}
-        FakeCalibrate.created = self.created = []
-        patcher = mock.patch.object(calibrate, '_mixin',
-                                    return_value=FakeCalibrate)
-        patcher.start()
-        self.addCleanup(patcher.stop)
         self.node = mock.MagicMock()
         self.node.id = 5
 
-    def names(self):
-        return [name for name, _kw in self.created[-1].calls]
-
     def test_the_full_sequence(self):
+        libs = Libs(self)
         self.assertTrue(calibrate.calibrate_all(self.node))
-        self.assertEqual(self.names(), ['test_encoder', 'ibias', 'gain',
+        self.assertEqual(libs.names(), ['clear_slope', 'clear_offset',
+                                        'test_encoder', 'bias', 'gain',
                                         'slope', 'enczero', 'fold'])
-        self.assertTrue(all(kw.get('calAll') for _n, kw in self.created[-1].calls))
-
-    def test_the_slope_is_cleared_first(self):
-        calibrate.calibrate_all(self.node)
-        saves = [c.args for c in self.node.sdo.__getitem__.call_args_list]
-        self.assertIn((0x3008,), saves)
-        self.assertIn((0x3009,), saves)
+        kw = dict(libs.calls)
+        self.assertEqual(kw['bias'], calibrate.cal.BIAS_MENU)
+        self.assertEqual(kw['gain'], calibrate.cal.GAIN_MENU)
+        self.assertEqual(kw['slope'], dict(force_sdo=False, quick=False))
+        self.assertEqual(kw['enczero'], dict(steps=16))
 
     def test_quick_passes_quick(self):
-        calibrate.calibrate_all(self.node, quick=True)
-        kw = dict(self.created[-1].calls)
-        self.assertTrue(kw['ibias']['quick'])
+        libs = Libs(self)
+        self.assertTrue(calibrate.calibrate_all(self.node, quick=True))
+        kw = dict(libs.calls)
+        self.assertEqual(kw['bias'], calibrate.cal.BIAS_MENU_QUICK)
         self.assertTrue(kw['slope']['quick'])
-        self.assertTrue(kw['enczero']['quick'])
-        self.assertNotIn('quick', kw['gain'])
+        self.assertEqual(kw['enczero'],
+                         dict(steps=calibrate.cal.EZERO_QUICK_STEPS))
 
-    def test_a_failed_step_stops_the_sequence(self):
-        FakeCalibrate.results = {'gain': False}
-        self.assertFalse(calibrate.calibrate_all(self.node))
-        self.assertEqual(self.names(), ['test_encoder', 'ibias', 'gain'])
+    def test_a_declined_step_stops_the_sequence(self):
+        libs = Libs(self, {'gain': calibrate.cal.CalibrationDeclined('bounds')})
+        rep = RecordingReporter()
+        self.assertFalse(calibrate.calibrate_all(self.node, reporter=rep))
+        self.assertEqual(libs.names()[-1], 'gain')
+        self.assertTrue(any('current gain' in w for w in rep.texts('warn')))
 
     def test_a_slope_failure_is_retried_then_skipped(self):
-        FakeCalibrate.results = {'slope': RuntimeError('SYNC')}
+        libs = Libs(self, {'slope': [RuntimeError('SYNC'), RuntimeError('SDO')]})
         rep = RecordingReporter()
         self.assertTrue(calibrate.calibrate_all(self.node, reporter=rep))
-        self.assertEqual(self.names().count('slope'), 2)
-        self.assertNotIn('fold', self.names())          # no trustworthy fit
-        self.assertEqual(len(rep.texts('warn')), 2)
+        slopes = [kw for n, kw in libs.calls if n == 'slope']
+        self.assertEqual([kw['force_sdo'] for kw in slopes], [False, True])
+        self.assertNotIn('fold', libs.names())
 
-    def test_enczero_abort(self):
-        FakeCalibrate.results = {'enczero': False}
-        self.assertFalse(calibrate.calibrate_all(self.node))
+    def test_a_fault_is_reported_and_fails(self):
+        libs = Libs(self, {'bias': OSError('SDO timeout')})
+        rep = RecordingReporter()
+        self.assertFalse(calibrate.calibrate_all(self.node, reporter=rep))
+        self.assertEqual(libs.names()[-1], 'fault')
+        self.assertIn('fault: SDO timeout', rep.texts('warn'))
+
+    def test_enczero_failure_asks(self):
+        Libs(self, {'enczero': calibrate.cal.CalibrationError('stalled')})
+        self.assertFalse(calibrate.calibrate_all(
+            self.node, reporter=RecordingReporter(answers=[False])))
 
     def test_single_steps(self):
-        self.assertTrue(calibrate.run_step('settling', self.node))
-        self.assertEqual(self.names(), ['settling'])
-        FakeCalibrate.results = {'slope': False}
+        libs = Libs(self)
+        for step, lib in (('encoder', 'test_encoder'), ('bias', 'bias'),
+                          ('gain', 'gain'), ('enczero', 'enczero'),
+                          ('slope', 'slope'), ('settling', 'settling')):
+            self.assertTrue(calibrate.run_step(step, self.node))
+            self.assertEqual(libs.names()[-1], lib)
+        libs.results['slope'] = dict(skipped='firmware', stored=False)
         self.assertFalse(calibrate.run_step('slope', self.node))
         with self.assertRaises(calibrate.CalibrationFailed):
             calibrate.run_step('bogus', self.node)
 
-    def test_prompts_go_to_the_reporter(self):
-        rep = RecordingReporter(answers=[True])
-        cal = calibrate.make_calibrator(self.node, reporter=rep)
-        self.assertTrue(cal._prompt('Bias', 'high'))
-        cal._prompt_ok('Fault', 'bus low')
-        cal.frame_statusbar.SetStatusText('Calibrating...')
-        self.assertIn('Fault: bus low', rep.texts('warn'))
-        self.assertIn('Calibrating...', rep.texts('status'))
-
-
-
-class TestRealMixin(unittest.TestCase):
-
-    def test_the_real_mixin_accepts_the_adapter(self):
-        """calibrate_menu imports (wx, no display) and binds to a node."""
-        node = mock.MagicMock()
-        node.id = 5
-        try:
-            cal = calibrate.make_calibrator(node)
-        except calibrate.CalibrationFailed as exc:     # no wxPython
-            self.skipTest(str(exc))
-        self.assertEqual(cal.getID(), 5)
-        self.assertIs(cal.network, node.network)
-        for step in calibrate.STEPS:
-            self.assertTrue(callable(calibrate.STEPS[step][1]))
-        self.assertTrue(hasattr(cal, 'fold_baseline_offset'))
-
-    def test_yield_is_a_no_op_without_an_app(self):
-        try:
-            from puckutility.gui import calibrate_menu
-        except ImportError as exc:
-            self.skipTest(str(exc))
-        calibrate_menu._yield()
-        calibrate_menu._sleep_responsive(0.01)
+    def test_no_wx(self):
+        """The controller and the libraries it calls import without wx."""
+        import subprocess
+        code = ('import sys; sys.modules["wx"] = None; '
+                'import puckutility.controllers.calibrate')
+        r = subprocess.run([sys.executable, '-c', code], cwd=ROOT,
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
 
 
 class FakeSession:

@@ -42,7 +42,7 @@ if sys.platform.startswith('linux'):
 import wx
 import wx.adv
 from . import log_viewer
-from p4core import wx_splash as splash_screen
+from . import wx_splash as splash_screen
 from .frame import puckutilityapp_frame
 from .calibrate_menu import calibrate
 from .factory_menu import factory
