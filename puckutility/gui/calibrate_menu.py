@@ -550,7 +550,7 @@ class calibrate(BoardCal, SettlingCal, SlopeCal, EncoderCal, EncTableCal):
             self._cal_fault(exc)
             return False
         self.frame_statusbar.SetStatusText(
-            "User direction set: UserPolarity {:+d}".format(r['user_polarity']), 1)
+            "User direction set: user polarity {:+d}".format(r['user_polarity']), 1)
         return True
 
     def open_support_page(self, event):

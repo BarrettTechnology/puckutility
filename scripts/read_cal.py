@@ -312,7 +312,8 @@ ENTRIES = [
     ("ENCODER (0x3013)", [
         (0x3013, 1, "Resolution",          False, "int", "cts",    _chk_encres),
         (0x3013, 2, "User zero",           True,  "int", "cts",    None),
-        (0x3013, 3, "User polarity",       True,  "int", "",       None),
+        (0x3013, 3, "User polarity (old fw)", True, "int", "",     None),   # 0x607E from stm32 8a366c6
+        (0x607E, 0, "Polarity (DS402)",    False, "hex", "",       None),   # 0xC0 inverts
         (0x3013, 4, "Type",                False, "int", "",       None),
         (0x3013, 5, "Lag factor",          False, "int", "",       None),
         (0x3013, 6, "H/W filter",          False, "hex", "",       None),
@@ -523,7 +524,8 @@ def read_cal(node, model=None, ref_csv=None, save_log=True, node_id=None):
 _OPTIONAL_DEFAULTS = {
     (0x3008, 7), (0x3008, 8),   # current-sense slope / drive-gated offset (new-fw refinements)
     (0x3009, 7), (0x3009, 8),
-    (0x3013, 2), (0x3013, 3),   # user encoder zero / polarity
+    (0x3013, 2), (0x3013, 3),   # user encoder zero / polarity (old fw)
+    (0x607E, 0),                # user polarity (DS402)
     (0x3013, 5),                # lag factor (field-weakening tuning)
     (0x3024, 2), (0x3024, 3),   # control gain factor / zeta
     (0x3025, 2),                # i2t filter cutoff
