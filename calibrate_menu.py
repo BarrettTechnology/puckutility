@@ -3374,12 +3374,14 @@ class calibrate():
 
           # e_polarity from the forward sweep (Theta_e increased): sign of the net raw travel.
           d_raw_f = f1 - f0
+          # Snapshot the stored calibration first. The new polarity/zero are only written (RAM + EE)
+          # after the travel check below passes; a failed run leaves the previous values in place.
+          previous_polarity = self.node.sdo['Calibration']['e_polarity'].raw
+          previous_zero     = self.node.sdo['Calibration']['e_zero'].raw
           if d_raw_f != 0:
               e_polarity = math.copysign(1, d_raw_f)
           else:
-              e_polarity = self.node.sdo['Calibration']['e_polarity'].raw
-          self.node.sdo['Calibration']['e_polarity'].raw = e_polarity
-          self.node.sdo['Save']['Single'].raw = ((0x3011 << 8) | 0x02)   # Save e_polarity to EE
+              e_polarity = previous_polarity
           print("Electrical polarity = {0}".format(e_polarity))
 
           # Average the two zero-crossings (handle raw wrap between them), store e_zero.
@@ -3392,9 +3394,13 @@ class calibrate():
               friction_spread, friction_pct))
           # Repeatability proxy: the fwd/rev crossings must agree. A large disagreement is exactly
           # the friction-hysteresis bias that made e_zero non-repeatable, so flag it two ways --
-          # the >10% electrical-cycle rule AND an absolute-count threshold (catches small cts_per_
-          # elec_cyc motors where 10% is only a few counts).
-          if friction_pct > 10.0 or friction_spread > REPEAT_CTS:
+          # the >10% electrical-cycle rule AND a count threshold (catches small cts_per_elec_cyc
+          # motors where 10% is only a few counts). The count threshold scales with the electrical
+          # cycle: max(REPEAT_CTS, 2% of a cycle). A fixed 15 cts is only 0.7% of a cycle on a
+          # 4-pole motor (2048 cts/cycle) and flagged harmless spreads; 2% = 7.2 deg electrical of
+          # spread (~0.2% torque). High-pole motors (e.g. 14 poles, 585 cts/cycle) keep 15 cts.
+          repeat_lim = max(REPEAT_CTS, 0.02 * cts_per_elec_cyc)
+          if friction_pct > 10.0 or friction_spread > repeat_lim:
               print("  WARNING: fwd/rev crossings disagree by {:.1f} cts ({:.1f}% of cycle) -- e_zero "
                     "may not be repeatable. RE-SEAT the motor / reduce output friction and RE-RUN; "
                     "confirm two runs land within a few counts (asymmetry scales as "
@@ -3404,12 +3410,8 @@ class calibrate():
 
           pos = int(round(((cross_f + cross_r) / 2.0) % cts_per_elec_cyc))
 
-          previous_polarity = self.node.sdo['Calibration']['e_polarity'].raw
-          previous_zero     = self.node.sdo['Calibration']['e_zero'].raw
           print("Previous electrical polarity = {0}".format(previous_polarity))
           print("Previous electrical zero = {0}".format(previous_zero))
-          self.node.sdo['Calibration']['e_zero'].raw = pos
-          self.node.sdo['Save']['Single'].raw = ((0x3011 << 8) | 0x01)   # Save e_zero to EE
           print("New electrical zero = {0}".format(pos))
 
           # Bounds: did the rotor track a reasonable fraction of the full electrical span BOTH ways?
@@ -3418,9 +3420,10 @@ class calibrate():
           error = 0.25
           _upd(100)
           if moved_f < expected_raw * (1 - error) or moved_r < expected_raw * (1 - error):
-            print('Encoder Zero Failed!')
+            print('Encoder Zero Failed! Kept previous e_zero {} / polarity {} (new values NOT written or saved).'.format(
+                previous_zero, previous_polarity))
             cal_torque = calibration_current * self.node.sdo['Calibration']['kt'].raw / 1000
-            msg = "Encoder Zero Failed! \n\nForward travel: {:.0f} cts" \
+            msg = "Encoder Zero Failed! The previous calibration was kept (nothing saved).\n\nForward travel: {:.0f} cts" \
             "\nReverse travel: {:.0f} cts" \
             "\nExpected: >= {:.0f} cts" \
             "\n\nDebugging steps:" \
@@ -3436,6 +3439,12 @@ class calibrate():
                 self.Enable()
             return continue_cal
           else:
+            # Passed: now commit polarity + zero to RAM and EE.
+            self.node.sdo['Calibration']['e_polarity'].raw = e_polarity
+            self.node.sdo['Save']['Single'].raw = ((0x3011 << 8) | 0x02)   # Save e_polarity to EE
+            self.node.sdo['Calibration']['e_zero'].raw = pos
+            self.node.sdo['Save']['Single'].raw = ((0x3011 << 8) | 0x01)   # Save e_zero to EE
+            print("Saved electrical zero = {0}, polarity = {1}".format(pos, e_polarity))
             if self.ADC_ON == False and self.adcWasON == True:
                 self.on_off_adc(self)
             if calAll == False:
