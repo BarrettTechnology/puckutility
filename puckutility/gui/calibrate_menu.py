@@ -16,6 +16,7 @@ from p4core.cia402 import (
 from canopen.sdo import SdoAbortedError
 from p4core.can_backend import sdo_contention_message
 from p4core import ezero
+from p4core.calibrate import read_kt
 from p4core.calibrate import firmware_version
 from p4core import calibrate as calibrate_lib
 from p4core import flash as flashp4
@@ -474,7 +475,7 @@ class calibrate(BoardCal, SettlingCal, SlopeCal, EncoderCal, EncTableCal):
             enc_resolution = self.node.sdo['EncoderConfig']['Resolution'].raw
             motor_poles    = self.node.sdo['Calibration']['poles'].raw
             cts_per_elec   = enc_resolution * 2.0 / motor_poles
-            Kt             = self.node.sdo['Calibration']['kt'].raw           # mNm/A
+            Kt             = read_kt(self.node)                         # mNm/A
             Rt             = self.node.sdo['Calibration']['rt'].raw * 0.01    # 0.01Ω → Ω
             V_bus          = self.node.sdo['Amp']['NominalBusVoltage'].raw * 0.1  # V×10 → V
             i_peak         = self.node.sdo['Calibration']['i_peak'].raw       # mA
