@@ -68,6 +68,7 @@ import sys
 import math
 import datetime
 from p4core import config_csv
+from p4core.calibrate import permille_base_ma
 from p4core.cia402 import (
     CLEAR_FAULT, SHUTDOWN, OP_ENABLED,
     MODE_IDLE, MODE_PROFILE_POS, MODE_PROFILE_VEL,
@@ -885,6 +886,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         print('I_cont: {}'.format(self.i_cont))
         self.i_peak = self.node.sdo.upload(0x3011,9)
         self.i_peak = int.from_bytes(self.i_peak, byteorder='little',signed=False)
+        # 0x6078 is per-mille of this: the rated current 0x6075 from stm32 ecdc33c, i_peak before
+        self.i_pm_base = permille_base_ma(self.node)
 
         self.temp_limit = self.node.sdo.upload(0x2384,9)
         self.temp_limit = int.from_bytes(self.temp_limit, byteorder='little',signed=False)
@@ -2493,7 +2496,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             # Read ADC for Bus Voltage, format properly, and update Frame
             #currentbyte = self.node.sdo.upload(0x3000,1)
             current = self.node.tpdo[2]['CurrentFeedback'].raw
-            current = (current / 1000 * self.i_peak) * 1/math.sqrt(2) / 1000
+            current = (current / 1000 * self.i_pm_base) * 1/math.sqrt(2) / 1000
             currentString = str(round(current,1)) + "A"
             # If current is 0 remove negative sign (if present)
             if round(current,1) == 0 and currentString[0] == "-":
