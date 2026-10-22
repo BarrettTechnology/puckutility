@@ -24,6 +24,7 @@ from p4core.calibrate import firmware_version
 from p4core import flash as flashp4
 from ..paths import _resolve_path, FIRMWARE_DIR, CONFIG_DIR
 from p4core import calibrate
+from p4sysid import boardcal
 from .cal_common import _yield, _sleep_responsive, GuiCalReporter
 
 
@@ -77,12 +78,16 @@ class BoardCal:
         self.choice_id.SetSelection(indexID) # Return to starting ID after completion
         self.select_id(None)
 
-    def calibrate_all(self, event):  # wxGlade: wxp3_frame.<event_handler>
-        # Try to add calibrate all step!
-        # Backstop for the config gate: never drive control modes for calibration
-        # while a firmware flash is still pending configuration (see
-        # calibrate_all_pucks / select_test). Config sets the current-sense scaling
-        # and limits the calibration relies on.
+    #: The gauge span each board step fills in a Calibrate All (start, width, %):
+    #: gain's rotation dominates, then the slope sweep and the zero's two turns.
+    _BOARD_GAUGE = {'encoder': (0, 5), 'bias': (5, 15), 'gain': (20, 52),
+                    'slope': (72, 10), 'fold': (82, 3), 'enczero': (85, 15)}
+
+    def _config_gate(self):
+        """Backstop for the config gate: never drive control modes for
+        calibration while a firmware flash is still pending configuration
+        (see calibrate_all_pucks / select_test).  Config sets the
+        current-sense scaling and limits the calibration relies on."""
         if getattr(self, 'requireConfig', False):
             print("Calibration blocked: configuration required after firmware "
                   "update — apply configuration before calibrating.")
@@ -91,93 +96,74 @@ class BoardCal:
                 "Apply the puck configuration first, then run calibration.",
                 "Configuration Required", wx.OK | wx.ICON_WARNING)
             return False
+        return True
+
+    def _calibrate_board(self, quick):
+        """Calibrate All, Thorough or Quick: p4sysid.boardcal.calibrate_board,
+        the sequence puckutility's CLI, pucktuner and p4gui run too, in
+        dependency-stage order -- encoder test, bias, gain, slope, the
+        slope's baseline fold, then the encoder zero.  The slope and the
+        drive-gated offset are cleared first so bias/gain measure the raw
+        current.  *quick*: the quick bias, a 4-level slope sweep and the
+        coarser zero (8 steps per electrical cycle, not 16); every stored
+        value matches the Thorough run within tolerance."""
+        if not self._config_gate():
+            return False
         if self.check_for_node() == False:
-            # print("No active puck")
             return False
         self._menu_idle_takeover()   # standalone menu entry: take the drive over cleanly before the sequence
-        print("Running full calibration for Puck {}".format(self.getID()))
-        _cal_t0 = time.time()   # baseline timer: total start-to-finish for the full cal
+        print("Running {} calibration for Puck {}".format(
+            'QUICK' if quick else 'full', self.getID()))
+        _cal_t0 = time.time()
 
         self.frame_statusbar.SetStatusText("Progress: 0%", 1)
         self.progress.Show()
         self.GetStatusBar().Refresh()
         self.GetStatusBar().Update()
+        span = [0, 0]
 
+        def on_step(name, i, n):
+            span[:] = self._BOARD_GAUGE.get(name, (span[0] + span[1], 0))
+            self.UpdateUI(span[0])
+
+        reporter = _StepReporter(self, lambda v: self.UpdateUI(
+            span[0] + int(v) * span[1] // 100))
+        results = {}
+        self.Disable()
+        self._adc_quiet()
         try:
-            # Disable the Current Sense Slope correction for the whole sequence. It distorts the raw
-            # alpha/beta current, so Bias/Gain/enczero MUST run without it -- a stale or garbage slope
-            # otherwise poisons the Gain cal (alpha reads ~half -> "Beta Gainfactor out of bounds")
-            # and the whole cal cascades. The Slope step at the end re-measures and re-stores it.
-            calibrate.clear_slope(self.node)
-            self._clear_offset_reg()   # v3+: drive-gated offset applied under drive -> clear it too so
-                                       # Bias/Gain/Slope all measure RAW current (else overshoot/brownout).
-
-            continueCal = self.test_encoder(None, True)
-            self.Disable()
-            if continueCal == False:
-                print('Ending calibration...')
-                self.OnTaskComplete()
-                self.Enable()
-                return
-
-            self.UpdateUI(5)
-            continueCal = self.calibrate_ibias(None, True,
-                              _upd=lambda v: self.UpdateUI(5 + v * 15 // 100))
-            if continueCal == False:
-                print('Ending calibration...')
-                self.OnTaskComplete()
-                self.Enable()
-                return
-
-            self.UpdateUI(20)
-            continueCal = self.calibrate_igainfactor(None, True,
-                              _upd=lambda v: self.UpdateUI(20 + v * 52 // 100))
-            if continueCal == False:
-                print('Ending calibration...')
-                self.OnTaskComplete()
-                self.Enable()
-                return
-
-            self.UpdateUI(72)
-            # Re-measure the Current Sense Slope we cleared at the top (Bias+Gain are fresh now).
-            # ROBUSTNESS: the slope is a REFINEMENT that streams over the FastPDO path, which can hit a
-            # transient SYNC/SDO comms glitch (0x05040000 / "No SDO response"). That must NOT abort the
-            # whole cal -- the slope was cleared at the top, so a failure just leaves it OFF (safe). Retry
-            # once (transients clear), then continue to enczero + the fold regardless.
-            for _slope_try in (1, 2):
-                try:
-                    self.calibrate_current_slope(None, True, force_sdo=(_slope_try == 2))
-                    break
-                except Exception as _slope_err:
-                    print("  Current Sense Slope attempt {}/2 failed: {}".format(_slope_try, _slope_err))
-                    # leave the drive SAFE before retry/continue
-                    calibrate.deenergise(self.node, settle_s=0, clear_fault=True)
-                    if _slope_try == 2:
-                        print("  Slope left OFF (not stored); continuing the calibration.")
-                        self._slope_stored = False
-
-            self.UpdateUI(85)
-            self.calibrate_enczero(None, True,
-                              _upd=lambda v: self.UpdateUI(85 + v * 15 // 100))
-
-            # FINAL STEP: fold the slope cal's fitted drive-on baseline (a0/b0) into the iSense Bias so
-            # the current loop sees the true current under drive — the fixed offset the slope can't
-            # remove (validated: makes low-settling smooth). Runs LAST, after every Bias write, so
-            # nothing wipes it. Only when the slope stored a trustworthy geared fit (skips direct-drive,
-            # where a0/b0 are degenerate). enczero does not touch Bias, so the fold's base is still fresh.
-            if getattr(self, '_slope_stored', False):
-                self.fold_baseline_offset(None, calAll=True)
+            ok = boardcal.calibrate_board(self.node, reporter, quick=quick,
+                                          on_step=on_step, results=results,
+                                          raise_faults=True)
+            res = results.get('slope')
+            self._slope_stored = bool(res and res.get('stored'))
+            if res and not res.get('skipped') and 'a0' in res:
+                self._slope_a0, self._slope_b0 = res['a0'], res['b0']
+                self._plot_current_slope(res)
+            try:
+                self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
+                self.choice_test.SetSelection(0)
+                self.lastMode = 0
+            except Exception:
+                pass
+            if ok:
+                self.UpdateUI(100)
+                self.requireCal = False
             else:
-                print("Baseline fold skipped (slope not stored — direct-drive / untrustworthy fit).")
-
+                print('Ending calibration...')
             self.OnTaskComplete()
-            self.requireCal = False
+            return ok
         except Exception as e:
             self._cal_fault(e)
+            return False
         finally:
-            print("Full calibration finished in {:.1f} s.".format(time.time() - _cal_t0))
+            self._adc_restore()
+            print("{} calibration finished in {:.1f} s.".format(
+                'Quick' if quick else 'Full', time.time() - _cal_t0))
             self.Enable()
-        #event.Skip()
+
+    def calibrate_all(self, event):  # wxGlade: wxp3_frame.<event_handler>
+        return self._calibrate_board(quick=False)
 
     def calibrate_quick_all_pucks(self, event):
         # QUICK cal across every scanned puck — mirrors calibrate_all_pucks but drives the fast
@@ -210,115 +196,12 @@ class BoardCal:
 
     def calibrate_quick(self, event):
         # QUICK calibration (~25 s/puck vs the Thorough calibrate_all's ~35 s, measured on a P4-16).
-        #
-        # Same OD writes / same registers / same values as calibrate_all — the sole intended
-        # accuracy trade is the coarser enczero (calibrate_enczero(quick=True)): 8 steps per
-        # electrical cycle instead of 16 over the same revolution sweep, within ~1 deg on a P4-42.
-        # Everything else runs the identical Thorough step so Quick and Thorough
-        # produce equivalent stored cal within tolerance.
-        #
-        # FOLDS EVALUATED BUT NOT APPLIED (correctness over speed, per design):
-        #   * Shared drive session across ibias/gain/slope: each step function independently arms
-        #     (CLEAR_FAULT/SHUTDOWN/OP_ENABLED) and drops to MODE_IDLE, and interleaves mode-specific
-        #     ramps/settles. Threading one energised session through them safely needs an invasive
-        #     refactor of the Thorough-path functions (untestable here) — the fold was NOT safe, so
-        #     the steps are called as-is (identical OD writes, drive re-armed per step).
-        #   * Gain folded into the slope's top level: the gain fit REQUIRES gainfactor=4096 (unity)
-        #     and reads Alpha/Beta fundamentals, while the slope step REQUIRES the calibrated
-        #     gainfactor already in effect and reads id/iq offsets at detented angles — conflicting
-        #     preconditions. Sharing one rotation would corrupt BOTH cals (worst case: resets gain to
-        #     unity). NOT safe to fold without firmware-internal confirmation + hardware validation,
-        #     so gain and slope run as separate Thorough steps.
-        # The realized Quick speedup comes from three SAFE, quick-gated trims (Thorough untouched):
-        #   * calibrate_current_slope(quick=True): the 18.5 s sweep drops 7->4 (weighted-low) current
-        #     levels — the dominant saving (~8 s). Same writes/model/gates; per-level offset quality
-        #     (N angles, M samples, fwd+rev hysteresis cancel) is identical, only the level COUNT falls.
-        #   * calibrate_ibias(quick=True): the pre-average iSense settle 0.5 s -> 0.35 s (~0.15 s).
-        #   * calibrate_enczero(quick=True): coarser spiral-gated spin (auto-falls-back to the fine sweep).
-        if getattr(self, 'requireConfig', False):
-            print("Calibration blocked: configuration required after firmware "
-                  "update — apply configuration before calibrating.")
-            wx.MessageBox(
-                "Configuration is required after a firmware update before you can calibrate.\n\n"
-                "Apply the puck configuration first, then run calibration.",
-                "Configuration Required", wx.OK | wx.ICON_WARNING)
-            return False
-        if self.check_for_node() == False:
-            return False
-        self._menu_idle_takeover()   # standalone menu entry: take the drive over cleanly before the sequence
-        print("Running QUICK calibration for Puck {}".format(self.getID()))
-        _cal_t0 = time.time()
-
-        self.frame_statusbar.SetStatusText("Progress: 0%", 1)
-        self.progress.Show()
-        self.GetStatusBar().Refresh()
-        self.GetStatusBar().Update()
-
-        try:
-            # Clear the Current Sense Slope for the whole sequence (same as calibrate_all): a stale
-            # slope distorts raw alpha/beta and poisons Bias/Gain. The Slope step re-measures it.
-            calibrate.clear_slope(self.node)
-            self._clear_offset_reg()   # v3+: clear drive-gated offset so Bias/Gain/Slope measure RAW current
-
-            continueCal = self.test_encoder(None, True)
-            self.Disable()
-            if continueCal == False:
-                print('Ending calibration...')
-                self.OnTaskComplete()
-                self.Enable()
-                return
-
-            self.UpdateUI(5)
-            continueCal = self.calibrate_ibias(None, True, quick=True,
-                              _upd=lambda v: self.UpdateUI(5 + v * 15 // 100))
-            if continueCal == False:
-                print('Ending calibration...')
-                self.OnTaskComplete()
-                self.Enable()
-                return
-
-            self.UpdateUI(20)
-            continueCal = self.calibrate_igainfactor(None, True,
-                              _upd=lambda v: self.UpdateUI(20 + v * 52 // 100))
-            if continueCal == False:
-                print('Ending calibration...')
-                self.OnTaskComplete()
-                self.Enable()
-                return
-
-            self.UpdateUI(72)
-            # Current Sense Slope — same robustness (retry once, continue if it can't store).
-            # quick=True trims the sweep to 4 (weighted-low) current levels; same writes/model/gates.
-            for _slope_try in (1, 2):
-                try:
-                    self.calibrate_current_slope(None, True, force_sdo=(_slope_try == 2), quick=True)
-                    break
-                except Exception as _slope_err:
-                    print("  Current Sense Slope attempt {}/2 failed: {}".format(_slope_try, _slope_err))
-                    # leave the drive SAFE before retry/continue
-                    calibrate.deenergise(self.node, settle_s=0, clear_fault=True)
-                    if _slope_try == 2:
-                        print("  Slope left OFF (not stored); continuing the calibration.")
-                        self._slope_stored = False
-
-            self.UpdateUI(85)
-            # QUICK enczero: spiral-gated, auto-falls-back to the fine kinetic sweep on a bad spread.
-            self.calibrate_enczero(None, True, quick=True,
-                              _upd=lambda v: self.UpdateUI(85 + v * 15 // 100))
-
-            # Same final baseline fold as Thorough (only on a trustworthy geared slope fit).
-            if getattr(self, '_slope_stored', False):
-                self.fold_baseline_offset(None, calAll=True)
-            else:
-                print("Baseline fold skipped (slope not stored — direct-drive / untrustworthy fit).")
-
-            self.OnTaskComplete()
-            self.requireCal = False
-        except Exception as e:
-            self._cal_fault(e)
-        finally:
-            print("Quick calibration finished in {:.1f} s.".format(time.time() - _cal_t0))
-            self.Enable()
+        # Same steps, registers and order as calibrate_all (boardcal); the trims are the
+        # quick bias settle (0.5 -> 0.35 s), the 4-level slope sweep (7 -> 4 levels, ~8 s) and
+        # the coarser zero (8 steps per electrical cycle, within ~1 deg on a P4-42).
+        # Bias/gain/slope cannot share one energised session or rotation: gain needs the
+        # gainfactor at unity and the slope needs the calibrated one in effect.
+        return self._calibrate_board(quick=True)
 
     # -- the single steps: p4core.calibrate does the work ------------------
     def _begin_step(self, calAll, _upd, status):

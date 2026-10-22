@@ -96,13 +96,12 @@ class TestCalibrate(CliTest):
         self.assertIs(full.call_args.args[1], self.session.network)
 
     def test_steps(self):
-        with mock.patch.object(calibrate, 'run_step',
+        with mock.patch.object(calibrate, 'run_steps',
                                return_value=True) as step:
             code, _out, _err = self.run_cli('-y', 'calibrate', 'settling',
                                             'slope')
         self.assertEqual(code, 0)
-        self.assertEqual([c.args[0] for c in step.call_args_list],
-                         ['settling', 'slope'])
+        self.assertEqual(step.call_args.args[0], ['settling', 'slope'])
 
     def test_a_failure_is_exit_1(self):
         with mock.patch.object(calibrate, 'calibrate_all', return_value=False):

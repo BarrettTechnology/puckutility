@@ -82,12 +82,11 @@ def _cmd_calibrate(ctx):
         node = ctx.session.add_node(node_id)
         ctx.reporter.status('--- Node {} ---'.format(node_id))
         if steps:
-            for step in steps:
-                if not _calibrate.run_step(step, node, ctx.session.network,
-                                           ctx.reporter):
-                    ctx.reporter.warn('node {}: {} failed'.format(node_id, step))
-                    ok = False
-                    break
+            # In dependency-stage order, whatever order they were typed in.
+            if not _calibrate.run_steps(steps, node, ctx.session.network,
+                                        ctx.reporter):
+                ctx.reporter.warn('node {}: calibration failed'.format(node_id))
+                ok = False
         elif not _calibrate.calibrate_all(node, ctx.session.network,
                                           ctx.reporter, quick=ctx.args.quick):
             ok = False

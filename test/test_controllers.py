@@ -25,17 +25,17 @@ class Libs:
         self.calls = []
         self.results = results or {}
         targets = {
-            'clear_slope': (calibrate.cal, 'clear_slope'),
-            'clear_offset': (calibrate.drivecal, 'clear_offset_reg'),
-            'test_encoder': (calibrate.enctest, 'test_encoder'),
-            'bias': (calibrate.cal, 'calibrate_bias'),
-            'gain': (calibrate.cal, 'calibrate_gain'),
-            'slope': (calibrate.slope, 'calibrate_current_slope'),
-            'deenergise': (calibrate.cal, 'deenergise'),
-            'enczero': (calibrate.cal, 'calibrate_ezero'),
-            'fold': (calibrate.slope, 'fold_baseline_offset'),
-            'settling': (calibrate.settling, 'calibrate_settling'),
-            'fault': (calibrate.drivecal, 'fault_message'),
+            'clear_slope': (calibrate.boardcal.cal, 'clear_slope'),
+            'clear_offset': (calibrate.boardcal.drivecal, 'clear_offset_reg'),
+            'test_encoder': (calibrate.boardcal.enctest, 'test_encoder'),
+            'bias': (calibrate.boardcal.cal, 'calibrate_bias'),
+            'gain': (calibrate.boardcal.cal, 'calibrate_gain'),
+            'slope': (calibrate.boardcal.slope, 'calibrate_current_slope'),
+            'deenergise': (calibrate.boardcal.cal, 'deenergise'),
+            'enczero': (calibrate.boardcal.cal, 'calibrate_ezero'),
+            'fold': (calibrate.boardcal.slope, 'fold_baseline_offset'),
+            'settling': (calibrate.boardcal.settling, 'calibrate_settling'),
+            'fault': (calibrate.boardcal.drivecal, 'fault_message'),
         }
         for name, (module, attr) in targets.items():
             p = mock.patch.object(module, attr, side_effect=self._fake(name))
@@ -74,10 +74,10 @@ class TestCalibrate(unittest.TestCase):
         self.assertTrue(calibrate.calibrate_all(self.node))
         self.assertEqual(libs.names(), ['clear_slope', 'clear_offset',
                                         'test_encoder', 'bias', 'gain',
-                                        'slope', 'enczero', 'fold'])
+                                        'slope', 'fold', 'enczero'])
         kw = dict(libs.calls)
-        self.assertEqual(kw['bias'], calibrate.cal.BIAS_MENU)
-        self.assertEqual(kw['gain'], calibrate.cal.GAIN_MENU)
+        self.assertEqual(kw['bias'], calibrate.boardcal.cal.BIAS_MENU)
+        self.assertEqual(kw['gain'], calibrate.boardcal.cal.GAIN_MENU)
         self.assertEqual(kw['slope'], dict(force_sdo=False, quick=False))
         self.assertEqual(kw['enczero'], dict(steps=16))
 
@@ -85,13 +85,13 @@ class TestCalibrate(unittest.TestCase):
         libs = Libs(self)
         self.assertTrue(calibrate.calibrate_all(self.node, quick=True))
         kw = dict(libs.calls)
-        self.assertEqual(kw['bias'], calibrate.cal.BIAS_MENU_QUICK)
+        self.assertEqual(kw['bias'], calibrate.boardcal.cal.BIAS_MENU_QUICK)
         self.assertTrue(kw['slope']['quick'])
         self.assertEqual(kw['enczero'],
-                         dict(steps=calibrate.cal.EZERO_QUICK_STEPS))
+                         dict(steps=calibrate.boardcal.cal.EZERO_QUICK_STEPS))
 
     def test_a_declined_step_stops_the_sequence(self):
-        libs = Libs(self, {'gain': calibrate.cal.CalibrationDeclined('bounds')})
+        libs = Libs(self, {'gain': calibrate.boardcal.cal.CalibrationDeclined('bounds')})
         rep = RecordingReporter()
         self.assertFalse(calibrate.calibrate_all(self.node, reporter=rep))
         self.assertEqual(libs.names()[-1], 'gain')
@@ -113,7 +113,7 @@ class TestCalibrate(unittest.TestCase):
         self.assertIn('fault: SDO timeout', rep.texts('warn'))
 
     def test_enczero_failure_asks(self):
-        Libs(self, {'enczero': calibrate.cal.CalibrationError('stalled')})
+        Libs(self, {'enczero': calibrate.boardcal.cal.CalibrationError('stalled')})
         self.assertFalse(calibrate.calibrate_all(
             self.node, reporter=RecordingReporter(answers=[False])))
 
@@ -126,6 +126,13 @@ class TestCalibrate(unittest.TestCase):
             self.assertEqual(libs.names()[-1], lib)
         libs.results['slope'] = dict(skipped='firmware', stored=False)
         self.assertFalse(calibrate.run_step('slope', self.node))
+        del libs.results['slope']
+        libs.calls[:] = []
+        # Named steps run in dependency-stage order, however they are typed.
+        self.assertTrue(calibrate.run_steps(['enczero', 'fold', 'slope',
+                                             'bias'], self.node))
+        self.assertEqual(libs.names(), ['clear_slope', 'clear_offset', 'bias',
+                                        'slope', 'fold', 'enczero'])
         with self.assertRaises(calibrate.CalibrationFailed):
             calibrate.run_step('bogus', self.node)
 
