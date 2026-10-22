@@ -1,7 +1,8 @@
 """The Actuator Calibration menu's handlers over a fake frame and a fake
 p4sysid session: the confirmation, the plan's keys, one cached session per
 puck for the single steps, Save.All only when the user says so, All Pucks,
-and the reboot an encoder filter change needs."""
+the reboot an encoder filter change needs, and the config gate in front
+of every calibration.  Bias and gain are p4sysid steps like the rest."""
 
 import os
 import sys
@@ -14,13 +15,62 @@ sys.path.insert(0, HERE)
 
 from p4sysid import plans  # noqa: E402
 
-from test_cal_board import Frame  # noqa: E402
-
 try:
     from puckutility.gui import cal_actuator
     from puckutility.gui.cal_actuator import ActuatorCal
 except ImportError:            # no wxPython
     ActuatorCal = None
+
+
+class Frame:
+    """The frame side the calibrate mixin uses, recorded."""
+
+    def __init__(self):
+        self.node = mock.MagicMock()
+        self.ADC_ON = False
+        self.adcWasON = False
+        self.requireConfig = False
+        self.choice_test = mock.MagicMock()
+        self.choice_test.GetSelection.return_value = 0
+        self.frame_statusbar = mock.MagicMock()
+        self.faults, self.prompts, self.gauge = [], [], []
+        self.prompt_answer = True
+        self.enabled = True
+        self.configured = 0
+
+    def check_for_node(self):
+        return True
+
+    def _menu_idle_takeover(self):
+        pass
+
+    def Disable(self):
+        self.enabled = False
+
+    def Enable(self):
+        self.enabled = True
+
+    def OnStartTask(self, event):
+        pass
+
+    def OnTaskComplete(self):
+        pass
+
+    def UpdateUI(self, value):
+        self.gauge.append(value)
+
+    def on_off_adc(self, event):
+        pass
+
+    def file_to_p4(self, event):
+        self.configured += 1
+
+    def _cal_fault(self, exc):
+        self.faults.append(exc)
+
+    def _prompt(self, title, msg):
+        self.prompts.append(msg)
+        return self.prompt_answer
 
 
 class FakeSession:
@@ -168,8 +218,6 @@ class TestActuatorMenu(unittest.TestCase):
         f = AFrame()
         f._prompt = lambda t, m: 'Save' not in m      # go; don't save
         for key in plans.ACTUATOR:
-            if key in ('bias', 'gain'):
-                continue
             getattr(f, 'calibrate_step_' + key)(None)
             self.assertEqual(self.sessions[0].runs[-1][0], key)
 
@@ -203,6 +251,21 @@ class TestActuatorMenu(unittest.TestCase):
         f.choice_id.SetSelection.assert_called_with(1)
         self.assertEqual(f.selected, [4])
         self.assertIs(node, f.node)
+
+
+    def test_the_config_gate(self):
+        f = AFrame()
+        f.requireConfig = True
+        f.prompt_answer = False
+        self.assertFalse(f._config_gate())
+        self.assertIn('Configuration is required', f.prompts[0])
+        self.assertEqual(f.configured, 0)
+        f.prompt_answer = True
+        self.assertFalse(f._config_gate())
+        self.assertEqual(f.configured, 1)
+        f.requireConfig = False
+        self.assertTrue(f._config_gate())
+
 
 
 if __name__ == '__main__':

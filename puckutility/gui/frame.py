@@ -44,9 +44,9 @@ class puckutilityapp_frame(wx.Frame):
         item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "1. Encoder filter + rest test", "")
         self.Bind(wx.EVT_MENU, self.calibrate_step_encoder, item)
         item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "2. Current-sense bias", "")
-        self.Bind(wx.EVT_MENU, self.calibrate_ibias, item)
+        self.Bind(wx.EVT_MENU, self.calibrate_step_bias, item)
         item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "3. Current-sense gain", "")
-        self.Bind(wx.EVT_MENU, self.calibrate_igainfactor, item)
+        self.Bind(wx.EVT_MENU, self.calibrate_step_gain, item)
         item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "4. Current-sense slope", "")
         self.Bind(wx.EVT_MENU, self.calibrate_step_slope, item)
         item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "5. Current-sense offset fold", "")
@@ -293,12 +293,12 @@ class puckutilityapp_frame(wx.Frame):
         print("Event handler 'calibrate_step_encoder' not implemented!")
         event.Skip()
 
-    def calibrate_ibias(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
-        print("Event handler 'calibrate_ibias' not implemented!")
+    def calibrate_step_bias(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
+        print("Event handler 'calibrate_step_bias' not implemented!")
         event.Skip()
 
-    def calibrate_igainfactor(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
-        print("Event handler 'calibrate_igainfactor' not implemented!")
+    def calibrate_step_gain(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
+        print("Event handler 'calibrate_step_gain' not implemented!")
         event.Skip()
 
     def calibrate_step_slope(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>

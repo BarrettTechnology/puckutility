@@ -10,10 +10,10 @@ confirmations, the progress gauge, the ADC monitor, the reboot an encoder
 filter change needs, and the question whether to Save.All afterwards.
 Nothing is saved to NV unless the user says so.
 
-Steps 2 and 3, current-sense bias and gain, are cal_board's own menu
-handlers (calibrate_ibias, calibrate_igainfactor); the rest run alone in
-this puck's cached p4sysid Session, so fold finds the slope sweep a
-Slope run left in it.
+Each step item runs that step alone in this puck's cached p4sysid
+Session, so fold finds the slope sweep a Slope run left in it.  Bias and
+gain are p4sysid's steps like the rest: puckutility keeps no current-sense
+calibration of its own.
 
 Everything runs on the GUI thread, as the calibrate menu always has, with
 the window disabled; the reporter and p4sysid's pump keep it painting.
@@ -25,8 +25,7 @@ import wx
 from p4core.cia402 import MODE_IDLE
 from p4sysid import plans
 from ..controllers import calibrate as actuator
-from .cal_board import _StepReporter
-from .cal_common import _sleep_responsive
+from .cal_common import _sleep_responsive, _yield, GuiCalReporter
 
 #: How long a rebooted drive has to answer again (s).
 _REBOOT_TIMEOUT_S = 15.0
@@ -38,6 +37,21 @@ def _pump():
     GUI thread: p4sysid may get there from a PDO callback."""
     if wx.GetApp() is not None and wx.IsMainThread():
         wx.YieldIfNeeded()
+
+
+class _StepReporter(GuiCalReporter):
+    """GuiCalReporter whose progress drives the gauge (_upd)."""
+
+    def __init__(self, frame, upd):
+        super().__init__(frame)
+        self.upd = upd
+
+    def progress(self, pct, text=None):
+        self.upd(int(pct))
+        if text:
+            self.status(text)
+        else:
+            _yield()
 
 
 def _numbered_list(keys):
@@ -95,6 +109,12 @@ class ActuatorCal:
     def calibrate_step_encoder(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
         return self._actuator_step('encoder')
 
+    def calibrate_step_bias(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
+        return self._actuator_step('bias')
+
+    def calibrate_step_gain(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
+        return self._actuator_step('gain')
+
     def calibrate_step_slope(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
         return self._actuator_step('slope')
 
@@ -117,6 +137,35 @@ class ActuatorCal:
         return self._actuator_step('position_refine')
 
     # -- the frame side ----------------------------------------------------
+    def _config_gate(self):
+        """Never drive control modes for calibration while a firmware flash
+        is still pending configuration (see select_test): the batch CSV sets
+        the current-sense scaling and limits the calibration relies on, and
+        is stage 0 of the actuator calibration.  Offers to load it now."""
+        if getattr(self, 'requireConfig', False):
+            print("Calibration blocked: configuration required after firmware "
+                  "update — apply configuration before calibrating.")
+            if self._prompt('Configuration Required',
+                            "Configuration is required after a firmware "
+                            "update.\nApply configuration before calibrating."
+                            "\n\nWould you like to configure the active Puck "
+                            "now?"):
+                self.file_to_p4(None)
+            return False
+        return True
+
+    def _adc_quiet(self):
+        """Quiet the ADC monitor: it contends for SDO reads."""
+        if self.ADC_ON == True:
+            self.on_off_adc(self)
+            self.adcWasON = True
+        else:
+            self.adcWasON = False
+
+    def _adc_restore(self):
+        if self.ADC_ON == False and self.adcWasON == True:
+            self.on_off_adc(self)
+
     def _actuator_step(self, key):
         """One actuator step alone, in this puck's cached session."""
         if not self._actuator_ready((key,)):

@@ -1,8 +1,7 @@
 """The Menu menu's calibration part, in the generated frame and in the .wxg
 it is generated from: Actuator Calibration (Active Puck, All Pucks), then
-exactly the numbered per-actuator steps (p4sysid.plans.numbered) with
-current-sense bias and gain on their own handlers, and none of the batch
-items.  Read from the sources, so no display is needed."""
+exactly the numbered per-actuator steps (p4sysid.plans.numbered), each on
+its calibrate_step_<key> handler, and none of the batch items.  Read from the sources, so no display is needed."""
 
 import ast
 import os
@@ -19,13 +18,9 @@ from p4sysid import plans  # noqa: E402
 FRAME = os.path.join(ROOT, 'puckutility', 'gui', 'frame.py')
 WXG = os.path.join(ROOT, 'configure-puckutilityapp.wxg')
 
-#: The step items' handlers: bias and gain keep cal_board's.
-HANDLERS = {'bias': 'calibrate_ibias', 'gain': 'calibrate_igainfactor'}
-
-
 def expected_steps():
     return [('{}. {}'.format(n, st.title),
-             HANDLERS.get(st.key, 'calibrate_step_' + st.key))
+             'calibrate_step_' + st.key)
             for n, _stage, st in plans.numbered(plans.ACTUATOR)]
 
 
@@ -135,10 +130,6 @@ class TestCalibrationMenu(unittest.TestCase):
             # The app's handler, not the generated stub.
             self.assertIsNot(getattr(app.MyFrame, name),
                              getattr(puckutilityapp_frame, name), name)
-        from puckutility.gui.cal_board import BoardCal
-        self.assertIs(app.MyFrame.calibrate_ibias, BoardCal.calibrate_ibias)
-        self.assertIs(app.MyFrame.calibrate_igainfactor,
-                      BoardCal.calibrate_igainfactor)
 
 
 if __name__ == '__main__':

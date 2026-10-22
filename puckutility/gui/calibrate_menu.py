@@ -1,8 +1,7 @@
 """calibrate_menu.py — the Menu menu's calibration and puck-management items.
 
-The actuator calibration (cal_actuator.py) and the current-sense bias and
-gain items (cal_board.py) are mixins of this class; the frame (app.MyFrame)
-inherits it.
+The actuator calibration (cal_actuator.py) is a mixin of this class; the
+frame (app.MyFrame) inherits it.
 """
 import wx
 import time
@@ -18,12 +17,11 @@ from ..paths import _resolve_path, FIRMWARE_DIR, CONFIG_DIR
 from p4sysid import drivecal
 from .cal_common import _sleep_responsive, GuiCalReporter
 from .cal_actuator import ActuatorCal
-from .cal_board import BoardCal
 
 # TODO - No active issues
 
 
-class calibrate(ActuatorCal, BoardCal):
+class calibrate(ActuatorCal):
     def _cal_fault(self, exc):
         """Shared cleanup called when an SDO or other exception aborts calibration."""
         print("Calibration fault: {}".format(exc))

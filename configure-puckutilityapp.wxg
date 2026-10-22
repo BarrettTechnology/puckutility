@@ -70,11 +70,11 @@
                         </item>
                         <item>
                             <label>2. Current-sense bias</label>
-                            <handler>calibrate_ibias</handler>
+                            <handler>calibrate_step_bias</handler>
                         </item>
                         <item>
                             <label>3. Current-sense gain</label>
-                            <handler>calibrate_igainfactor</handler>
+                            <handler>calibrate_step_gain</handler>
                         </item>
                         <item>
                             <label>4. Current-sense slope</label>
