@@ -1,4 +1,4 @@
-"""The controllers over fakes: the headless calibration sequence and
+"""The controllers over fakes: the headless actuator calibration and
 system-config (the GUI's flash/config children are p4core.worker's)."""
 
 import os
@@ -18,49 +18,32 @@ from puckutility import paths                                  # noqa: E402
 from puckutility.controllers import calibrate, system_config  # noqa: E402
 
 
-class Libs:
-    """Patches every library call the controller makes and records them."""
+class FakePlanSession:
+    """Stands in for a p4sysid steps.Session under plans.run/save: records
+    the keys each run gets, passes them unless told to fail one."""
 
-    def __init__(self, case, results=None):
-        self.calls = []
-        self.results = results or {}
-        targets = {
-            'clear_slope': (calibrate.boardcal.cal, 'clear_slope'),
-            'clear_offset': (calibrate.boardcal.drivecal, 'clear_offset_reg'),
-            'test_encoder': (calibrate.boardcal.enctest, 'test_encoder'),
-            'bias': (calibrate.boardcal.cal, 'calibrate_bias'),
-            'gain': (calibrate.boardcal.cal, 'calibrate_gain'),
-            'slope': (calibrate.boardcal.slope, 'calibrate_current_slope'),
-            'deenergise': (calibrate.boardcal.cal, 'deenergise'),
-            'enczero': (calibrate.boardcal.cal, 'calibrate_ezero'),
-            'fold': (calibrate.boardcal.slope, 'fold_baseline_offset'),
-            'settling': (calibrate.boardcal.settling, 'calibrate_settling'),
-            'fault': (calibrate.boardcal.drivecal, 'fault_message'),
-        }
-        for name, (module, attr) in targets.items():
-            p = mock.patch.object(module, attr, side_effect=self._fake(name))
-            p.start()
-            case.addCleanup(p.stop)
+    def __init__(self, fail=()):
+        self.runs = []
+        self.results = {}
+        self.unsaved = False
+        self.fail = set(fail)
 
-    def _fake(self, name):
-        def call(*args, **kw):
-            self.calls.append((name, kw))
-            result = self.results.get(name)
-            if isinstance(result, list):
-                result = result.pop(0)
-            if isinstance(result, BaseException):
-                raise result
-            if name == 'fault':
-                return 'fault: {}'.format(args[1])
-            if name == 'slope' and result is None:
-                return dict(stored=True, skipped=None, a0=1.0, b0=2.0)
-            if name == 'settling' and result is None:
-                return dict(slope_cleared=False)
-            return result
-        return call
-
-    def names(self):
-        return [n for n, _kw in self.calls]
+    def run(self, keys, on_update=None):
+        self.runs.append(list(keys))
+        ok = True
+        for k in keys:
+            self.results[k] = {'status': 'running', 'detail': ''}
+            on_update(k)
+            if not ok:
+                status = 'skipped'
+            elif k in self.fail:
+                status, ok = 'fail', False
+            else:
+                status = 'pass'
+                self.unsaved = k != 'save'
+            self.results[k] = {'status': status, 'detail': k + ' detail'}
+            on_update(k)
+        return ok
 
 
 class TestCalibrate(unittest.TestCase):
@@ -69,72 +52,64 @@ class TestCalibrate(unittest.TestCase):
         self.node = mock.MagicMock()
         self.node.id = 5
 
-    def test_the_full_sequence(self):
-        libs = Libs(self)
-        self.assertTrue(calibrate.calibrate_all(self.node))
-        self.assertEqual(libs.names(), ['clear_slope', 'clear_offset',
-                                        'test_encoder', 'bias', 'gain',
-                                        'slope', 'fold', 'enczero'])
-        kw = dict(libs.calls)
-        self.assertEqual(kw['bias'], calibrate.boardcal.cal.BIAS_MENU)
-        self.assertEqual(kw['gain'], calibrate.boardcal.cal.GAIN_MENU)
-        self.assertEqual(kw['slope'], dict(force_sdo=False, quick=False))
-        self.assertEqual(kw['enczero'], dict(steps=16))
+    def make(self, fail=()):
+        self.session = FakePlanSession(fail)
+        p = mock.patch.object(calibrate.plans, 'make_session',
+                              return_value=self.session)
+        self.make_session = p.start()
+        self.addCleanup(p.stop)
 
-    def test_quick_passes_quick(self):
-        libs = Libs(self)
-        self.assertTrue(calibrate.calibrate_all(self.node, quick=True))
-        kw = dict(libs.calls)
-        self.assertEqual(kw['bias'], calibrate.boardcal.cal.BIAS_MENU_QUICK)
-        self.assertTrue(kw['slope']['quick'])
-        self.assertEqual(kw['enczero'],
-                         dict(steps=calibrate.boardcal.cal.EZERO_QUICK_STEPS))
+    def test_the_steps_are_the_actuator_plan_numbered(self):
+        self.assertEqual(list(calibrate.STEPS), [
+            'encoder', 'bias', 'gain', 'slope', 'fold', 'winding', 'runout',
+            'cogging', 'velocity_refine', 'position_refine'])
+        self.assertEqual(set(calibrate.STEPS), set(calibrate.plans.ACTUATOR))
+        self.assertEqual(calibrate.STEPS['bias'], 'Current-sense bias')
 
-    def test_a_declined_step_stops_the_sequence(self):
-        libs = Libs(self, {'gain': calibrate.boardcal.cal.CalibrationDeclined('bounds')})
+    def test_the_whole_calibration_in_ram(self):
+        self.make()
         rep = RecordingReporter()
-        self.assertFalse(calibrate.calibrate_all(self.node, reporter=rep))
-        self.assertEqual(libs.names()[-1], 'gain')
-        self.assertTrue(any('current gain' in w for w in rep.texts('warn')))
+        reboot = mock.Mock()
+        ok, session = calibrate.calibrate_actuator(self.node, rep,
+                                                   reboot=reboot)
+        self.assertTrue(ok)
+        self.assertIs(session, self.session)
+        self.assertEqual(self.session.runs,
+                         [list(calibrate.plans.run_order(
+                             calibrate.plans.ACTUATOR))])
+        self.assertIs(self.make_session.call_args.args[0], self.node)
+        self.assertIs(self.make_session.call_args.kwargs['reboot'], reboot)
+        self.assertTrue(session.unsaved)          # not saved: not asked
+        self.assertIn('Encoder runout table', calibrate.summary_text(session))
 
-    def test_a_slope_failure_is_retried_then_skipped(self):
-        libs = Libs(self, {'slope': [RuntimeError('SYNC'), RuntimeError('SDO')]})
-        rep = RecordingReporter()
-        self.assertTrue(calibrate.calibrate_all(self.node, reporter=rep))
-        slopes = [kw for n, kw in libs.calls if n == 'slope']
-        self.assertEqual([kw['force_sdo'] for kw in slopes], [False, True])
-        self.assertNotIn('fold', libs.names())
+    def test_save_only_when_asked_and_passed(self):
+        self.make()
+        ok, session = calibrate.calibrate_actuator(self.node, save=True)
+        self.assertTrue(ok)
+        self.assertEqual(self.session.runs[-1], ['save'])
+        self.assertFalse(session.unsaved)
+        self.make(fail=('winding',))
+        ok, session = calibrate.calibrate_actuator(self.node, save=True)
+        self.assertFalse(ok)
+        self.assertEqual(len(self.session.runs), 1)   # no Save.All
+        self.assertEqual(session.results['runout']['status'], 'skipped')
 
-    def test_a_fault_is_reported_and_fails(self):
-        libs = Libs(self, {'bias': OSError('SDO timeout')})
-        rep = RecordingReporter()
-        self.assertFalse(calibrate.calibrate_all(self.node, reporter=rep))
-        self.assertEqual(libs.names()[-1], 'fault')
-        self.assertIn('fault: SDO timeout', rep.texts('warn'))
+    def test_named_steps_run_in_order_in_a_given_session(self):
+        self.make()
+        session = FakePlanSession()
+        ok, out = calibrate.calibrate_actuator(
+            self.node, steps=['fold', 'ezero', 'slope'], session=session)
+        self.assertTrue(ok)
+        self.assertIs(out, session)
+        self.assertEqual(session.runs, [['slope', 'fold', 'winding']])
+        self.make_session.assert_not_called()
 
-    def test_enczero_failure_asks(self):
-        Libs(self, {'enczero': calibrate.boardcal.cal.CalibrationError('stalled')})
-        self.assertFalse(calibrate.calibrate_all(
-            self.node, reporter=RecordingReporter(answers=[False])))
-
-    def test_single_steps(self):
-        libs = Libs(self)
-        for step, lib in (('encoder', 'test_encoder'), ('bias', 'bias'),
-                          ('gain', 'gain'), ('enczero', 'enczero'),
-                          ('slope', 'slope'), ('settling', 'settling')):
-            self.assertTrue(calibrate.run_step(step, self.node))
-            self.assertEqual(libs.names()[-1], lib)
-        libs.results['slope'] = dict(skipped='firmware', stored=False)
-        self.assertFalse(calibrate.run_step('slope', self.node))
-        del libs.results['slope']
-        libs.calls[:] = []
-        # Named steps run in dependency-stage order, however they are typed.
-        self.assertTrue(calibrate.run_steps(['enczero', 'fold', 'slope',
-                                             'bias'], self.node))
-        self.assertEqual(libs.names(), ['clear_slope', 'clear_offset', 'bias',
-                                        'slope', 'fold', 'enczero'])
-        with self.assertRaises(calibrate.CalibrationFailed):
-            calibrate.run_step('bogus', self.node)
+    def test_batch_and_unknown_steps_are_refused(self):
+        for name in ('settling', 'latency', 'pwm', 'quick', 'save', 'bogus'):
+            with self.assertRaises(calibrate.CalibrationFailed):
+                calibrate.step_keys([name])
+        self.assertEqual(calibrate.step_keys(['encoder-test', 'enczero']),
+                         ['encoder', 'winding'])
 
     def test_no_wx(self):
         """The controller and the libraries it calls import without wx."""

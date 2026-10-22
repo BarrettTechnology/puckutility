@@ -825,8 +825,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         # print(event.GetKeyCode())# Use to print key code
         if event.GetKeyCode() == wx.WXK_ESCAPE:
             self.onCloseFrame(None)
-        elif event.ControlDown() and event.GetKeyCode() == 67: # CTRL-C = Cal
-            self.calibrate_all(None)
+        elif event.ControlDown() and event.GetKeyCode() == 67: # CTRL-C = Actuator Calibration
+            self.calibrate_actuator(None)
         elif event.ControlDown() and event.GetKeyCode() == 85: # CTRL-U = Update
             self.update_all(None)
         elif event.ControlDown() and event.GetKeyCode() == 83: # CTRL-S = Scan
@@ -2142,12 +2142,12 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             return
         elif self.requireCal:
             self.choice_test.SetSelection(0)
-            msg = "Calibration is required after configuration.\nWould you like to calibrate all Pucks?"
+            msg = "Actuator calibration is required after configuration.\nWould you like to calibrate all Pucks?"
             dlg = wx.MessageDialog(None, msg, 'Warning!', wx.YES_NO | wx.ICON_WARNING)
             answer = dlg.ShowModal()
             dlg.Destroy()
             if answer == wx.ID_YES:
-                self.calibrate_all_pucks(None)
+                self.calibrate_actuator_all_pucks(None)
             return
 
         quick_test = self.choice_test.GetSelection()

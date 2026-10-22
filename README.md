@@ -8,7 +8,8 @@ This Python3 (wxpython) application is compatible with Barrett's P4 series of mo
 * Update firmware
 * Flash CAN-adapter (CandleLight / CANable) firmware
 * Configure the CANopen Object Dictionary
-* Calibrate the motor controller
+* Calibrate each actuator (the per-unit steps a batch configuration CSV
+  cannot carry)
 * Test Profile Torque / Velocity / Position control
 
 The app launches a GUI when run with no arguments, or runs a command without
@@ -87,8 +88,8 @@ puckutility --can can0 scan
 puckutility --can can0 --id 1 info            # --all for every puck; --no-flashloader
 puckutility --can can0 --id 1 flash firmware/P4-4.4.0.ebin
 puckutility --can can0 --id 1 config load config/motor.csv
-puckutility --can can0 --all calibrate        # the full sequence; --quick
-puckutility --can can0 --id 1 calibrate settling slope
+puckutility --can can0 --all calibrate        # actuator calibration; --save
+puckutility --can can0 --id 1 calibrate slope fold
 puckutility --can can0 system-config system-config.ini
 puckutility --can can0 --id 5 set-id 7
 puckutility flash-canable [FIRMWARE]
@@ -100,8 +101,12 @@ every question (calibration asks before the motor turns), `--json` prints
 results as JSON. Exit status: 0 done, 1 failed, 2 usage, 3 no adapter/puck,
 130 stopped.
 
-`calibrate` runs the GUI's calibration routines, so it needs wxPython
-installed (but no display).
+`calibrate` runs the actuator calibration the GUI's Actuator Calibration
+menu runs (p4sysid's steps): encoder, bias, gain, slope, fold, winding,
+runout, cogging, velocity_refine, position_refine (`puckutility calibrate
+--help`).  Load the batch CSV first.  The motor turns, continuously for
+cogging and the refine steps.  Results stay in RAM unless `--save`
+(Save.All when every step passed).
 
 ### The old flags
 The flags of earlier versions still work and are translated to the commands
@@ -113,8 +118,8 @@ above; `--id 1 2 3` runs the command once per puck, one after the other:
 | `--info` | `info` (every puck unless `--id`) |
 | `--flash FIRMWARE` | `flash FIRMWARE` |
 | `--config CSV` | `config load CSV` |
-| `--calibrate [--quick]` | `calibrate [--quick]` |
-| `--calibrate-settling` / `--calibrate-slope` | `calibrate settling` / `calibrate slope` |
+| `--calibrate` (`--quick` is ignored) | `calibrate` |
+| `--calibrate-slope` | `calibrate slope` |
 | `--system-config INI` | `system-config INI` |
 | `--set-id NEW_ID` (with `--id CURRENT`) | `set-id NEW_ID` |
 | `--flash-canable [FIRMWARE]` | `flash-canable [FIRMWARE]` |

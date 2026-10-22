@@ -1,48 +1,81 @@
-"""calibrate.py — puckutility's calibrations without a window.
+"""calibrate.py — puckutility's actuator calibration without a window.
 
-The board calibration is p4sysid.boardcal: one sequence, in dependency-stage
-order, that pucktuner and p4gui run too.  This keeps puckutility's names for
-it (the CLI's calibrate STEP names and the system-config calibrate hook);
-the GUI's Calibrate menu (gui/cal_board.py) calls the same boardcal with
-dialogs and the progress bar around it.  No wx here.
+A manufacturing batch shares one configuration CSV, loaded first (flash,
+config load, Save.All, reboot).  The actuator calibration is then what the
+CSV cannot carry, measured on each unit: p4sysid.plans.ACTUATOR (encoder,
+current-sense bias, gain, slope and fold, electrical zero, runout table,
+cogging, velocity and position refine).  The steps are p4sysid's, run
+through a p4sysid Session in STEPS order; pucktuner and p4gui run the same
+ones.  This keeps puckutility's entry points to them (the CLI's calibrate,
+the system-config calibrate hook); the GUI's Actuator Calibration menu
+(gui/cal_actuator.py) calls the same functions with dialogs and the
+progress bar around them.  No wx here.
+
+Nothing is saved to NV (Save.All) unless the caller asks: *save* here, the
+CLI's --save, a question in the GUI.  A few steps save their own register
+to take effect (p4sysid.steps), as they always have.
 """
 
 from p4core.reporter import Reporter
-from p4sysid import boardcal
+from p4sysid import plans
 
 
 class CalibrationFailed(RuntimeError):
     pass
 
 
+#: The actuator calibration's steps, in the order the menus number them
+#: (plans.numbered): key -> title.
+STEPS = {st.key: st.title for _n, _stage, st in plans.numbered(plans.ACTUATOR)}
+
+
 def _reporter(reporter):
     return reporter if reporter is not None else Reporter()
 
 
-def calibrate_all(node, network=None, reporter=None, quick=False):
-    """Encoder test, current bias, gain, sense slope, the slope's baseline
-    fold, and the encoder zero (boardcal.FULL_SEQUENCE).  *quick* uses the
-    coarser encoder zero (8 steps per electrical cycle, not 16), the quick
-    bias and a 4-level slope fit; every stored value matches the thorough
-    run within tolerance.  Returns True on success."""
-    return boardcal.calibrate_board(node, _reporter(reporter), quick=quick)
+def step_keys(names):
+    """Step keys for *names* (keys or plans.ALIASES names), actuator steps
+    only, in run order; CalibrationFailed names the choices otherwise."""
+    try:
+        keys = [plans.canonical(n, plans.ACTUATOR) for n in names]
+    except plans.PlanError as exc:
+        raise CalibrationFailed(str(exc)) from None
+    return plans.run_order(keys)
 
 
-#: Single calibrations: name -> (help, None).  Run in dependency-stage order
-#: whatever order they are named in (run_steps).
-STEPS = {name: (boardcal.HELP[name], None) for name in boardcal.BOARD_STEPS}
+def make_session(node, reporter=None, reboot=None):
+    """A p4sysid Session on *node* reporting to *reporter*.  *reboot()*
+    NMT-resets the drive and returns its node (an encoder filter change
+    takes effect only at boot); without it that step stops and asks for a
+    reboot."""
+    return plans.make_session(node, _reporter(reporter), reboot=reboot)
 
 
-def run_steps(names, node, network=None, reporter=None):
-    """The named calibrations, in stage order; False at the first that
-    failed or was declined."""
-    unknown = [n for n in names if n not in STEPS and n not in boardcal.ALIASES]
-    if unknown:
-        raise CalibrationFailed('unknown calibration {!r}; choose from {}'
-                                .format(unknown[0], ', '.join(STEPS)))
-    return boardcal.calibrate_board(node, _reporter(reporter), steps=names)
+def calibrate_actuator(node, reporter=None, steps=None, reboot=None,
+                       save=False, network=None, session=None):
+    """The actuator calibration on *node*: every step of plans.ACTUATOR, or
+    just the named *steps*, in run order, stopping at the first failure.
+    *session*: a Session to run in (make_session), so a step can use an
+    earlier one's result (fold needs this session's slope sweep).  *save*:
+    Save.All when every step passed; otherwise the results stay in RAM.
+    Returns (ok, session)."""
+    reporter = _reporter(reporter)
+    keys = step_keys(steps) if steps else list(plans.ACTUATOR)
+    if session is None:
+        session = make_session(node, reporter, reboot)
+    ok = plans.run(session, keys, reporter)
+    if ok and save:
+        ok = save_results(session, reporter)
+    return ok, session
 
 
-def run_step(name, node, network=None, reporter=None):
-    """One calibration by name; False means it failed or was declined."""
-    return run_steps([name], node, network, reporter)
+def save_results(session, reporter=None):
+    """Save.All, and the reboot an i_cont change needs (plans.save).  The
+    caller asks the user first."""
+    return plans.save(session, reporter=reporter)
+
+
+def summary_text(session, steps=None):
+    """One line per step: number, title, verdict, detail."""
+    return plans.summary_text(session, step_keys(steps) if steps
+                              else plans.ACTUATOR)

@@ -4,17 +4,18 @@
     puckutility info [--all] [--no-flashloader]
     puckutility flash FIRMWARE [--all]
     puckutility config load CSV [--all]       (and export/check/templates)
-    puckutility calibrate [STEP ...] [--quick] [--all]
+    puckutility calibrate [STEP ...] [--save] [--all]
     puckutility system-config INI
     puckutility set-id NEW_ID
     puckutility reset [--all]
     puckutility flash-canable [FIRMWARE]
 
-scan, flash, config, set-id and reset are p4core's; calibrate runs the GUI's
-own calibration routines (controllers.calibrate).  main.py turns the old
+scan, flash, config, set-id and reset are p4core's; calibrate runs the
+actuator calibration the GUI runs (controllers.calibrate, p4sysid's steps).  main.py turns the old
 flat flags (--flash FW, --calibrate, ...) into these.
 """
 
+import argparse
 import sys
 
 from p4core import can_backend, cli, ops
@@ -64,31 +65,53 @@ def _cmd_info(ctx):
 # ---------------------------------------------------------------------------
 # calibrate
 # ---------------------------------------------------------------------------
+def _reboot(ctx, node_id):
+    """The reboot an encoder filter change needs: NMT reset, wait for the
+    application, the node again (p4core Session.reset_node)."""
+    return lambda: ctx.session.reset_node(node_id)
+
+
+def _calibrate_node(ctx, node_id, steps=None, save=False):
+    """The actuator calibration on *node_id*, its summary printed.  Returns
+    (ok, session): ok when every step passed (and, with *save*, Save.All
+    did)."""
+    node = ctx.session.add_node(node_id)
+    ok, session = _calibrate.calibrate_actuator(
+        node, ctx.reporter, steps=steps, reboot=_reboot(ctx, node_id),
+        save=save, network=ctx.session.network)
+    ctx.reporter.note('node {}:\n{}'.format(
+        node_id, _calibrate.summary_text(session, steps)))
+    if save and ok:
+        ctx.reporter.note('node {}: saved to NV (Save.All)'.format(node_id))
+    elif session.unsaved:
+        ctx.reporter.note('node {}: results are in RAM only (run with --save '
+                          'to keep them)'.format(node_id))
+    return ok, session
+
+
+def _step_name(name):
+    """A STEP argument: an actuator step, checked before the bus opens."""
+    try:
+        _calibrate.step_keys([name])
+    except _calibrate.CalibrationFailed as exc:
+        raise argparse.ArgumentTypeError(
+            '{} (the actuator calibration steps; the batch CSV carries the '
+            'rest)'.format(exc))
+    return name
+
+
 def _cmd_calibrate(ctx):
     steps = ctx.args.steps
-    unknown = set(steps) - set(_calibrate.STEPS)
-    if unknown:
-        ctx.reporter.warn('unknown calibration(s) {}; choose from {}'.format(
-            ', '.join(sorted(unknown)), ', '.join(_calibrate.STEPS)))
-        return cli.EXIT_USAGE
-    if ctx.args.quick and steps:
-        ctx.reporter.warn('--quick applies to the full sequence only')
-        return cli.EXIT_USAGE
     if not ctx.reporter.confirm(
-            'Calibration turns the motor. Is it free to turn?', default=True):
+            'Calibration turns the motor, continuously for cogging and the '
+            'refine steps. Is the output free to turn?', default=True):
         return cli.EXIT_FAILED
     ok = True
     for node_id in cli.targets(ctx):
-        node = ctx.session.add_node(node_id)
         ctx.reporter.status('--- Node {} ---'.format(node_id))
-        if steps:
-            # In dependency-stage order, whatever order they were typed in.
-            if not _calibrate.run_steps(steps, node, ctx.session.network,
-                                        ctx.reporter):
-                ctx.reporter.warn('node {}: calibration failed'.format(node_id))
-                ok = False
-        elif not _calibrate.calibrate_all(node, ctx.session.network,
-                                          ctx.reporter, quick=ctx.args.quick):
+        if not _calibrate_node(ctx, node_id, steps or None,
+                               ctx.args.save)[0]:
+            ctx.reporter.warn('node {}: calibration failed'.format(node_id))
             ok = False
     return cli.EXIT_OK if ok else cli.EXIT_FAILED
 
@@ -100,9 +123,13 @@ def _cmd_system_config(ctx):
     from .controllers import system_config
 
     def calibrate(node_id):
-        node = ctx.session.add_node(node_id)
-        return _calibrate.calibrate_all(node, ctx.session.network,
-                                        ctx.reporter)
+        # The actuator calibration; Save.All only when the user says so.
+        ok, session = _calibrate_node(ctx, node_id)
+        if ok and session.unsaved and ctx.reporter.confirm(
+                'Save node {}\'s calibration to NV (Save.All)?'.format(node_id),
+                default=False):
+            ok = _calibrate.save_results(session, ctx.reporter)
+        return ok
 
     outcome = system_config.apply(ctx.session, ctx.args.ini, ctx.reporter,
                                   calibrate=calibrate)
@@ -139,16 +166,17 @@ def build_parser():
                    help="skip the flashloader version (don't reboot the puck)")
 
     p = sub.add_parser(
-        'calibrate', help='calibrate (the motor turns)',
-        description='With no STEP: the full sequence (encoder test, current '
-        'bias, gain, sense slope, encoder zero, baseline fold). Steps: ' +
-        '; '.join('{}: {}'.format(k, v[0]) for k, v in _calibrate.STEPS.items()))
+        'calibrate', help='actuator calibration (the motor turns)',
+        description='The actuator calibration: the per-unit steps a batch '
+        'CSV cannot carry (load the CSV first). With no STEP, all of them in '
+        'order; named steps run in that order too. Results stay in RAM '
+        'unless --save. Steps: ' +
+        '; '.join('{}: {}'.format(k, t) for k, t in _calibrate.STEPS.items()))
     p.set_defaults(func=_cmd_calibrate, needs_bus=True)
-    p.add_argument('steps', nargs='*', metavar='STEP',
+    p.add_argument('steps', nargs='*', metavar='STEP', type=_step_name,
                    help='any of ' + ', '.join(_calibrate.STEPS))
-    p.add_argument('--quick', action='store_true',
-                   help='the quick full sequence (coarser encoder zero, '
-                   '4-level slope fit)')
+    p.add_argument('--save', action='store_true',
+                   help='Save.All when every step passed (default: RAM only)')
     p.add_argument('--all', action='store_true', help='every puck on the bus')
 
     p = sub.add_parser('system-config',

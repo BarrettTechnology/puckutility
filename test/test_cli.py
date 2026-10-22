@@ -85,39 +85,80 @@ class TestInfo(CliTest):
         self.assertEqual([r['node_id'] for r in json.loads(out)], [1, 2])
 
 
+def _session(unsaved=True):
+    return mock.Mock(unsaved=unsaved, results={})
+
+
 class TestCalibrate(CliTest):
 
-    def test_full_sequence_after_confirmation(self):
-        with mock.patch.object(calibrate, 'calibrate_all',
-                               return_value=True) as full:
-            code, _out, _err = self.run_cli('-y', 'calibrate', '--quick')
+    def patch(self, ok=True, unsaved=True):
+        p = mock.patch.object(calibrate, 'calibrate_actuator',
+                              side_effect=lambda *a, **kw: (ok, _session(
+                                  unsaved and not kw.get('save'))))
+        fn = p.start()
+        self.addCleanup(p.stop)
+        q = mock.patch.object(calibrate, 'summary_text', return_value='')
+        q.start()
+        self.addCleanup(q.stop)
+        return fn
+
+    def test_the_actuator_calibration_in_ram(self):
+        fn = self.patch()
+        code, out, _err = self.run_cli('-y', 'calibrate')
         self.assertEqual(code, 0)
-        self.assertTrue(full.call_args.kwargs['quick'])
-        self.assertIs(full.call_args.args[1], self.session.network)
+        self.assertIsNone(fn.call_args.kwargs['steps'])
+        self.assertFalse(fn.call_args.kwargs['save'])
+        self.assertIs(fn.call_args.kwargs['network'], self.session.network)
+        self.assertTrue(callable(fn.call_args.kwargs['reboot']))
+        self.assertIn('RAM only', out)
+
+    def test_save(self):
+        fn = self.patch()
+        code, out, _err = self.run_cli('-y', 'calibrate', '--save')
+        self.assertEqual(code, 0)
+        self.assertTrue(fn.call_args.kwargs['save'])
+        self.assertIn('Save.All', out)
 
     def test_steps(self):
-        with mock.patch.object(calibrate, 'run_steps',
-                               return_value=True) as step:
-            code, _out, _err = self.run_cli('-y', 'calibrate', 'settling',
-                                            'slope')
+        fn = self.patch()
+        code, _out, _err = self.run_cli('-y', 'calibrate', 'fold', 'slope')
         self.assertEqual(code, 0)
-        self.assertEqual(step.call_args.args[0], ['settling', 'slope'])
+        self.assertEqual(fn.call_args.kwargs['steps'], ['fold', 'slope'])
 
     def test_a_failure_is_exit_1(self):
-        with mock.patch.object(calibrate, 'calibrate_all', return_value=False):
-            code, _out, _err = self.run_cli('-y', 'calibrate')
+        self.patch(ok=False)
+        code, _out, _err = self.run_cli('-y', 'calibrate')
         self.assertEqual(code, 1)
 
-    def test_usage_errors(self):
-        self.assertEqual(self.run_cli('-y', 'calibrate', 'bogus')[0], 2)
-        self.assertEqual(self.run_cli('-y', 'calibrate', 'slope', '--quick')[0], 2)
+    def test_batch_steps_and_old_options_are_usage_errors(self):
+        """Refused by the parser, before the bus is opened."""
+        fn = self.patch()
+        for argv in (['settling'], ['latency'], ['bogus'], ['slope', 'r'],
+                     ['--quick']):
+            with mock.patch('sys.stderr'), \
+                    self.assertRaises(SystemExit) as cm:
+                self.run_cli('-y', 'calibrate', *argv,
+                             session=mock.Mock(connect=mock.Mock(
+                                 side_effect=AssertionError('no bus'))))
+            self.assertEqual(cm.exception.code, 2, argv)
+        fn.assert_not_called()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit):
+            cli.build_parser().parse_args(['calibrate', 'settling'])
+        self.assertIn('position_refine', err.getvalue())   # the choices
+        self.assertIn('batch CSV', err.getvalue())
 
     def test_all(self):
-        with mock.patch.object(calibrate, 'calibrate_all',
-                               return_value=True) as full:
-            self.run_cli('-y', 'calibrate', '--all',
-                         session=FakeSession([3, 4]))
-        self.assertEqual([c.args[0].id for c in full.call_args_list], [3, 4])
+        fn = self.patch()
+        self.run_cli('-y', 'calibrate', '--all', session=FakeSession([3, 4]))
+        self.assertEqual([c.args[0].id for c in fn.call_args_list], [3, 4])
+
+    def test_the_reboot_is_the_sessions_reset(self):
+        fn = self.patch()
+        self.run_cli('-y', 'calibrate')
+        self.session.reset_node = mock.Mock(return_value='node')
+        self.assertEqual(fn.call_args.kwargs['reboot'](), 'node')
+        self.session.reset_node.assert_called_once_with(5)
 
 
 class TestOtherCommands(CliTest):
@@ -128,6 +169,23 @@ class TestOtherCommands(CliTest):
             code, out, _err = self.run_cli('system-config', 's.ini')
         self.assertEqual(code, 0)
         self.assertIn('node 2: missing', out)
+
+    def test_system_config_calibrates_the_actuator_and_asks_to_save(self):
+        hooks = []
+        with mock.patch.object(system_config, 'apply',
+                               side_effect=lambda s, ini, rep, calibrate:
+                               hooks.append(calibrate) or {1: 'configured'}):
+            self.run_cli('-y', 'system-config', 's.ini')
+        session = _session()
+        with mock.patch.object(calibrate, 'calibrate_actuator',
+                               return_value=(True, session)) as fn, \
+                mock.patch.object(calibrate, 'summary_text', return_value=''), \
+                mock.patch.object(calibrate, 'save_results',
+                                  return_value=True) as save:
+            self.assertTrue(hooks[0](1))
+        self.assertFalse(fn.call_args.kwargs['save'])
+        save.assert_called_once()                     # -y: yes to saving
+        self.assertIs(save.call_args.args[0], session)
         with mock.patch.object(system_config, 'apply',
                                return_value={1: 'flash failed'}):
             self.assertEqual(self.run_cli('system-config', 's.ini')[0], 1)

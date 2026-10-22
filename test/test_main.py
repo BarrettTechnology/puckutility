@@ -33,10 +33,11 @@ class TestLegacyFlags(unittest.TestCase):
 
     def test_calibrations(self):
         self.assertEqual(self.t('--all --calibrate'), [['calibrate', '--all']])
+        # --quick (the old quick board sequence) is accepted and ignored.
         self.assertEqual(self.t('--id 3 --calibrate --quick'),
-                         [['--id', '3', 'calibrate', '--quick']])
-        self.assertEqual(self.t('--id 3 --calibrate-settling'),
-                         [['--id', '3', 'calibrate', 'settling']])
+                         [['--id', '3', 'calibrate']])
+        with mock.patch('sys.stderr'), self.assertRaises(SystemExit):
+            self.t('--id 3 --calibrate-settling')     # a batch item now
         self.assertEqual(self.t('--id 3 --calibrate-slope'),
                          [['--id', '3', 'calibrate', 'slope']])
 

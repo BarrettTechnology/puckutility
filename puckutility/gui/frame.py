@@ -34,41 +34,34 @@ class puckutilityapp_frame(wx.Frame):
         item = wxglade_tmp_menu.Append(wx.ID_ANY, "ON/OFF ADC Monitor\tCtrl+P", "")
         self.Bind(wx.EVT_MENU, self.on_off_adc, item)
         wxglade_tmp_menu.AppendSeparator()
-        wxglade_tmp_menu_cal = wx.Menu()
-        wxglade_tmp_menu_cal_quick = wx.Menu()
-        item = wxglade_tmp_menu_cal_quick.Append(wx.ID_ANY, "Active Puck (~25 s)", "")
-        self.Bind(wx.EVT_MENU, self.calibrate_quick, item)
-        item = wxglade_tmp_menu_cal_quick.Append(wx.ID_ANY, "All Pucks (~25 s × N)", "")
-        self.Bind(wx.EVT_MENU, self.calibrate_quick_all_pucks, item)
-        wxglade_tmp_menu_cal.Append(wx.ID_ANY, "Quick", wxglade_tmp_menu_cal_quick, "")
-        wxglade_tmp_menu_cal_thorough = wx.Menu()
-        item = wxglade_tmp_menu_cal_thorough.Append(wx.ID_ANY, "Active Puck (~37 s)\tCtrl+C", "")
-        self.Bind(wx.EVT_MENU, self.calibrate_all, item)
-        item = wxglade_tmp_menu_cal_thorough.Append(wx.ID_ANY, "All Pucks (~37 s × N)", "")
-        self.Bind(wx.EVT_MENU, self.calibrate_all_pucks, item)
-        wxglade_tmp_menu_cal.Append(wx.ID_ANY, "Thorough", wxglade_tmp_menu_cal_thorough, "")
-        wxglade_tmp_menu.Append(wx.ID_ANY, "Calibrate", wxglade_tmp_menu_cal, "")
-        wxglade_tmp_menu.AppendSeparator()
-        item = wxglade_tmp_menu.Append(wx.ID_ANY, "Test Magnetic Encoder", "")
-        self.Bind(wx.EVT_MENU, self.test_encoder, item)
-        item = wxglade_tmp_menu.Append(wx.ID_ANY, "Current Sense Bias", "")
+        wxglade_tmp_menu_sub = wx.Menu()
+        item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "Active Puck\tCtrl+C", "")
+        self.Bind(wx.EVT_MENU, self.calibrate_actuator, item)
+        item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "All Pucks", "")
+        self.Bind(wx.EVT_MENU, self.calibrate_actuator_all_pucks, item)
+        wxglade_tmp_menu.Append(wx.ID_ANY, "Actuator Calibration", wxglade_tmp_menu_sub, "")
+        wxglade_tmp_menu_sub = wx.Menu()
+        item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "1. Encoder filter + rest test", "")
+        self.Bind(wx.EVT_MENU, self.calibrate_step_encoder, item)
+        item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "2. Current-sense bias", "")
         self.Bind(wx.EVT_MENU, self.calibrate_ibias, item)
-        item = wxglade_tmp_menu.Append(wx.ID_ANY, "Current Sense Gainfactor", "")
+        item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "3. Current-sense gain", "")
         self.Bind(wx.EVT_MENU, self.calibrate_igainfactor, item)
-        item = wxglade_tmp_menu.Append(wx.ID_ANY, "Current Sense Timing", "")
-        self.Bind(wx.EVT_MENU, self.calibrate_itiming, item)
-        item = wxglade_tmp_menu.Append(wx.ID_ANY, "Current Sense Slope", "")
-        self.Bind(wx.EVT_MENU, self.calibrate_current_slope, item)
-        # (R&D methods measure_gain_ripple / calibrate_slope_spin_test retained in calibrate_menu.py,
-        #  no longer surfaced as menu items.)
-        item = wxglade_tmp_menu.Append(wx.ID_ANY, "Encoder Zero", "")
-        self.Bind(wx.EVT_MENU, self.calibrate_enczero, item)
-        item = wxglade_tmp_menu.Append(wx.ID_ANY, "Encoder Direction", "")
-        self.Bind(wx.EVT_MENU, self.calibrate_encdir, item)
-        item = wxglade_tmp_menu.Append(wx.ID_ANY, "Encoder Error Compensation", "")
-        self.Bind(wx.EVT_MENU, self.generate_enc_correction_table, item)
-        item = wxglade_tmp_menu.Append(wx.ID_ANY, "Encoder Lag", "")
-        self.Bind(wx.EVT_MENU, self.calibrate_enclag, item)
+        item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "4. Current-sense slope", "")
+        self.Bind(wx.EVT_MENU, self.calibrate_step_slope, item)
+        item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "5. Current-sense offset fold", "")
+        self.Bind(wx.EVT_MENU, self.calibrate_step_fold, item)
+        item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "6. Electrical zero + winding order", "")
+        self.Bind(wx.EVT_MENU, self.calibrate_step_winding, item)
+        item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "7. Encoder runout table", "")
+        self.Bind(wx.EVT_MENU, self.calibrate_step_runout, item)
+        item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "8. Cogging feed-forward", "")
+        self.Bind(wx.EVT_MENU, self.calibrate_step_cogging, item)
+        item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "9. Velocity gains + filters (ripple)", "")
+        self.Bind(wx.EVT_MENU, self.calibrate_step_velocity_refine, item)
+        item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "10. Position kp + velff (settle)", "")
+        self.Bind(wx.EVT_MENU, self.calibrate_step_position_refine, item)
+        wxglade_tmp_menu.Append(wx.ID_ANY, "Actuator Calibration Steps", wxglade_tmp_menu_sub, "")
         wxglade_tmp_menu.AppendSeparator()
         wxglade_tmp_menu_sub = wx.Menu()
         self.frame_menubar.ON = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "ON", "", wx.ITEM_RADIO)
@@ -288,28 +281,16 @@ class puckutilityapp_frame(wx.Frame):
         print("Event handler 'on_off_adc' not implemented!")
         event.Skip()
 
-    def calibrate_quick(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
-        print("Event handler 'calibrate_quick' not implemented!")
+    def calibrate_actuator(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
+        print("Event handler 'calibrate_actuator' not implemented!")
         event.Skip()
 
-    def calibrate_quick_all_pucks(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
-        print("Event handler 'calibrate_quick_all_pucks' not implemented!")
+    def calibrate_actuator_all_pucks(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
+        print("Event handler 'calibrate_actuator_all_pucks' not implemented!")
         event.Skip()
 
-    def calibrate_all(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
-        print("Event handler 'calibrate_all' not implemented!")
-        event.Skip()
-
-    def calibrate_all_pucks(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
-        print("Event handler 'calibrate_all_pucks' not implemented!")
-        event.Skip()
-
-    def test_encoder(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
-        print("Event handler 'test_encoder' not implemented!")
-        event.Skip()
-
-    def generate_enc_correction_table(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
-        print("Event handler 'generate_enc_correction_table' not implemented!")
+    def calibrate_step_encoder(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
+        print("Event handler 'calibrate_step_encoder' not implemented!")
         event.Skip()
 
     def calibrate_ibias(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
@@ -320,28 +301,32 @@ class puckutilityapp_frame(wx.Frame):
         print("Event handler 'calibrate_igainfactor' not implemented!")
         event.Skip()
 
-    def calibrate_itiming(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
-        print("Event handler 'calibrate_itiming' not implemented!")
+    def calibrate_step_slope(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
+        print("Event handler 'calibrate_step_slope' not implemented!")
         event.Skip()
 
-    def calibrate_current_slope(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
-        print("Event handler 'calibrate_current_slope' not implemented!")
+    def calibrate_step_fold(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
+        print("Event handler 'calibrate_step_fold' not implemented!")
         event.Skip()
 
-    def measure_gain_ripple(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
-        print("Event handler 'measure_gain_ripple' not implemented!")
+    def calibrate_step_winding(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
+        print("Event handler 'calibrate_step_winding' not implemented!")
         event.Skip()
 
-    def calibrate_enczero(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
-        print("Event handler 'calibrate_enczero' not implemented!")
+    def calibrate_step_runout(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
+        print("Event handler 'calibrate_step_runout' not implemented!")
         event.Skip()
 
-    def calibrate_encdir(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
-        print("Event handler 'calibrate_encdir' not implemented!")
+    def calibrate_step_cogging(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
+        print("Event handler 'calibrate_step_cogging' not implemented!")
         event.Skip()
 
-    def calibrate_enclag(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
-        print("Event handler 'calibrate_enclag' not implemented!")
+    def calibrate_step_velocity_refine(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
+        print("Event handler 'calibrate_step_velocity_refine' not implemented!")
+        event.Skip()
+
+    def calibrate_step_position_refine(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
+        print("Event handler 'calibrate_step_position_refine' not implemented!")
         event.Skip()
 
     def error_compensation_state(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>

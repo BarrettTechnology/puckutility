@@ -53,75 +53,58 @@
                         <help_str>---</help_str>
                         <handler>---</handler>
                     </item>
-                    <menu label="Calibrate" name="">
-                        <menu label="Quick" name="">
-                            <item>
-                                <label>Active Puck (~25 s)</label>
-                                <handler>calibrate_quick</handler>
-                            </item>
-                            <item>
-                                <label>All Pucks (~25 s × N)</label>
-                                <handler>calibrate_quick_all_pucks</handler>
-                            </item>
-                        </menu>
-                        <menu label="Thorough" name="">
-                            <item>
-                                <label>Active Puck (~37 s)	Ctrl+C</label>
-                                <handler>calibrate_all</handler>
-                            </item>
-                            <item>
-                                <label>All Pucks (~37 s × N)</label>
-                                <handler>calibrate_all_pucks</handler>
-                            </item>
-                        </menu>
+                    <menu label="Actuator Calibration" name="">
+                        <item>
+                            <label>Active Puck	Ctrl+C</label>
+                            <handler>calibrate_actuator</handler>
+                        </item>
+                        <item>
+                            <label>All Pucks</label>
+                            <handler>calibrate_actuator_all_pucks</handler>
+                        </item>
                     </menu>
-                    <item>
-                        <label>---</label>
-                        <id>---</id>
-                        <name>---</name>
-                        <help_str>---</help_str>
-                        <handler>---</handler>
-                    </item>
-                    <item>
-                        <label>Test Magnetic Encoder</label>
-                        <handler>test_encoder</handler>
-                    </item>
-                    <item>
-                        <label>Current Sense Bias</label>
-                        <handler>calibrate_ibias</handler>
-                    </item>
-                    <item>
-                        <label>Current Sense Gainfactor</label>
-                        <handler>calibrate_igainfactor</handler>
-                    </item>
-                    <item>
-                        <label>Current Sense Timing</label>
-                        <handler>calibrate_itiming</handler>
-                    </item>
-                    <item>
-                        <label>Current Sense Slope</label>
-                        <handler>calibrate_current_slope</handler>
-                    </item>
-                    <item>
-                        <label>iSense Balance Ripple</label>
-                        <handler>measure_gain_ripple</handler>
-                    </item>
-                    <item>
-                        <label>Encoder Zero</label>
-                        <handler>calibrate_enczero</handler>
-                    </item>
-                    <item>
-                        <label>Encoder Direction</label>
-                        <handler>calibrate_encdir</handler>
-                    </item>
-                    <item>
-                        <label>Encoder Error Compensation</label>
-                        <handler>generate_enc_correction_table</handler>
-                    </item>
-                    <item>
-                        <label>Encoder Lag</label>
-                        <handler>calibrate_enclag</handler>
-                    </item>
+                    <menu label="Actuator Calibration Steps" name="">
+                        <item>
+                            <label>1. Encoder filter + rest test</label>
+                            <handler>calibrate_step_encoder</handler>
+                        </item>
+                        <item>
+                            <label>2. Current-sense bias</label>
+                            <handler>calibrate_ibias</handler>
+                        </item>
+                        <item>
+                            <label>3. Current-sense gain</label>
+                            <handler>calibrate_igainfactor</handler>
+                        </item>
+                        <item>
+                            <label>4. Current-sense slope</label>
+                            <handler>calibrate_step_slope</handler>
+                        </item>
+                        <item>
+                            <label>5. Current-sense offset fold</label>
+                            <handler>calibrate_step_fold</handler>
+                        </item>
+                        <item>
+                            <label>6. Electrical zero + winding order</label>
+                            <handler>calibrate_step_winding</handler>
+                        </item>
+                        <item>
+                            <label>7. Encoder runout table</label>
+                            <handler>calibrate_step_runout</handler>
+                        </item>
+                        <item>
+                            <label>8. Cogging feed-forward</label>
+                            <handler>calibrate_step_cogging</handler>
+                        </item>
+                        <item>
+                            <label>9. Velocity gains + filters (ripple)</label>
+                            <handler>calibrate_step_velocity_refine</handler>
+                        </item>
+                        <item>
+                            <label>10. Position kp + velff (settle)</label>
+                            <handler>calibrate_step_position_refine</handler>
+                        </item>
+                    </menu>
                     <item>
                         <label>---</label>
                         <id>---</id>

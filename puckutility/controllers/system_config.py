@@ -9,7 +9,8 @@ Each INI section is one puck::
     fw = P4-4.4.0.ebin              ; bare names are looked for in firmware/
 
 For each puck on the bus: flash when its firmware is not fw_version, load the
-CSV (saved and rebooted), and then offer to calibrate everything configured.
+CSV (saved and rebooted), and then offer the actuator calibration of every
+puck configured.
 """
 
 import configparser
@@ -49,8 +50,8 @@ def read_ini(path):
 def apply(session, ini_path, reporter=None, calibrate=None):
     """Flash and configure every puck in *ini_path* found on the bus.
 
-    *calibrate(node_id)* runs for each configured puck when the user agrees
-    (the default is no).  Returns {node_id: 'configured' | 'missing' |
+    *calibrate(node_id)* (the actuator calibration) runs for each configured
+    puck when the user agrees (the default is no).  Returns {node_id: 'configured' | 'missing' |
     'flash failed' | 'config failed'}.
     """
     reporter = reporter if reporter is not None else Reporter()
@@ -84,8 +85,9 @@ def apply(session, ini_path, reporter=None, calibrate=None):
         outcome[node_id] = 'configured' if result.ok else 'config failed'
     configured = [n for n, o in outcome.items() if o == 'configured']
     if configured and calibrate is not None and reporter.confirm(
-            'Calibration is required after configuration. Calibrate {} now? '
-            '(the motors turn)'.format(configured), default=False):
+            'Actuator calibration is required after configuration. '
+            'Calibrate {} now? (the motors turn, continuously for cogging '
+            'and the refine steps)'.format(configured), default=False):
         for node_id in configured:
             reporter.status('Calibrating node {}'.format(node_id))
             calibrate(node_id)

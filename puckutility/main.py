@@ -13,8 +13,8 @@ commands::
     --info                       info (every puck unless --id)
     --flash FW                   flash FW
     --config CSV                 config load CSV
-    --calibrate [--quick]        calibrate [--quick]
-    --calibrate-settling         calibrate settling
+    --calibrate                  calibrate (the actuator calibration;
+                                 --quick is accepted and ignored)
     --calibrate-slope            calibrate slope
     --system-config INI          system-config INI
     --set-id NEW (--id OLD)      set-id NEW
@@ -32,8 +32,8 @@ import sys
 
 #: The old operation flags; any one of them means the old command line.
 LEGACY_OPS = ('--scan', '--info', '--flash', '--config', '--calibrate',
-              '--calibrate-settling', '--calibrate-slope', '--system-config',
-              '--set-id', '--flash-canable')
+              '--calibrate-slope', '--system-config', '--set-id',
+              '--flash-canable')
 
 
 def gui_main(argv=None):
@@ -58,8 +58,6 @@ def _legacy_parser():
     ops.add_argument('--flash', metavar='FIRMWARE')
     ops.add_argument('--config', metavar='CSV')
     ops.add_argument('--calibrate', action='store_true')
-    ops.add_argument('--calibrate-settling', action='store_true',
-                     dest='calibrate_settling')
     ops.add_argument('--calibrate-slope', action='store_true',
                      dest='calibrate_slope')
     ops.add_argument('--system-config', metavar='INI', dest='system_config')
@@ -90,9 +88,8 @@ def translate_legacy(argv):
     elif a.config:
         words = ['config', 'load', a.config]
     elif a.calibrate:
-        words = ['calibrate'] + (['--quick'] if a.quick else [])
-    elif a.calibrate_settling:
-        words = ['calibrate', 'settling']
+        # --quick picked the quick board sequence, gone with it.
+        words = ['calibrate']
     elif a.calibrate_slope:
         words = ['calibrate', 'slope']
     elif a.system_config:
