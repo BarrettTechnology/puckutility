@@ -29,6 +29,7 @@ if ROOT not in sys.path:
 from p4core import can_backend
 from p4core.paths import puck4_eds
 from p4core.cia402 import CLEAR_FAULT, SHUTDOWN, OP_ENABLED, MODE_IDLE, MODE_PROFILE_VEL
+from p4core.calibrate import read_bus_v
 
 # Pull --settling <ns> (or --settling=<ns>) out of argv; the rest are positional can_device / node_id.
 _argv = sys.argv[1:]
@@ -215,7 +216,7 @@ def vitals(node):
             i2 = node.sdo[0x3025][1].raw
         except Exception:
             i2 = 0
-        bus = node.sdo['Amplifier']['BusVoltage'].raw / 10.0
+        bus = read_bus_v(node)
         T.append(now); RPM.append(rpm); IQ.append(iq); ID.append(idc)
         I2.append(i2); VF.append((ud * ud + uq * uq) ** 0.5 / FULL_MOD * 100.0); BUS.append(bus)
         # stop when the i2t accumulator has plateaued (past MIN_LOG), or at SOAK_MAX

@@ -35,10 +35,10 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from p4core import can_backend
 from p4core.paths import puck4_eds
-from p4core.cia402 import CLEAR_FAULT, SHUTDOWN, OP_ENABLED, MODE_IDLE, MODE_PROFILE_VEL
+from p4core.cia402 import (CLEAR_FAULT, SHUTDOWN, OP_ENABLED, MODE_IDLE, MODE_PROFILE_VEL,
+                           MODE_PHASE_VOLTAGE_ANGLE, write_mode)
 
 EDS = puck4_eds()
-MODE_PHASE_VOLTAGE_ANGLE = 12
 SW_FAULT = 0x08
 IDX_SETTLE = (0x3001, 5)
 
@@ -60,7 +60,7 @@ def _enable(node, mode):
     node.sdo['SetModeOfOperation'].raw = MODE_IDLE
     for cw in (CLEAR_FAULT, SHUTDOWN, OP_ENABLED):
         node.sdo['ControlWord'].raw = cw
-    node.sdo['SetModeOfOperation'].raw = mode
+    write_mode(node, mode)
 
 
 def _recal_bias(node, n=40):

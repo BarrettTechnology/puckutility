@@ -11,7 +11,7 @@ import platform
 from p4core.cia402 import (
     CLEAR_FAULT, SHUTDOWN, OP_ENABLED,
     MODE_IDLE, MODE_PHASE_VOLTAGE_ANGLE, MODE_PROFILE_TRQ, MODE_PROFILE_VEL,
-    MODE_PROFILE_POS,
+    MODE_PROFILE_POS, drive_mode, mode_byte, write_mode,
 )
 from canopen.sdo import SdoAbortedError
 from p4core.can_backend import sdo_contention_message
@@ -273,13 +273,14 @@ class _PVCATorqueDialog(wx.Dialog):
             n.sdo["ControlWord"].raw = CLEAR_FAULT
             n.sdo["ControlWord"].raw = SHUTDOWN
             n.sdo["ControlWord"].raw = OP_ENABLED
-            n.sdo["SetModeOfOperation"].raw = MODE_PHASE_VOLTAGE_ANGLE
+            write_mode(n, MODE_PHASE_VOLTAGE_ANGLE)
             n.sdo['Theta_e'].raw = 0
             n.sdo['Motor']['ud'].raw = 0
             # Prime RPDO1 once so ControlWord=OP_ENABLED + Mode=PVCA take effect immediately.
             # RPDO1 is now trans_type=255 (async) so it is NOT re-applied on every SYNC.
             n.network.send_message(self._rpdo1_cob,
-                struct.pack('<HBh', OP_ENABLED, MODE_PHASE_VOLTAGE_ANGLE, 0))
+                struct.pack('<HBh', OP_ENABLED,
+                            mode_byte(drive_mode(n, MODE_PHASE_VOLTAGE_ANGLE)), 0))
             # Pre-fill RPDO3 with safe zeros before first SYNC.
             n.network.send_message(self._rpdo3_cob, struct.pack('<hh', 0, 0))
             time.sleep(0.1)

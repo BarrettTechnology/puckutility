@@ -52,7 +52,9 @@ INJ_OFF, INJ_HOLD, INJ_SINE = 0, 1, 3
 ST_INJECTING, ST_TRIPPED = 3, 4
 INJ_MAX_MS = 5000
 AXIS_D, AXIS_Q = 0, 1
-MODE_IDLE, MODE_PHASE_VOLTAGE_ANGLE = 0, 12
+MODE_IDLE = 0
+#: Phase-voltage mode: -1 from stm32 cf8d11e (0x6502 bit 16), 12 before.
+MODE_PVA_NEW, MODE_PVA_OLD, PVA_SUPPORTED_BIT = -1, 12, 1 << 16
 PWM_PATTERNS_PER_CONTROL_CYCLE = 4
 FRAC16_ONE = 32767
 
@@ -159,13 +161,17 @@ class Puck:
                 else ''))
 
     def begin(self):
-        """Enable in mode 12 at zero volts; the injection owns dq from here."""
+        """Enable in mode -1 (12) at zero volts; the injection owns dq from here."""
         self.w(0x6040, 0, 0x80)     # fault reset
         self.w(0x6040, 0, 0x06)     # shutdown
         self.w(0x6040, 0, 0x0F)     # enable operation
         self.w(0x3010, 4, 0, '<h')  # Motor.ud
         self.w(0x3010, 5, 0, '<h')  # Motor.uq
-        self.w(0x6060, 0, MODE_PHASE_VOLTAGE_ANGLE, '<b')
+        try:
+            new = self.u(0x6502, 0, '<I') & PVA_SUPPORTED_BIT
+        except Exception:
+            new = 0
+        self.w(0x6060, 0, MODE_PVA_NEW if new else MODE_PVA_OLD, '<b')
 
     def safe_stop(self):
         """Injection off first (it overrides every mode), then idle."""
@@ -226,7 +232,10 @@ def main():
         ld = p.u(0x3011, 6)                              # uH l-l
         lq = p.u(0x3011, 12)
         l_ph = (lq if axis == AXIS_Q and 0 < lq < 0xFFFF else ld) / 2e6
-        vbus = p.u(0x3000, 1) / 10.0
+        try:
+            vbus = p.u(0x6079, 0, '<I') / 1000.0          # DC link, mV
+        except Exception:
+            vbus = p.u(0x3000, 1) / 10.0                  # firmware before 0x6079
         print('Vbus {:.1f} V, i_peak {:.1f} A, R {:.3f} ohm/ph, L{} {:.3f} '
               'mH/ph, control {:.0f} Hz'.format(
                   vbus, i_peak / 1000.0, r_ph, args.axis, l_ph * 1e3, rate))

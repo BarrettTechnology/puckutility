@@ -68,7 +68,7 @@ import sys
 import math
 import datetime
 from p4core import config_csv
-from p4core.calibrate import permille_base_ma
+from p4core.calibrate import permille_base_ma, read_bus_mv
 from p4core.cia402 import (
     CLEAR_FAULT, SHUTDOWN, OP_ENABLED,
     MODE_IDLE, MODE_PROFILE_POS, MODE_PROFILE_VEL,
@@ -1039,7 +1039,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         if code in (0x3210, 0x3220):  # Voltage fault — read bus voltage vs. limits
             def _log_voltage():
                 try:
-                    bus_v = self.node.sdo['Amplifier']['BusVoltage'].raw
+                    bus_v = read_bus_mv(self.node) // 100      # 0.1 V, as the limits
                     nom_v = self.node.sdo['Amp']['NominalBusVoltage'].raw
                     min_v = self.node.sdo['Object2384']['AmplifierMinVoltage'].raw
                     max_v = self.node.sdo['Object2384']['AmplifierMaxVoltage'].raw
