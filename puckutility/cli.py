@@ -18,7 +18,7 @@ flat flags (--flash FW, --calibrate, ...) into these.
 import argparse
 import sys
 
-from p4core import can_backend, cli, ops
+from p4core import can_backend, cli, firmware, ops
 
 from . import __version__
 from .controllers import calibrate as _calibrate
@@ -43,8 +43,10 @@ def _cmd_info(ctx):
         # The puckutility extras first, while the application is running:
         # the flashloader read reboots the puck.
         node = ctx.session.add_node(node_id)
+        fw = firmware.detect(node, refresh=True)
         extra = dict(settling_ns=_read(node, 'Amp', 'MaxSettlingTime'),
-                     encoder_comp=_read(node, 0x3027, 1))
+                     encoder_comp=_read(node, 0x3027, 1) if fw.has('runout') else None,
+                     firmware_line='4.3.x' if fw.legacy else 'current')
         result = ops.info(ctx.session, node_id,
                           flashloader=not ctx.args.no_flashloader,
                           reporter=ctx.reporter)
@@ -57,7 +59,8 @@ def _cmd_info(ctx):
             'unknown' if r['settling_ns'] is None
             else '{} ns'.format(r['settling_ns'])))
         lines.append('  Enc comp:     {}'.format(
-            'unknown' if r['encoder_comp'] is None
+            'not in this firmware' if r['firmware_line'] == '4.3.x'
+            else 'unknown' if r['encoder_comp'] is None
             else 'ON' if r['encoder_comp'] else 'OFF'))
     ctx.emit(results if ctx.args.all else results[0], lines)
 

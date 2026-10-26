@@ -132,5 +132,82 @@ class TestCalibrationMenu(unittest.TestCase):
                              getattr(puckutilityapp_frame, name), name)
 
 
+
+class TestFirmwareGates(unittest.TestCase):
+    """select_id's _apply_firmware_gates over a fake menu bar built from
+    frame.py's Menu menu: a 4.3.x puck greys out the steps it cannot run and
+    the runout switch; a 4.5.0 puck enables them again."""
+
+    def setUp(self):
+        try:
+            import wx  # noqa: F401
+        except ImportError as exc:
+            self.skipTest(str(exc))
+
+    class Item:
+        def __init__(self, label, sub=None):
+            self.label, self.sub, self.enabled = label, sub, True
+
+        def GetItemLabelText(self):
+            return self.label.split('\t')[0]
+
+        def GetSubMenu(self):
+            return self
+
+        def GetMenuItems(self):
+            return self.sub
+
+        def Enable(self, on=True):
+            self.enabled = on
+
+    def bar(self):
+        items = {}
+        for i, (label, v) in enumerate(frame_menu()):
+            sub = [self.Item(k) for k, _h in v] if isinstance(v, list) else None
+            items[i] = self.Item(label, sub)
+        test = self
+
+        class Bar:
+            def FindMenuItem(self, menu, label):
+                test.assertEqual(menu, 'Menu')
+                return next((i for i, it in items.items()
+                             if it.GetItemLabelText() == label), -1)
+
+            def FindItemById(self, i):
+                return items[i]
+
+            def Enable(self, i, on):
+                items[i].Enable(on)
+        return Bar(), {it.label: it for it in items.values()}
+
+    def apply(self, fw):
+        from unittest import mock
+        from puckutility.gui import app
+        bar, items = self.bar()
+        frame = mock.Mock(frame_menubar=bar, node=mock.Mock(_p4_firmware=fw),
+                          _FIRMWARE_MENU_FEATURES=app.MyFrame._FIRMWARE_MENU_FEATURES)
+        frame.getID.return_value = 5
+        app.MyFrame._apply_firmware_gates(frame, fw)
+        steps = {it.label: it.enabled
+                 for it in items['Actuator Calibration Steps'].sub}
+        return items, steps
+
+    def test_legacy(self):
+        from p4core import firmware
+        fw = firmware.Firmware((4, 3, 5), '4.3.5', frozenset({'legacy_polarity'}))
+        items, steps = self.apply(fw)
+        self.assertFalse(items['Encoder Error Compensation'].enabled)
+        on = [label for label, e in steps.items() if e]
+        self.assertEqual([label.split('.')[0] for label in on], ['1', '2', '3', '6'])
+        self.assertTrue(items['Actuator Calibration'].enabled)
+
+    def test_current(self):
+        from p4core import firmware
+        fw = firmware.Firmware((4, 5, 0), '4.5.0',
+                               frozenset(firmware.FEATURES) - {'legacy_polarity'})
+        items, steps = self.apply(fw)
+        self.assertTrue(items['Encoder Error Compensation'].enabled)
+        self.assertTrue(all(steps.values()))
+
 if __name__ == '__main__':
     unittest.main()

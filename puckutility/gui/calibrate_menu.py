@@ -10,7 +10,7 @@ import configparser
 import platform
 from p4core.cia402 import SHUTDOWN, MODE_IDLE
 from p4core.can_backend import sdo_contention_message
-from p4core.calibrate import firmware_version
+from p4core import firmware
 from p4core import calibrate as calibrate_lib
 from p4core import flash as flashp4
 from ..paths import _resolve_path, FIRMWARE_DIR, CONFIG_DIR
@@ -47,12 +47,6 @@ class calibrate(ActuatorCal):
         dlg.ShowModal()
         dlg.Destroy()
 
-    def _fw_ver_tuple(self):
-        return firmware_version(self.node)
-
-    def _fw_at_least(self, major, minor, patch):
-        return self._fw_ver_tuple() >= (major, minor, patch)
-
     def cal_reporter(self):
         """A Reporter for the library calibrations, onto this frame."""
         return GuiCalReporter(self)
@@ -82,10 +76,10 @@ class calibrate(ActuatorCal):
     def error_compensation_state(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
         if self.check_for_node() == False:
             return
-        if not self._fw_at_least(4, 4, 0):
+        if not firmware.has(self.node, 'runout'):
             self._prompt_ok("Firmware Too Old",
-                "Encoder error compensation requires firmware v4.4.0 or later.\n"
-                "Please update the firmware and try again.")
+                "Encoder error compensation requires firmware {} or later.\n"
+                "Please update the firmware and try again.".format(firmware.RECOMMENDED))
             # Revert the radio selection -- the feature is unavailable on this
             # firmware, so it cannot be turned ON.
             self.frame_menubar.ON.Check(False)

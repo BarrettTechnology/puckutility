@@ -22,6 +22,7 @@ import time
 
 import wx
 
+from p4core import firmware
 from p4core.cia402 import MODE_IDLE
 from p4sysid import plans
 from ..controllers import calibrate as actuator
@@ -168,6 +169,12 @@ class ActuatorCal:
 
     def _actuator_step(self, key):
         """One actuator step alone, in this puck's cached session."""
+        node = getattr(self, 'node', None)
+        why = node is not None and plans.unavailable(node, key)
+        if why:
+            self._prompt_ok('Firmware Too Old',
+                            'This step {}.\nPlease update the firmware.'.format(why))
+            return False
         if not self._actuator_ready((key,)):
             return False
         ok, session = self._run_actuator((key,))
@@ -187,6 +194,11 @@ class ActuatorCal:
             'Actuator calibration of every puck on the bus' if every_puck
             else 'Actuator calibration of puck {}'.format(self.getID()),
             _numbered_list(keys))
+        skipped = [k for k in keys if plans.unavailable(self.node, k)]
+        if skipped:
+            msg += ('Skipped on this firmware ({}; these need {}):\n{}\n\n'.format(
+                firmware.detect(self.node).text, firmware.RECOMMENDED,
+                _numbered_list(skipped)))
         msg += ('The motor turns{}: the output must be free to turn.\n\n'
                 'Continue?'.format(', continuously for cogging and the refine '
                                    'steps' if moving else ''))

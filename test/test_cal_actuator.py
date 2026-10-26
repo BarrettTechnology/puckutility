@@ -194,6 +194,29 @@ class TestActuatorMenu(unittest.TestCase):
         self.assertEqual(s.results['runout']['status'], 'skipped')
         self.assertIn('FAIL', f.prompts[-1])      # unsaved: summary + ask
 
+    def test_legacy_firmware_step_refused_without_a_session(self):
+        from p4core import firmware
+        f = AFrame()
+        f.node._p4_firmware = firmware.Firmware(
+            (4, 3, 5), '4.3.5', frozenset({'legacy_polarity'}))
+        self.assertFalse(f.calibrate_step_runout(None))
+        self.assertIn('4.3.5', f.messages[-1])
+        self.assertEqual(f.prompts, [])           # never asked to go
+        self.assertEqual(self.sessions, [])
+
+    def test_legacy_firmware_whole_calibration_lists_the_skipped(self):
+        from p4core import firmware
+        f = AFrame()
+        f.node._p4_firmware = firmware.Firmware(
+            (4, 3, 5), '4.3.5', frozenset({'legacy_polarity'}))
+        f.prompt_answer = False
+        self.assertFalse(f.calibrate_actuator(None))
+        go = f.prompts[0]
+        self.assertIn('Skipped on this firmware (4.3.5', go)
+        skipped = go.split('Skipped on this firmware', 1)[1]
+        self.assertIn('runout', skipped.lower())
+        self.assertNotIn('bias', skipped.lower())
+
     def test_single_steps_share_the_pucks_session(self):
         f = AFrame()
         f.prompt_answer = True

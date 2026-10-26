@@ -52,6 +52,8 @@ from . import widgets
 import os
 import canopen
 from p4core import can_backend
+from p4core import firmware
+from p4sysid import plans
 from canopen.sdo import SdoAbortedError
 import platform
 import time
@@ -1580,6 +1582,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.frame_statusbar.SetStatusText(
                 "Flashloader v{} on node {}".format(version, node_id), 1)
             return
+        self._apply_firmware_gates(firmware.detect(self.node, refresh=True))
         if(current_mode == 0):     
             # update select test to idle and input to 0
             self.choice_test.SetSelection(0)
@@ -1619,6 +1622,35 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.node.nmt.state = 'OPERATIONAL'
         except Exception:
             pass
+
+    # Menu items that need the 4.5.0 objects, by feature (firmware.FEATURES).
+    _FIRMWARE_MENU_FEATURES = (('Encoder Error Compensation', 'runout'),)
+
+    def _apply_firmware_gates(self, fw):
+        """Grey out what the selected puck's firmware cannot do: the
+        Actuator Calibration Steps it lacks the objects for (p4sysid.plans)
+        and the runout switch.  A 4.3.x puck still runs Actuator Calibration;
+        its unavailable steps are skipped."""
+        self.firmware = fw
+        print('Node {}: {}'.format(self.getID(), fw.summary()))
+        if fw.legacy:
+            self.frame_statusbar.SetStatusText(
+                'Firmware {}: some calibrations need {}'.format(
+                    fw.text, firmware.RECOMMENDED), 1)
+        bar = self.frame_menubar
+        for label, feature in self._FIRMWARE_MENU_FEATURES:
+            item = bar.FindMenuItem('Menu', label)
+            if item != wx.NOT_FOUND:
+                bar.Enable(item, fw.has(feature))
+        steps_id = bar.FindMenuItem('Menu', 'Actuator Calibration Steps')
+        if steps_id == wx.NOT_FOUND:
+            return
+        # The items are "N. ...", N numbering plans.ACTUATOR.
+        for item in bar.FindItemById(steps_id).GetSubMenu().GetMenuItems():
+            n = item.GetItemLabelText().split('.', 1)[0]
+            if n.isdigit() and 1 <= int(n) <= len(plans.ACTUATOR):
+                key = plans.ACTUATOR[int(n) - 1]
+                item.Enable(plans.unavailable(self.node, key) is None)
 
     def set_id(self, event):  # wxGlade: wxp3_frame.<event_handler>
         if self.check_for_node() == False:
