@@ -5,8 +5,10 @@
 #            + host-matched wxPython wheel) and verify `import wx` + `wx.App()`
 #            under a headless X server. This exercises the dev/from-source path,
 #            which uses each container's OWN system GLib.
-#   DEB    : build the .deb (PyInstaller frozen binary, built on Ubuntu 20.04),
-#            then install it in each clean container and run `<binary> --help`.
+#   DEB    : build the installer (.run wrapping the PyInstaller-frozen app deb,
+#            built on Ubuntu 20.04, and the puck-can-* adapter debs), run it
+#            unattended in each clean container, check the CAN adapter options
+#            (select, deselect, uninstall), and launch the installed binary.
 #            This exercises the SHIPPED artifact, which bundles libraries from
 #            the 20.04 build env -- the half that the source test cannot see
 #            (e.g. a bundled-GLib vs system-libsecret symbol clash on Ubuntu 26).
@@ -103,29 +105,43 @@ done
 # and exits before the GUI/CAN, so it needs no display or hardware.
 # ===========================================================================
 if [ "$SOURCE_ONLY" = false ]; then
-    echo "==================  building .deb (once)  =================="
+    echo "==================  building installer (once)  =================="
     DEB_REL=""
-    if ./scripts/build-linux-installer.sh --docker --deb; then
-        DEB_REL="$(ls -t build/deb/*.deb 2>/dev/null | head -1)"
+    if ./scripts/build-linux-installer.sh --docker --installer; then
+        DEB_REL="$(ls -t build/*-installer.run 2>/dev/null | head -1)"
     fi
     if [ -z "$DEB_REL" ] || [ ! -f "$DEB_REL" ]; then
-        echo "ERROR: .deb build failed / not found — marking DEB tests SKIP" >&2
+        echo "ERROR: installer build failed / not found — marking DEB tests SKIP" >&2
         for ver in "${VERSIONS[@]}"; do DEB["$ver"]=SKIP; done
     else
         echo "Built: $DEB_REL"
         for ver in "${VERSIONS[@]}"; do
             echo "==================  DEB  ubuntu:${ver}  =================="
-            # Install ONLY the .deb into a bare container: apt resolves and pulls
-            # the package's declared Depends (the GTK/X11 runtime stack) from the
-            # repo. This VALIDATES that the .deb is self-sufficient on a minimal
-            # system -- if a runtime lib is missing from Depends, the launch
-            # below crashes and names it.
+            # Run ONLY the installer in a bare container: apt resolves and pulls
+            # the packages' declared Depends (the GTK/X11 runtime stack,
+            # can-utils, dfu-util) from the repo. This VALIDATES that the debs are
+            # self-sufficient on a minimal system -- if a runtime lib is missing
+            # from Depends, the launch below crashes and names it.
             if docker run --rm \
                     -v "$REPO:/src:ro" \
                     -e DEBIAN_FRONTEND=noninteractive \
                     "ubuntu:${ver}" bash -euo pipefail -c "
-                        apt-get update -qq
-                        apt-get install -y -qq '/src/${DEB_REL}' >/dev/null
+                        has() { dpkg-query -W -f='\${Status}' \"\$1\" 2>/dev/null | grep -q 'ok installed'; }
+                        R='/src/${DEB_REL}'
+                        echo '  installer: both adapters'
+                        bash \"\$R\" --yes >/tmp/inst.out 2>&1 || { cat /tmp/inst.out; exit 1; }
+                        for f in /usr/lib/udev/rules.d/60-can.rules /usr/lib/udev/rules.d/61-can-up.rules \\
+                                 /usr/lib/udev/rules.d/90-canable.rules /usr/lib/systemd/system/can-up@.service \\
+                                 /etc/NetworkManager/conf.d/99-puck-can.conf /usr/bin/dfu-util /usr/bin/candump; do
+                            [ -e \"\$f\" ] || { echo \"  missing \$f\"; exit 1; }
+                        done
+                        echo '  installer: deselect Peak'
+                        bash \"\$R\" --yes --no-peak >/tmp/inst.out 2>&1 || { cat /tmp/inst.out; exit 1; }
+                        ! has puck-can-peak || { echo '  puck-can-peak still installed'; exit 1; }
+                        has puck-can-canable || { echo '  puck-can-canable was removed'; exit 1; }
+                        echo '  installer: re-add Peak'
+                        bash \"\$R\" --yes >/tmp/inst.out 2>&1 || { cat /tmp/inst.out; exit 1; }
+                        has puck-can-peak || { echo '  puck-can-peak not reinstalled'; exit 1; }
                         apt-get install -y -qq xvfb >/dev/null
                         BIN=\$(ls /usr/share/*/*App 2>/dev/null | head -1)
                         [ -n \"\$BIN\" ] || { echo 'installed binary not found'; exit 1; }
@@ -145,6 +161,13 @@ if [ "$SOURCE_ONLY" = false ]; then
                         else
                             echo \"  launch FAILED (rc=\$rc) -- binary output:\"; cat /tmp/run.out; exit 1
                         fi
+                        echo '  installer: uninstall'
+                        bash \"\$R\" --yes --uninstall >/tmp/inst.out 2>&1 || { cat /tmp/inst.out; exit 1; }
+                        for p in puckutilityapp puck-can-common puck-can-peak puck-can-canable; do
+                            ! has \"\$p\" || { echo \"  \$p still installed\"; exit 1; }
+                        done
+                        [ ! -e /etc/NetworkManager/conf.d/99-puck-can.conf ] || { echo '  NM conf left behind'; exit 1; }
+                        echo '  uninstall OK'
                     "; then
                 DEB["$ver"]=PASS
             else

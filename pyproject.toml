@@ -11,6 +11,7 @@ requires-python = ">=3.9"
 # (setup-pip.sh does: pip install ./p4core .).
 dependencies = [
     "p4core",
+    "p4sysid",
     "canopen>=2.2",
     "python-can>=4.3",
     "semver>=3",

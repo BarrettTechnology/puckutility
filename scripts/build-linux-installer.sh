@@ -13,6 +13,7 @@ CLEAN_PYINSTALLER=false
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --deb)               FORMAT="deb" ;;
+        --installer)         FORMAT="installer" ;;
         --pyinstaller)       FORMAT="pyinstaller" ;;
         --docker)            USE_DOCKER=true ;;
         --rebuild-docker)    USE_DOCKER=true; REBUILD_DOCKER=true ;;
@@ -52,6 +53,14 @@ if [ "$USE_DOCKER" = true ]; then
         "$IMAGE" \
         bash -c "VENV_ROOT=/opt/puckbuild bash scripts/build-linux-installer.sh --${FORMAT}"
     exit 0
+fi
+
+# The release ships the puck firmware that system-config.ini names; check
+# before the (slow) PyInstaller run rather than failing at the copy after it.
+FIRMWARE_DIR="${FIRMWARE_DIR:-firmware}"
+if [ ! -d "$FIRMWARE_DIR" ]; then
+    echo "ERROR: firmware folder '$FIRMWARE_DIR' not found. Create it or set FIRMWARE_DIR." >&2
+    exit 1
 fi
 
 # VENV_ROOT is overridden to /opt/puckbuild when invoked from --docker above.
@@ -205,14 +214,17 @@ if [ "$FORMAT" = "pyinstaller" ]; then
     cp scripts/install-ubuntu.sh   "${OUTDIR}/"
     cp PuckUtilityApp.desktop      "${OUTDIR}/"
     cp PuckUtilityAppGuide.pdf     "${OUTDIR}/"
-    cp -r firmware/        "${OUTDIR}/"
+    mkdir -p "${OUTDIR}/firmware" && cp -r "${FIRMWARE_DIR}/." "${OUTDIR}/firmware/"
 
     cd build/lin
     zip -r "../PuckUtilityApp-lin-${VERSION}.zip" "PuckUtilityApp-lin-${VERSION}"
     echo "Built: build/PuckUtilityApp-lin-${VERSION}.zip"
 
 # ---------------------------------------------------------------------------
-elif [ "$FORMAT" = "deb" ]; then
+# deb: the app package plus the CAN adapter support packages (build-can-debs.sh)
+# installer: the same packages wrapped in a self-extracting .run that asks which
+#            CAN adapters to set up (scripts/linux-installer/)
+elif [ "$FORMAT" = "deb" ] || [ "$FORMAT" = "installer" ]; then
 # ---------------------------------------------------------------------------
 
     # dpkg version strings may not start with 'v'
@@ -229,8 +241,6 @@ elif [ "$FORMAT" = "deb" ]; then
     mkdir -p "${DEB_ROOT}/usr/share/icons/hicolor/48x48/apps"
     mkdir -p "${DEB_ROOT}/usr/share/metainfo"
     mkdir -p "${DEB_ROOT}/usr/share/pixmaps"
-    mkdir -p "${DEB_ROOT}/etc/udev/rules.d"
-    mkdir -p "${DEB_ROOT}/etc/systemd/system"
     mkdir -p "${DEB_ROOT}/DEBIAN"
 
     # --- App binary and data files ------------------------------------------
@@ -242,7 +252,7 @@ elif [ "$FORMAT" = "deb" ]; then
     cp -r config/        "${APP_DIR}/"
     cp system-config.ini "${APP_DIR}/"
     cp scripts/reset_can.sh "${APP_DIR}/"
-    cp -r firmware/      "${APP_DIR}/"
+    mkdir -p "${APP_DIR}/firmware" && cp -r "${FIRMWARE_DIR}/." "${APP_DIR}/firmware/"
 
     # reset_can.sh at /usr/bin so the old udev rule path and manual invocation
     # both work (script uses sudo internally for manual use).
@@ -358,12 +368,9 @@ PYICON
 </component>
 METAINFO
 
-    # --- udev rules ---------------------------------------------------------
-    cp scripts/60-can.rules        "${DEB_ROOT}/etc/udev/rules.d/"
-    cp scripts/61-can-up.rules     "${DEB_ROOT}/etc/udev/rules.d/"
-    [ -f scripts/90-canable.rules ] && \
-        cp scripts/90-canable.rules "${DEB_ROOT}/etc/udev/rules.d/"
-    cp scripts/can-up@.service     "${DEB_ROOT}/etc/systemd/system/"
+    # udev rules, the can-up service and the NetworkManager exclusion are NOT
+    # in this package: they are the optional puck-can-* packages built below,
+    # which the installer offers per adapter.
 
     # --- DEBIAN/control -----------------------------------------------------
     INSTALLED_SIZE=$(du -sk "${DEB_ROOT}" | cut -f1)
@@ -376,7 +383,8 @@ Priority: optional
 Installed-Size: ${INSTALLED_SIZE}
 Maintainer: Barrett Technology <bn@barrett.com>
 Homepage: https://barrett.com
-Depends: can-utils, libgtk-3-0 | libgtk-3-0t64, libsdl2-2.0-0 | libsdl2-2.0-0t64, libnotify4 | libnotify4t64, libsm6 | libsm6t64, libxxf86vm1 | libxxf86vm1t64, libpcre2-32-0 | libpcre2-32-0t64, libsecret-1-0 | libsecret-1-0t64
+Depends: libgtk-3-0 | libgtk-3-0t64, libsdl2-2.0-0 | libsdl2-2.0-0t64, libnotify4 | libnotify4t64, libsm6 | libsm6t64, libxxf86vm1 | libxxf86vm1t64, libpcre2-32-0 | libpcre2-32-0t64, libsecret-1-0 | libsecret-1-0t64
+Suggests: puck-can-peak, puck-can-canable
 Replaces: pucktunerapp, p4checkoutapp
 Description: Barrett Technology Puck Utility
  GUI utility for configuring and calibrating Barrett Technology P4 series Puck
@@ -385,28 +393,13 @@ Description: Barrett Technology Puck Utility
 CONTROL
 
     # --- DEBIAN/postinst ----------------------------------------------------
-    # Reload udev so the CAN rules take effect immediately and configure the
-    # can0 network interface if it isn't already present.
+    # Desktop/icon/AppStream caches and per-user shortcuts. The CAN setup is in
+    # the puck-can-* packages' own maintainer scripts.
     cat > "${DEB_ROOT}/DEBIAN/postinst" << 'POSTINST'
 #!/bin/bash
 set -e
 
-# Tell NetworkManager to leave SocketCAN interfaces alone so it doesn't
-# race against can-up@.service or bring can0 back down after we bring it up.
-mkdir -p /etc/NetworkManager/conf.d
-cat > /etc/NetworkManager/conf.d/99-puck-can.conf << 'EOF'
-[keyfile]
-unmanaged-devices=type:can
-EOF
-
-# Best-effort refresh: these no-op-fail in a chroot / container / image build
-# where udev or systemd aren't running. The postinst must NOT abort on them
-# (it runs under `set -e`), so tolerate failure -- the udev rules + service are
-# already installed by dpkg itself; this just refreshes a live system.
-udevadm control --reload-rules || true
-udevadm trigger || true
-systemctl daemon-reload || true
-
+# Best-effort refreshes (they fail harmlessly in a chroot / container).
 if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database -q /usr/share/applications || true
 fi
@@ -497,7 +490,6 @@ POSTINST
     cat > "${DEB_ROOT}/DEBIAN/postrm" << 'POSTRM'
 #!/bin/bash
 set -e
-rm -f /etc/NetworkManager/conf.d/99-puck-can.conf
 # Remove Desktop shortcut for all users who have one
 for home in /home/*; do
     rm -f "${home}/Desktop/PuckUtilityApp.desktop"
@@ -544,5 +536,37 @@ POSTRM
 
     dpkg-deb --build --root-owner-group "${DEB_ROOT}"
     echo "Built: ${DEB_ROOT}.deb"
+
+    # --- CAN adapter support packages ---------------------------------------
+    bash scripts/build-can-debs.sh "${DEB_VERSION}" build/deb
+
+    # --- self-extracting installer ------------------------------------------
+    if [ "$FORMAT" = "installer" ]; then
+        RUN_NAME="PuckUtilityApp-lin-${VERSION}-installer.run"
+        RUN_OUT="build/${RUN_NAME}"
+        PAYLOAD_DIR="build/lin/.installer-payload"
+        rm -rf "${PAYLOAD_DIR}"
+        mkdir -p "${PAYLOAD_DIR}/debs"
+        sed "s/@VERSION@/${DEB_VERSION}/g" scripts/linux-installer/install.sh \
+            > "${PAYLOAD_DIR}/install.sh"
+        chmod 755 "${PAYLOAD_DIR}/install.sh"
+        cp "${DEB_ROOT}.deb" \
+           "build/deb/puck-can-common_${DEB_VERSION}_all.deb" \
+           "build/deb/puck-can-peak_${DEB_VERSION}_all.deb" \
+           "build/deb/puck-can-canable_${DEB_VERSION}_all.deb" \
+           "${PAYLOAD_DIR}/debs/"
+        PAYLOAD="build/lin/.installer-payload.tar.gz"
+        tar -czf "${PAYLOAD}" -C "${PAYLOAD_DIR}" --owner=0 --group=0 .
+        SHA=$(sha256sum "${PAYLOAD}" | cut -d' ' -f1)
+        # The payload starts on the line after the stub's last line.
+        SKIP=$(( $(wc -l < scripts/linux-installer/stub.sh) + 1 ))
+        sed -e "s/@VERSION@/${DEB_VERSION}/g" -e "s/@NAME@/${RUN_NAME}/g" \
+            -e "s/@SKIP@/${SKIP}/" -e "s/@SHA256@/${SHA}/" \
+            scripts/linux-installer/stub.sh > "${RUN_OUT}"
+        cat "${PAYLOAD}" >> "${RUN_OUT}"
+        chmod 755 "${RUN_OUT}"
+        rm -rf "${PAYLOAD_DIR}" "${PAYLOAD}"
+        echo "Built: ${RUN_OUT}"
+    fi
 
 fi
