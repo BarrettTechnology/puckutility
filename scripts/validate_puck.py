@@ -28,6 +28,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from p4core import can_backend
 from p4core.paths import puck4_eds
+from p4core.calibrate import permille_base_ma
 from p4core.cia402 import CLEAR_FAULT, SHUTDOWN, OP_ENABLED, MODE_IDLE, MODE_PROFILE_VEL
 
 EDS = puck4_eds()
@@ -35,9 +36,9 @@ SW_FAULT = 0x08
 FULL_MOD = 32000.0
 
 
-def _imag(node, i_peak):
-    _id = node.sdo['Motor']['id'].raw / 1000.0 * i_peak
-    _iq = node.sdo['CurrentFeedback'].raw / 1000.0 * i_peak
+def _imag(node, pm_base):
+    _id = node.sdo['Motor']['id'].raw / 1000.0 * pm_base
+    _iq = node.sdo['CurrentFeedback'].raw / 1000.0 * pm_base
     return (_id * _id + _iq * _iq) ** 0.5
 
 
@@ -67,36 +68,36 @@ def _enable_vel(node):
     node.sdo['SetModeOfOperation'].raw = MODE_PROFILE_VEL
 
 
-def _sample(node, i_peak, vcmd, secs):
+def _sample(node, pm_base, vcmd, secs):
     node.sdo['TargetVelocity'].raw = int(vcmd)
     time.sleep(0.6)
     vs = []; imax = 0.0; t0 = time.time()
     while time.time() - t0 < secs:
         vs.append(node.sdo['VelocityFeedback'].raw)
-        imax = max(imax, _imag(node, i_peak))
+        imax = max(imax, _imag(node, pm_base))
         if node.sdo['StatusWord'].raw & SW_FAULT:
             return None, imax
         time.sleep(0.01)
     return vs, imax
 
 
-def _ab_block(node, i_peak, enc_res, set_on, set_off, speeds_rpm, secs=1.8):
+def _ab_block(node, pm_base, enc_res, set_on, set_off, speeds_rpm, secs=1.8):
     """Generic ON/OFF ripple A/B. set_on()/set_off() flip the registers. Returns list of dicts."""
     rpm_to_cts = enc_res / 60.0
     out = []
     for rpm in speeds_rpm:
         vcmd = rpm * rpm_to_cts
         set_on()
-        vs, ion = _sample(node, i_peak, vcmd, secs)
+        vs, ion = _sample(node, pm_base, vcmd, secs)
         set_off()
-        vs2, ioff = _sample(node, i_peak, vcmd, secs)
+        vs2, ioff = _sample(node, pm_base, vcmd, secs)
         if vs is None or vs2 is None:
             out.append({'rpm': rpm, 'fault': True}); break
         out.append({'rpm': rpm, 'osc_on': _osc(vs), 'i_on': ion, 'osc_off': _osc(vs2), 'i_off': ioff})
     return out
 
 
-def _top_speed(node, i_peak, enc_res, max_vel, soak=8.0):
+def _top_speed(node, pm_base, enc_res, max_vel, soak=8.0):
     """Spin to the velocity ceiling; return PEAK RPM, CONTINUOUS (tail) RPM/iq, and peak %mod.
     Bleeds off a hot i2t accumulator first (idle, cap 25 s) so a leftover fold can't truncate the peak
     and confound the settle-to-settle comparison."""
@@ -115,7 +116,7 @@ def _top_speed(node, i_peak, enc_res, max_vel, soak=8.0):
     t0 = time.time()
     while time.time() - t0 < soak:
         RPM.append(abs(node.sdo['VelocityFeedback'].raw) * 60.0 / enc_res)
-        IQ.append(node.sdo['CurrentFeedback'].raw / 1000.0 * i_peak)
+        IQ.append(node.sdo['CurrentFeedback'].raw / 1000.0 * pm_base)
         ud = node.sdo['Motor']['ud'].raw; uq = node.sdo['Motor']['uq'].raw
         MOD.append((ud * ud + uq * uq) ** 0.5 / FULL_MOD * 100.0)
         if node.sdo['StatusWord'].raw & SW_FAULT:
@@ -147,6 +148,7 @@ def main():
         node = net.add_node(args.node, EDS)
         node.sdo.RESPONSE_TIMEOUT = 1.0
         i_peak  = node.sdo['Calibration']['i_peak'].raw
+        pm_base = permille_base_ma(node)  # Motor.id / CurrentFeedback per-mille base: i_cont on 4.5.0, i_peak before
         enc_res = node.sdo['EncoderConfig']['Resolution'].raw
         try:
             max_vel = int(node.sdo['max_velocity'].raw)
@@ -190,7 +192,7 @@ def main():
             _enable_vel(node)
             print("  BLOCK A  enc-comp A/B (0x3027:1):")
             slope_on()                                   # keep slope/offset at cal values for this block
-            a = _ab_block(node, i_peak, enc_res, comp_on, comp_off, speeds)
+            a = _ab_block(node, pm_base, enc_res, comp_on, comp_off, speeds)
             for r in a:
                 if r.get('fault'): print("    {:>6.0f} RPM  FAULT".format(r['rpm'])); break
                 print("    {:>5}  osc ON/OFF {:>6.0f}/{:<6.0f}  |I| ON/OFF {:>5.0f}/{:<5.0f}".format(
@@ -199,7 +201,7 @@ def main():
             comp_on()
 
             print("  BLOCK B  slope+offset A/B (0x3008:7/8, 0x3009:7/8):")
-            b = _ab_block(node, i_peak, enc_res, slope_on, slope_off, speeds)
+            b = _ab_block(node, pm_base, enc_res, slope_on, slope_off, speeds)
             for r in b:
                 if r.get('fault'): print("    {:>6.0f} RPM  FAULT".format(r['rpm'])); break
                 print("    {:>5}  osc ON/OFF {:>6.0f}/{:<6.0f}  |I| ON/OFF {:>5.0f}/{:<5.0f}".format(
@@ -210,7 +212,7 @@ def main():
             top = None
             if not args.skip_top:
                 print("  BLOCK C  top-speed:")
-                top = _top_speed(node, i_peak, enc_res, max_vel)
+                top = _top_speed(node, pm_base, enc_res, max_vel)
                 print("    PEAK {:.0f} RPM   CONT {:.0f} RPM   iq {:.0f} mA   %mod {:.0f}".format(
                     top['peak'], top['cont'], top['iq'], top['mod']))
                 time.sleep(1.0)

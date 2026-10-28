@@ -39,6 +39,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from p4core import can_backend
 from p4core.paths import puck4_eds
+from p4core.calibrate import permille_base_ma
 
 # Where the per-model "blank" templates (and real configs) live.
 BASELINE_DIR = "/home/bailey/pucktuner"
@@ -536,21 +537,19 @@ CAL_IDLE_MAX_MA = 200   # idle |I| (drive OFF) above this => current-sense zero 
 
 def _read_idle_current_mA(node, samples=8):
     """Average |I| = sqrt(id^2 + iq^2) in mA at idle (drive OFF, passive). None if unreadable."""
+    # Motor.id / CurrentFeedback are per-mille of i_cont on 4.5.0, of i_peak before
     try:
-        i_peak = node.sdo['Calibration']['i_peak'].raw
+        pm_base = permille_base_ma(node)
     except Exception:
-        try:
-            i_peak = _read_int(node, 0x3011, 9, False)
-        except Exception:
-            i_peak = None
-    if not i_peak:
+        pm_base = None
+    if not pm_base:
         return None
     acc = 0.0
     n = 0
     for _ in range(samples):
         try:
-            idc = node.sdo['Motor']['id'].raw / 1000.0 * i_peak
-            iq  = node.sdo['CurrentFeedback'].raw / 1000.0 * i_peak
+            idc = node.sdo['Motor']['id'].raw / 1000.0 * pm_base
+            iq  = node.sdo['CurrentFeedback'].raw / 1000.0 * pm_base
         except Exception:
             continue
         acc += (idc * idc + iq * iq) ** 0.5

@@ -30,6 +30,7 @@ if ROOT not in sys.path:
 
 from p4core import can_backend
 from p4core.paths import puck4_eds
+from p4core.calibrate import permille_base_ma, working_peak_ma
 from p4core.cia402 import CLEAR_FAULT, SHUTDOWN, OP_ENABLED, MODE_IDLE, MODE_PROFILE_VEL
 
 PWM_FACTOR = 0.8
@@ -73,7 +74,8 @@ def main():
         node = net.add_node(a.node, eds)
         node.sdo.RESPONSE_TIMEOUT = 1.0
         enc_res = node.sdo['EncoderConfig']['Resolution'].raw
-        i_peak = node.sdo['Calibration']['i_peak'].raw
+        pm_base = permille_base_ma(node)  # Motor.id / CurrentFeedback per-mille base: i_cont on 4.5.0, i_peak before
+        peak_ma = working_peak_ma(node)     # 0x3011,15 on 4.5.0, i_peak before
         R = int.from_bytes(node.sdo.upload(0x3011, 5), 'little') / 100.0      # 0.01 ohm -> ohm
         L = int.from_bytes(node.sdo.upload(0x3011, 6), 'little') / 1e5        # 0.01 mH -> H
         try:
@@ -120,11 +122,11 @@ def main():
             while time.time() - t0 < a.dwell:
                 try:
                     rpm = abs(node.sdo['VelocityFeedback'].raw) * 60.0 / enc_res
-                    iq = node.sdo['CurrentFeedback'].raw / 1000.0 * i_peak
-                    idc = node.sdo['Motor']['id'].raw / 1000.0 * i_peak
+                    iq = node.sdo['CurrentFeedback'].raw / 1000.0 * pm_base
+                    idc = node.sdo['Motor']['id'].raw / 1000.0 * pm_base
                     im = (iq * iq + idc * idc) ** 0.5
                     RPM.append(rpm); IMAG.append(im)
-                    if im > 0.95 * i_peak:      # near peak current = unstable at this gain
+                    if im > 0.95 * peak_ma:     # near peak current = unstable at this gain
                         unstable = True; break
                 except Exception:
                     pass

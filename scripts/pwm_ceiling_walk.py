@@ -36,6 +36,7 @@ if ROOT not in sys.path:
 
 from p4core import can_backend
 from p4core.paths import puck4_eds
+from p4core.calibrate import permille_base_ma
 from p4core.cia402 import CLEAR_FAULT, SHUTDOWN, OP_ENABLED, MODE_IDLE, MODE_PROFILE_VEL
 
 SAVE_MAGIC = 0x65766173  # 'save' -> 0x1010:1 Save All
@@ -91,7 +92,7 @@ def fault_state(node):
     return False, ""
 
 
-def spin_and_grade(node, enc_res, i_peak, target_cts, dwell, baseline):
+def spin_and_grade(node, enc_res, pm_base, target_cts, dwell, baseline):
     """Spin at target_cts for `dwell` s; return a metrics dict + PASS/FAIL vs baseline."""
     for cw in (CLEAR_FAULT, SHUTDOWN, OP_ENABLED):
         node.sdo['ControlWord'].raw = cw
@@ -109,7 +110,7 @@ def spin_and_grade(node, enc_res, i_peak, target_cts, dwell, baseline):
         settled = (time.time() - t0) >= settle
         try:
             rpm = abs(node.sdo['VelocityFeedback'].raw) * 60.0 / enc_res
-            iq = abs(node.sdo['CurrentFeedback'].raw) / 1000.0 * i_peak
+            iq = abs(node.sdo['CurrentFeedback'].raw) / 1000.0 * pm_base
             if settled:
                 RPM.append(rpm); IQ.append(iq)
         except Exception:
@@ -174,7 +175,7 @@ def main():
         node = net.add_node(a.node, eds)
         node.sdo.RESPONSE_TIMEOUT = 1.0
         enc_res = node.sdo['EncoderConfig']['Resolution'].raw
-        i_peak = node.sdo['Calibration']['i_peak'].raw
+        pm_base = permille_base_ma(node)  # Motor.id / CurrentFeedback per-mille base: i_cont on 4.5.0, i_peak before
         target_cts = int(round(a.rpm / 60.0 * enc_res))
         start_hz = a.start * 1000
 
@@ -193,7 +194,7 @@ def main():
             if after != hz:
                 print("  did not persist (got {}) -- stopping walk.".format(after))
                 break
-            m = spin_and_grade(node, enc_res, i_peak, target_cts, a.dwell, baseline)
+            m = spin_and_grade(node, enc_res, pm_base, target_cts, a.dwell, baseline)
             results.append((khz, m))
             tag = "PASS" if m['passed'] else "FAIL"
             print("  {}  RPM {:.0f}/{:.0f} (sd {:.0f})  iq {:.0f} mA".format(

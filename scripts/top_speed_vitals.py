@@ -29,7 +29,7 @@ if ROOT not in sys.path:
 from p4core import can_backend
 from p4core.paths import puck4_eds
 from p4core.cia402 import CLEAR_FAULT, SHUTDOWN, OP_ENABLED, MODE_IDLE, MODE_PROFILE_VEL
-from p4core.calibrate import read_bus_v
+from p4core.calibrate import permille_base_ma, read_bus_v
 
 # Pull --settling <ns> (or --settling=<ns>) out of argv; the rest are positional can_device / node_id.
 _argv = sys.argv[1:]
@@ -84,7 +84,7 @@ def _win(T, Y, t_lo, t_hi):
 
 
 def vitals(node):
-    i_peak = node.sdo['Calibration']['i_peak'].raw
+    pm_base = permille_base_ma(node)  # Motor.id / CurrentFeedback per-mille base: i_cont on 4.5.0, i_peak before
     enc_res = node.sdo['EncoderConfig']['Resolution'].raw
     try:
         i_cont = int.from_bytes(node.sdo.upload(0x3011, 8), 'little', signed=False)
@@ -172,8 +172,8 @@ def vitals(node):
                 # MEASURE the idle current to confirm/quantify the phantom (motor is idle, so |I| must
                 # be ~0). A large idle |I| is the smoking gun: a bad current-sense zero (bias/offset).
                 try:
-                    _idle_id = node.sdo['Motor']['id'].raw / 1000.0 * i_peak
-                    _idle_iq = node.sdo['CurrentFeedback'].raw / 1000.0 * i_peak
+                    _idle_id = node.sdo['Motor']['id'].raw / 1000.0 * pm_base
+                    _idle_iq = node.sdo['CurrentFeedback'].raw / 1000.0 * pm_base
                     _idle_i = (_idle_id * _idle_id + _idle_iq * _idle_iq) ** 0.5
                 except Exception:
                     _idle_i = float('nan')
@@ -208,8 +208,8 @@ def vitals(node):
     while True:
         now = time.time() - t0
         rpm = abs(node.sdo['VelocityFeedback'].raw) * 60.0 / enc_res
-        iq = node.sdo['CurrentFeedback'].raw / 1000.0 * i_peak
-        idc = node.sdo['Motor']['id'].raw / 1000.0 * i_peak
+        iq = node.sdo['CurrentFeedback'].raw / 1000.0 * pm_base
+        idc = node.sdo['Motor']['id'].raw / 1000.0 * pm_base
         ud = node.sdo['Motor']['ud'].raw
         uq = node.sdo['Motor']['uq'].raw
         try:

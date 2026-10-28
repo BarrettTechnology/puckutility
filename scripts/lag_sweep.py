@@ -25,6 +25,7 @@ if ROOT not in sys.path:
 
 from p4core import can_backend
 from p4core.paths import puck4_eds
+from p4core.calibrate import permille_base_ma
 from p4core.cia402 import CLEAR_FAULT, SHUTDOWN, OP_ENABLED, MODE_IDLE, MODE_PROFILE_VEL
 
 SAVE_MAGIC = 0x65766173  # 'save'
@@ -59,7 +60,7 @@ def main():
         node = net.add_node(a.node, eds)
         node.sdo.RESPONSE_TIMEOUT = 1.0
         enc_res = node.sdo['EncoderConfig']['Resolution'].raw
-        i_peak = node.sdo['Calibration']['i_peak'].raw
+        pm_base = permille_base_ma(node)  # Motor.id / CurrentFeedback per-mille base: i_cont on 4.5.0, i_peak before
         try:
             orig_lag = struct.unpack('<H', node.sdo.upload(0x3013, 5))[0]
         except Exception:
@@ -94,8 +95,8 @@ def main():
             while time.time() - t0 < a.dwell:
                 try:
                     rpm = abs(node.sdo['VelocityFeedback'].raw) * 60.0 / enc_res
-                    iq = node.sdo['CurrentFeedback'].raw / 1000.0 * i_peak
-                    idc = node.sdo['Motor']['id'].raw / 1000.0 * i_peak
+                    iq = node.sdo['CurrentFeedback'].raw / 1000.0 * pm_base
+                    idc = node.sdo['Motor']['id'].raw / 1000.0 * pm_base
                     RPM.append(rpm); IMAG.append((iq * iq + idc * idc) ** 0.5)
                 except Exception:
                     pass

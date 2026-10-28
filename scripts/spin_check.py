@@ -31,19 +31,20 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from p4core import can_backend
 from p4core.paths import puck4_eds
+from p4core.calibrate import permille_base_ma
 from p4core.cia402 import CLEAR_FAULT, SHUTDOWN, OP_ENABLED, MODE_IDLE, MODE_PROFILE_VEL
 
 EDS      = puck4_eds()
 SW_FAULT = 0x08          # StatusWord fault bit
 
 
-def _imag_mA(node, i_peak):
-    _id = node.sdo['Motor']['id'].raw / 1000.0 * i_peak
-    _iq = node.sdo['CurrentFeedback'].raw / 1000.0 * i_peak
+def _imag_mA(node, pm_base):
+    _id = node.sdo['Motor']['id'].raw / 1000.0 * pm_base
+    _iq = node.sdo['CurrentFeedback'].raw / 1000.0 * pm_base
     return (_id * _id + _iq * _iq) ** 0.5
 
 
-def _sample(node, i_peak, vcmd, secs):
+def _sample(node, pm_base, vcmd, secs):
     """Command vcmd (cts/s), settle, then sample velocity + |I| for `secs`. Returns (velocity_list, imax),
     or (None, imax) if the drive faulted mid-sample (treated as unstable)."""
     node.sdo['TargetVelocity'].raw = int(vcmd)
@@ -51,7 +52,7 @@ def _sample(node, i_peak, vcmd, secs):
     vs = []; imax = 0.0; t0 = time.time()
     while time.time() - t0 < secs:
         vs.append(node.sdo['VelocityFeedback'].raw)
-        imax = max(imax, _imag_mA(node, i_peak))
+        imax = max(imax, _imag_mA(node, pm_base))
         if node.sdo['StatusWord'].raw & SW_FAULT:
             return None, imax
         time.sleep(0.01)
@@ -67,8 +68,8 @@ def _osc(vs):
     return max(max(vs) - min(vs), rms)
 
 
-def _run_speed(node, i_peak, vcmd, secs):
-    vs, imax = _sample(node, i_peak, vcmd, secs)
+def _run_speed(node, pm_base, vcmd, secs):
+    vs, imax = _sample(node, pm_base, vcmd, secs)
     if vs is None:
         return None
     return {'osc': _osc(vs), 'imax': imax}
@@ -90,6 +91,7 @@ def main():
         node = net.add_node(args.node, EDS)
 
         i_peak  = node.sdo['Calibration']['i_peak'].raw
+        pm_base = permille_base_ma(node)  # Motor.id / CurrentFeedback per-mille base: i_cont on 4.5.0, i_peak before
         enc_res = node.sdo['EncoderConfig']['Resolution'].raw
         orig_comp = int(node.sdo[0x3027][1].raw)
         print("Node {}  enc_res={}  i_peak={} mA  (comp currently {})".format(
@@ -111,9 +113,9 @@ def main():
         for rpm in speeds:
             vcmd = rpm * rpm_to_cts
             node.sdo[0x3027][1].raw = 1
-            on = _run_speed(node, i_peak, vcmd, args.secs)
+            on = _run_speed(node, pm_base, vcmd, args.secs)
             node.sdo[0x3027][1].raw = 0
-            off = _run_speed(node, i_peak, vcmd, args.secs)
+            off = _run_speed(node, pm_base, vcmd, args.secs)
             tag = "hold" if rpm == 0 else "{:.0f} RPM".format(rpm)
             if on is None or off is None:
                 print("  {:>8}  drive FAULTED during {} — stopping".format(

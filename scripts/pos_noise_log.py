@@ -27,6 +27,7 @@ if ROOT not in sys.path:
 
 from p4core import can_backend
 from p4core.paths import puck4_eds
+from p4core.calibrate import permille_base_ma
 from p4core.cia402 import CLEAR_FAULT, SHUTDOWN, OP_ENABLED, MODE_IDLE, MODE_PROFILE_VEL
 
 
@@ -73,7 +74,7 @@ def main():
         node = net.add_node(a.node, eds)
         node.sdo.RESPONSE_TIMEOUT = 1.0
         enc_res = node.sdo['EncoderConfig']['Resolution'].raw
-        i_peak = node.sdo['Calibration']['i_peak'].raw
+        pm_base = permille_base_ma(node)  # Motor.id / CurrentFeedback per-mille base: i_cont on 4.5.0, i_peak before
         target = int(round(a.rpm / 60.0 * enc_res))
 
         if a.encvel_fc is not None:
@@ -89,7 +90,7 @@ def main():
                 now = None
             print("encvel_fc (0x2100:1): {} -> {} Hz (saved, rebooted).".format(was, now))
             enc_res = node.sdo['EncoderConfig']['Resolution'].raw
-            i_peak = node.sdo['Calibration']['i_peak'].raw
+            pm_base = permille_base_ma(node)
 
         if a.idle:
             node.sdo['SetModeOfOperation'].raw = MODE_IDLE   # drive off -> no torque
@@ -110,7 +111,7 @@ def main():
             try:
                 pos = int.from_bytes(node.sdo.upload(0x6064, 0), 'little', signed=True)
                 vel = int.from_bytes(node.sdo.upload(0x606C, 0), 'little', signed=True)
-                iq = node.sdo['CurrentFeedback'].raw / 1000.0 * i_peak
+                iq = node.sdo['CurrentFeedback'].raw / 1000.0 * pm_base
             except Exception:
                 continue
             T.append(time.time() - t0); POS.append(pos); VEL.append(vel); IQ.append(iq)

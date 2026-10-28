@@ -35,6 +35,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from p4core import can_backend
 from p4core.paths import puck4_eds
+from p4core.calibrate import permille_base_ma
 from p4core.cia402 import (CLEAR_FAULT, SHUTDOWN, OP_ENABLED, MODE_IDLE, MODE_PROFILE_VEL,
                            MODE_PHASE_VOLTAGE_ANGLE, write_mode)
 
@@ -43,9 +44,9 @@ SW_FAULT = 0x08
 IDX_SETTLE = (0x3001, 5)
 
 
-def _imag(node, i_peak):
-    _id = node.sdo['Motor']['id'].raw / 1000.0 * i_peak
-    _iq = node.sdo['CurrentFeedback'].raw / 1000.0 * i_peak
+def _imag(node, pm_base):
+    _id = node.sdo['Motor']['id'].raw / 1000.0 * pm_base
+    _iq = node.sdo['CurrentFeedback'].raw / 1000.0 * pm_base
     return (_id * _id + _iq * _iq) ** 0.5
 
 
@@ -81,7 +82,7 @@ def _recal_bias(node, n=40):
     return ba, bb
 
 
-def _ripple(node, i_peak, rpm_to_cts, speeds, secs):
+def _ripple(node, pm_base, rpm_to_cts, speeds, secs):
     """Velocity osc + |I| over the speed ladder. Returns (total_osc, mean_i, faulted)."""
     _enable(node, MODE_PROFILE_VEL)
     oscs = []; imaxes = []
@@ -91,7 +92,7 @@ def _ripple(node, i_peak, rpm_to_cts, speeds, secs):
         vs = []; imax = 0.0; t0 = time.time()
         while time.time() - t0 < secs:
             vs.append(node.sdo['VelocityFeedback'].raw)
-            imax = max(imax, _imag(node, i_peak))
+            imax = max(imax, _imag(node, pm_base))
             if node.sdo['StatusWord'].raw & SW_FAULT:
                 node.sdo['TargetVelocity'].raw = 0; node.sdo['SetModeOfOperation'].raw = MODE_IDLE
                 return 0.0, 0.0, True
@@ -126,6 +127,7 @@ def main():
         node = net.add_node(args.node, EDS)
         node.sdo.RESPONSE_TIMEOUT = 1.0
         i_peak  = node.sdo['Calibration']['i_peak'].raw
+        pm_base = permille_base_ma(node)  # Motor.id / CurrentFeedback per-mille base: i_cont on 4.5.0, i_peak before
         enc_res = node.sdo['EncoderConfig']['Resolution'].raw
         rpm_to_cts = enc_res / 60.0
         speeds = [0.0] + [args.max_rpm * (i + 1) / args.steps for i in range(args.steps)]
@@ -161,7 +163,7 @@ def main():
             node.sdo['SetModeOfOperation'].raw = MODE_IDLE
             node.sdo[IDX_SETTLE[0]][IDX_SETTLE[1]].raw = st
             ba, bb = _recal_bias(node)
-            osc, mi, fault = _ripple(node, i_peak, rpm_to_cts, speeds, args.secs)
+            osc, mi, fault = _ripple(node, pm_base, rpm_to_cts, speeds, args.secs)
             if fault:
                 print("  FAULT during ripple measure -- stopping"); break
             meas.append((st, osc, mi, tidx))
