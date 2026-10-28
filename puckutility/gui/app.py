@@ -70,7 +70,8 @@ import sys
 import math
 import datetime
 from p4core import config_csv
-from p4core.calibrate import permille_base_ma, read_bus_mv
+from p4core.calibrate import (id_scale, permille_base_ma, rated_torque_mnm,
+                              read_bus_mv)
 from p4core.cia402 import (
     CLEAR_FAULT, SHUTDOWN, OP_ENABLED,
     MODE_IDLE, MODE_PROFILE_POS, MODE_PROFILE_VEL,
@@ -1056,7 +1057,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 try:
                     iq = self.node.sdo['CurrentFeedback'].raw
                     i_peak = self.node.sdo['Calibration']['i_peak'].raw
-                    print(f"  CurrentFeedback={iq} mA  i_peak={i_peak} mA")
+                    print(f"  CurrentFeedback={iq} per-mille ({iq / 1000 * getattr(self, 'i_pm_base', 0):.0f} mA)  i_peak={i_peak} mA")
                 except Exception as _e:
                     print(f"  Could not read current details: {_e}")
             wx.CallAfter(_log_current)
@@ -1590,8 +1591,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         elif(current_mode == 4):
             # update select test to trq mode and update input to current target torque
             self.choice_test.SetSelection(1)
-            input = self.node.sdo["TargetTorque"].raw # This is out of 1000% maximum, needs conversion
-            rated_torque = self.node.sdo["RatedTorque"].raw
+            input = self.node.sdo["TargetTorque"].raw # per-mille of the rated torque
+            rated_torque = rated_torque_mnm(self.node)
             cmd_value = input * rated_torque * self.gearRatio / 1000 # cmd_value * 1000 / (rated_torque * self.gearRatio) # Scale
             self.text_testvalue.SetValue(str(round(cmd_value)))
         elif(current_mode == 3):
@@ -2374,11 +2375,16 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
         if quick_test == 1:  # Torque
             try:
-                rated_torque = self.node.sdo["RatedTorque"].raw
-                if abs(cmd_value / self.gearRatio) > rated_torque:
-                    cmd_value = math.copysign(rated_torque * self.gearRatio, cmd_value)
+                # TargetTorque is per-mille of the rated torque; the drive
+                # reaches its peak, id_scale()'s ceiling (1000 x working peak /
+                # i_cont on rated-unit firmware, 1000 on older firmware).
+                rated_torque = rated_torque_mnm(self.node)
+                ceiling = min(id_scale(self.node)[1], 32767)
+                top = rated_torque * ceiling / 1000.0
+                if abs(cmd_value / self.gearRatio) > top:
+                    cmd_value = math.copysign(top * self.gearRatio, cmd_value)
                 trq_value = round(cmd_value * 1000 / (rated_torque * self.gearRatio))
-                print(f"Set TargetTorque = {cmd_value} mNm ({round(trq_value / 10, 2)}% max)")
+                print(f"Set TargetTorque = {cmd_value} mNm ({round(trq_value / 10, 2)}% rated)")
                 self.node.sdo["TargetTorque"].raw = trq_value
                 self.node.rpdo[1]["TargetTorque"].raw = trq_value
                 self.node.rpdo[1]["ControlWord"].raw = OP_ENABLED
