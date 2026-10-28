@@ -370,18 +370,17 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         self.Dial = new_dial
         self.Layout()
 
-        # Disable the unimplemented menu items
-        menu = "Menu"
-        for item in [#"Calibrate All", 
-          "Encoder Direction", # "Current Sense Slope", "Current Sense Timing", # Comment out to enable those cal features
-          "Tune Gains...", "Save to CSV..."]:
-          menu_item = self.frame_menubar.FindMenuItem(menu, item)
-          self.frame_menubar.Enable(menu_item, False)
-
-        menu = "Factory"
-        for item in ["Initialize Puck", "Test All", "Test Flash", "Test RAM", "Test EEPROM", "Test Amplifier", "Test Encoder"]:
-          menu_item = self.frame_menubar.FindMenuItem(menu, item)
-          self.frame_menubar.Enable(menu_item, False)
+        # Disable the unimplemented menu items (a name no longer in the menu
+        # is skipped: Enable(wx.NOT_FOUND) asserts)
+        for menu, items in [
+            ("Menu", ["Tune Gains...", "Save to CSV..."]),
+            ("Factory", ["Initialize Puck", "Test All", "Test Flash", "Test RAM",
+                         "Test EEPROM", "Test Amplifier", "Test Encoder"]),
+        ]:
+          for item in items:
+            menu_item = self.frame_menubar.FindMenuItem(menu, item)
+            if menu_item != wx.NOT_FOUND:
+              self.frame_menubar.Enable(menu_item, False)
 
         # Hide the "Factory" menu if JLink is not detected
         # if not is_jlink_detected():
