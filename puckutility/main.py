@@ -37,6 +37,14 @@ LEGACY_OPS = ('--scan', '--info', '--flash', '--config', '--calibrate',
 
 
 def gui_main(argv=None):
+    try:
+        import wx  # noqa: F401 — only the GUI needs it
+    except ImportError as exc:
+        sys.stderr.write(
+            'puckutility: the GUI needs wxPython ({}); install it with\n'
+            '    pip install "puckutility[gui]"\n'
+            'The commands run without it: puckutility --help\n'.format(exc))
+        return 2
     from .gui.app import main as run_gui
     return run_gui(argv)
 

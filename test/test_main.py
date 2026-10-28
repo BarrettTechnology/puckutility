@@ -1,6 +1,8 @@
 """The entry point: GUI vs command line, and the old flat flags."""
 
+import io
 import os
+import subprocess
 import sys
 import unittest
 from unittest import mock
@@ -95,6 +97,27 @@ class TestRouting(unittest.TestCase):
     def test_the_worst_exit_code_wins(self):
         with mock.patch('puckutility.cli.main', side_effect=[0, 3, 1]):
             self.assertEqual(main.main(['--id', '1', '2', '3', '--info']), 3)
+
+
+class TestWithoutWx(unittest.TestCase):
+    """The command line installs and runs without the gui extra."""
+
+    def test_gui_says_how_to_install_it(self):
+        err = io.StringIO()
+        with mock.patch.dict(sys.modules, {'wx': None}), \
+                mock.patch.object(sys, 'stderr', err):
+            self.assertEqual(main.gui_main([]), 2)
+        self.assertIn('pip install "puckutility[gui]"', err.getvalue())
+
+    def test_cli_imports_without_gui_libraries(self):
+        code = ("import sys\n"
+                "for m in ('wx', 'matplotlib', 'pandas'):\n"
+                "    sys.modules[m] = None\n"
+                "import puckutility.cli, puckutility.main\n")
+        root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+        proc = subprocess.run([sys.executable, '-c', code], cwd=root,
+                              capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
 
 
 if __name__ == '__main__':

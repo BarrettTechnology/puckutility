@@ -49,6 +49,14 @@ install libusb system-wide.
 > DFU device is required for `flash-canable` to work. Documentation for this
 > step is coming soon.
 
+### Command line only (no wxPython)
+```
+git submodule update --init p4core
+pip install ./p4core .
+```
+`puckutility --help` lists the commands. Only the GUI needs wxPython and
+matplotlib (`pip install ".[gui]"`).
+
 ## CAN adapter setup
 
 ### Linux (SocketCAN)

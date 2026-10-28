@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# The GUI, and the calibrations (they run the GUI's routines headless).
+# The GUI only: the command line (calibrations included) runs without it.
 gui = ["wxPython>=4.2", "matplotlib>=3.8"]
 # flash-canable
 usb = ["pyusb>=1.2", "libusb-package>=1.0"]
