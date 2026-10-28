@@ -145,7 +145,8 @@ class TestCalibrate(CliTest):
         err = io.StringIO()
         with contextlib.redirect_stderr(err), self.assertRaises(SystemExit):
             cli.build_parser().parse_args(['calibrate', 'settling'])
-        self.assertIn('position_refine', err.getvalue())   # the choices
+        self.assertIn('cogging', err.getvalue())   # the choices
+        self.assertNotIn('refine', err.getvalue())  # pucktuner's
         self.assertIn('batch CSV', err.getvalue())
 
     def test_all(self):

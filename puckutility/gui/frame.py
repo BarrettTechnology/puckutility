@@ -57,10 +57,6 @@ class puckutilityapp_frame(wx.Frame):
         self.Bind(wx.EVT_MENU, self.calibrate_step_runout, item)
         item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "8. Cogging feed-forward", "")
         self.Bind(wx.EVT_MENU, self.calibrate_step_cogging, item)
-        item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "9. Velocity gains + filters (ripple)", "")
-        self.Bind(wx.EVT_MENU, self.calibrate_step_velocity_refine, item)
-        item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "10. Position kp + velff (settle)", "")
-        self.Bind(wx.EVT_MENU, self.calibrate_step_position_refine, item)
         wxglade_tmp_menu.Append(wx.ID_ANY, "Actuator Calibration Steps", wxglade_tmp_menu_sub, "")
         wxglade_tmp_menu.AppendSeparator()
         wxglade_tmp_menu_sub = wx.Menu()
@@ -319,14 +315,6 @@ class puckutilityapp_frame(wx.Frame):
 
     def calibrate_step_cogging(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
         print("Event handler 'calibrate_step_cogging' not implemented!")
-        event.Skip()
-
-    def calibrate_step_velocity_refine(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
-        print("Event handler 'calibrate_step_velocity_refine' not implemented!")
-        event.Skip()
-
-    def calibrate_step_position_refine(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
-        print("Event handler 'calibrate_step_position_refine' not implemented!")
         event.Skip()
 
     def error_compensation_state(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>

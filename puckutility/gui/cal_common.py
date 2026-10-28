@@ -26,7 +26,7 @@ def _sleep_responsive(seconds, chunk=0.05):
 
 class GuiCalReporter(Reporter):
     """The p4core Reporter the library calibrations (p4core.calibrate,
-    p4sysid) get from the calibrate menu.  They run on the GUI thread, as
+    p4core.actuator) get from the calibrate menu.  They run on the GUI thread, as
     the menu's routines always have: status goes to the status bar, notes
     to stdout (the log window), questions to the frame's _prompt, and every
     wait keeps the window painting.  Without a wx.App (the headless CLI

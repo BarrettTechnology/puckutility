@@ -96,14 +96,6 @@
                             <label>8. Cogging feed-forward</label>
                             <handler>calibrate_step_cogging</handler>
                         </item>
-                        <item>
-                            <label>9. Velocity gains + filters (ripple)</label>
-                            <handler>calibrate_step_velocity_refine</handler>
-                        </item>
-                        <item>
-                            <label>10. Position kp + velff (settle)</label>
-                            <handler>calibrate_step_position_refine</handler>
-                        </item>
                     </menu>
                     <item>
                         <label>---</label>

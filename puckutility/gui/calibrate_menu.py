@@ -14,7 +14,7 @@ from p4core import firmware
 from p4core import calibrate as calibrate_lib
 from p4core import flash as flashp4
 from ..paths import _resolve_path, FIRMWARE_DIR, CONFIG_DIR
-from p4sysid import drivecal
+from p4core.actuator import drivecal
 from .cal_common import _sleep_responsive, GuiCalReporter
 from .cal_actuator import ActuatorCal
 

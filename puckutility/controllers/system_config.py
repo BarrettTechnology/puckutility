@@ -86,8 +86,8 @@ def apply(session, ini_path, reporter=None, calibrate=None):
     configured = [n for n, o in outcome.items() if o == 'configured']
     if configured and calibrate is not None and reporter.confirm(
             'Actuator calibration is required after configuration. '
-            'Calibrate {} now? (the motors turn, continuously for cogging '
-            'and the refine steps)'.format(configured), default=False):
+            'Calibrate {} now? (the motors turn, continuously for '
+            'cogging)'.format(configured), default=False):
         for node_id in configured:
             reporter.status('Calibrating node {}'.format(node_id))
             calibrate(node_id)

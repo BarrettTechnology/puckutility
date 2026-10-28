@@ -13,16 +13,22 @@ sys.path.insert(0, os.path.join(ROOT, 'p4core', 'tests'))
 
 from p4core import config_csv, ops                            # noqa: E402
 from p4core.reporter import RecordingReporter                  # noqa: E402
+from p4core.firmware import FEATURES, Firmware                 # noqa: E402
 
 from puckutility import paths                                  # noqa: E402
 from puckutility.controllers import calibrate, system_config  # noqa: E402
 
 
+CURRENT = Firmware((4, 5, 0), '4.5.0', frozenset(FEATURES) - {'legacy_polarity'})
+LEGACY = Firmware((4, 3, 5), '4.3.5', frozenset({'legacy_polarity'}))
+
+
 class FakePlanSession:
-    """Stands in for a p4sysid steps.Session under plans.run/save: records
+    """Stands in for a p4core.actuator steps.Session under plans.run/save: records
     the keys each run gets, passes them unless told to fail one."""
 
-    def __init__(self, fail=()):
+    def __init__(self, node=None, fail=()):
+        self.dev = mock.Mock(node=node)
         self.runs = []
         self.results = {}
         self.unsaved = False
@@ -51,9 +57,10 @@ class TestCalibrate(unittest.TestCase):
     def setUp(self):
         self.node = mock.MagicMock()
         self.node.id = 5
+        self.node._p4_firmware = CURRENT
 
     def make(self, fail=()):
-        self.session = FakePlanSession(fail)
+        self.session = FakePlanSession(self.node, fail)
         p = mock.patch.object(calibrate.plans, 'make_session',
                               return_value=self.session)
         self.make_session = p.start()
@@ -62,7 +69,7 @@ class TestCalibrate(unittest.TestCase):
     def test_the_steps_are_the_actuator_plan_numbered(self):
         self.assertEqual(list(calibrate.STEPS), [
             'encoder', 'bias', 'gain', 'slope', 'fold', 'winding', 'runout',
-            'cogging', 'velocity_refine', 'position_refine'])
+            'cogging'])
         self.assertEqual(set(calibrate.STEPS), set(calibrate.plans.ACTUATOR))
         self.assertEqual(calibrate.STEPS['bias'], 'Current-sense bias')
 
@@ -82,6 +89,26 @@ class TestCalibrate(unittest.TestCase):
         self.assertTrue(session.unsaved)          # not saved: not asked
         self.assertIn('Encoder runout table', calibrate.summary_text(session))
 
+    def test_legacy_firmware_runs_and_reports_only_what_it_can(self):
+        self.node._p4_firmware = LEGACY
+        self.assertEqual(calibrate.supported(self.node),
+                         ('encoder', 'bias', 'gain', 'winding'))
+        self.make()
+        ok, session = calibrate.calibrate_actuator(self.node)
+        self.assertTrue(ok)
+        self.assertEqual(self.session.runs,
+                         [['encoder', 'bias', 'gain', 'winding']])
+        text = calibrate.summary_text(session)
+        self.assertEqual([line.split('.')[0].strip()
+                          for line in text.splitlines()], ['1', '2', '3', '4'])
+        self.assertNotIn('runout', text.lower())
+        self.assertNotIn('firmware', text.lower())
+
+    def test_the_gain_search_is_pucktuners(self):
+        for name in ('velocity_refine', 'position-refine', 'velocity_loop'):
+            with self.assertRaises(calibrate.CalibrationFailed):
+                calibrate.step_keys([name])
+
     def test_save_only_when_asked_and_passed(self):
         self.make()
         ok, session = calibrate.calibrate_actuator(self.node, save=True)
@@ -96,7 +123,7 @@ class TestCalibrate(unittest.TestCase):
 
     def test_named_steps_run_in_order_in_a_given_session(self):
         self.make()
-        session = FakePlanSession()
+        session = FakePlanSession(self.node)
         ok, out = calibrate.calibrate_actuator(
             self.node, steps=['fold', 'ezero', 'slope'], session=session)
         self.assertTrue(ok)
@@ -112,9 +139,11 @@ class TestCalibrate(unittest.TestCase):
                          ['encoder', 'winding'])
 
     def test_no_wx(self):
-        """The controller and the libraries it calls import without wx."""
+        """The controller and the libraries it calls import without wx, and
+        without p4sysid (not open source: puckutility does not use it)."""
         import subprocess
         code = ('import sys; sys.modules["wx"] = None; '
+                'sys.modules["p4sysid"] = None; '
                 'import puckutility.controllers.calibrate')
         r = subprocess.run([sys.executable, '-c', code], cwd=ROOT,
                            capture_output=True, text=True)

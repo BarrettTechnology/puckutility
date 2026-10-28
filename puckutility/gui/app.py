@@ -53,7 +53,7 @@ import os
 import canopen
 from p4core import can_backend
 from p4core import firmware
-from p4sysid import plans
+from ..controllers import calibrate as actuator
 from canopen.sdo import SdoAbortedError
 import platform
 import time
@@ -78,12 +78,14 @@ from p4core.cia402 import (
     MODE_PROFILE_TRQ, MODE_HOMING,
 )
 import csv
+import traceback
 from p4core import flash as flashp4
 import logging
 
 from .. import paths, __version__
 from ..paths import resource_path
 from p4core import worker
+from ..controllers.sync import ADC_SYNC_HZ, SyncOwner
 
 #: The P4 object dictionary (p4core's copy).
 EDS = paths.eds()
@@ -227,6 +229,22 @@ class DropTarget(wx.FileDropTarget):
 # Functions from these files are merged into this class using Python's "mixin" ability.
 # Fun fact: Python class "mixins" override from left to right, so put the base class on the right.
 
+def _show_menu_items(menu, items, shown):
+    """Put *menu*'s *items* (every one it had, in order) back in that order,
+    leaving out those not in *shown*: wx has no hidden state for a menu
+    item, so a hidden one is removed and kept for when it is shown again."""
+    shown = {item.GetId() for item in shown}
+    pos = 0
+    for item in items:
+        present = menu.FindItemById(item.GetId()) is not None
+        if item.GetId() in shown:
+            if not present:
+                menu.Insert(pos, item)
+            pos += 1
+        elif present:
+            menu.Remove(item)
+
+
 class MyFrame(calibrate, factory, puckutilityapp_frame):
     def __init__(self, *args, **kwds):
 
@@ -313,6 +331,12 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         # CONCURRENTLY and collide on the CAN bus -> both fail with SDO aborts. Any task must hold off
         # until the in-flight upload finishes. Set/cleared in browse_fw and file_to_p4.
         self._upload_busy = False
+
+        # The SYNC's one owner: nothing calls network.sync.start/stop directly
+        # (controllers/sync.py says why).
+        self.sync_owner = SyncOwner(lambda: getattr(self, 'network', None))
+        # TPDO callbacks (CAN thread) with a GUI update queued but not run yet.
+        self._pdo_pending = set()
 
         # Barrett colors
         self.blue = '#253B92'
@@ -630,6 +654,41 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.progress.SetBarGradient(('#FFFFFF',self.orange))
             # print('off')
         
+    def _ui_lock(self):
+        """Grey out the window's controls and menus while a calibration
+        drives the puck.  Not self.Disable(): on GTK that makes the top-level
+        window itself insensitive, and after Enable() the text fields took no
+        input, the menus stayed drawn grey and the ADC switch stopped
+        redrawing.  Each control is disabled on its own instead, the way any
+        single control is, and only those that were enabled come back."""
+        if getattr(self, '_ui_locked', None) is not None:
+            return
+        bar = self.GetMenuBar()
+        skip = (bar, self.GetStatusBar())
+        controls = [w for w in self.GetChildren()
+                    if w not in skip and not w.IsTopLevel() and w.IsThisEnabled()]
+        menus = [i for i in range(bar.GetMenuCount()) if bar.IsEnabledTop(i)] if bar else []
+        for w in controls:
+            w.Disable()
+        for i in menus:
+            bar.EnableTop(i, False)
+        self._ui_locked = (controls, menus)
+
+    def _ui_unlock(self):
+        locked, self._ui_locked = getattr(self, '_ui_locked', None), None
+        if locked is None:
+            return
+        controls, menus = locked
+        bar = self.GetMenuBar()
+        for w in controls:
+            try:
+                w.Enable()
+            except RuntimeError:        # destroyed meanwhile
+                pass
+        for i in menus:
+            bar.EnableTop(i, True)
+        self.Refresh()
+
     def OnTaskComplete(self):
         # self.thread.join()
         self.progress.Hide()
@@ -755,6 +814,9 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         so NO task runs concurrently with an upload -- the upload loops call wx.Yield, so a button/
         menu/drop can otherwise re-enter mid-upload and collide on the CAN bus (FLASH_FAILED / SDO
         aborts, then a cal against a half-written puck)."""
+        if getattr(self, '_ui_locked', None) is not None:
+            print("Calibration in progress — {} refused.".format(what))
+            return True
         if getattr(self, '_upload_busy', False):
             print("Upload in progress — {} deferred until it finishes.".format(what))
             try:
@@ -813,11 +875,18 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
     def _on_activate(self, event):
         # On GTK, EVT_CHAR_HOOK only fires when the top-level frame is the active
-        # (focused) window. Grab focus on activation so hotkeys work immediately
-        # without requiring a click on the frame background first.
+        # (focused) window. Give the frame focus on activation so hotkeys work
+        # without a click on the frame background first -- but only when nothing
+        # has focus once the activation settles: an unconditional SetFocus here
+        # took focus off the field the user had just clicked (New ID, the
+        # command value), so typing went nowhere.
         if event.GetActive():
-            self.SetFocus()
+            wx.CallAfter(self._focus_if_nothing_has_it)
         event.Skip()
+
+    def _focus_if_nothing_has_it(self):
+        if wx.Window.FindFocus() is None and self.IsActive():
+            self.SetFocus()
 
     def onKeyUp(self, event):
         event.Skip()
@@ -825,6 +894,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
     def onKeyDown(self,event):
         # https://archie-adams.github.io/keyboard-shortcut-map-maker/ to make map!
         # print(event.GetKeyCode())# Use to print key code
+        if getattr(self, '_ui_locked', None) is not None:
+            return      # a calibration is running (_ui_lock): no shortcuts, no Esc
         if event.GetKeyCode() == wx.WXK_ESCAPE:
             self.onCloseFrame(None)
         elif event.ControlDown() and event.GetKeyCode() == 67: # CTRL-C = Actuator Calibration
@@ -976,29 +1047,35 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         except Exception:
             pass
 
-    def tpdo1_callback(self, msg):
-        global node
+    def _call_after_once(self, fn):
+        """wx.CallAfter(fn) from a PDO callback (CAN thread), unless a call
+        is already queued: the TPDOs arrive at the SYNC rate (1 kHz during
+        a calibration stream), and a CallAfter per frame starves GTK's redraw --
+        the window still takes clicks and keys but stops drawing them."""
+        if not self.ADC_ON or fn in self._pdo_pending:
+            return
+        self._pdo_pending.add(fn)
 
-        # Call function to update Position / Velocity Data
-        wx.CallAfter(self.getPosition)
+        def run():
+            self._pdo_pending.discard(fn)
+            fn()
+        wx.CallAfter(run)
+
+    def tpdo1_callback(self, msg):
+        # Update Position / Velocity Data
+        self._call_after_once(self.getPosition)
 
     def tpdo2_callback(self, msg):
-        global node
-
-        # Call function to update ADC Monitor
-        wx.CallAfter(self.getMonitor)
+        # Update ADC Monitor
+        self._call_after_once(self.getMonitor)
 
     def tpdo3_callback(self, msg):
-        global node
-
-        # Call function to update ADC Monitor
-        wx.CallAfter(self.getMonitor)
+        # Update ADC Monitor
+        self._call_after_once(self.getMonitor)
 
     def tpdo4_callback(self, msg):
-        global node
-
-        # Call function to update Position / Velocity Data
-        wx.CallAfter(self.getPosition)
+        # Update Position / Velocity Data
+        self._call_after_once(self.getPosition)
 
     def on_emcy_received(self, emcy_error):
         # Called from the canopen receiver thread — only wx.CallAfter is safe here.
@@ -1626,31 +1703,43 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
     # Menu items that need the 4.5.0 objects, by feature (firmware.FEATURES).
     _FIRMWARE_MENU_FEATURES = (('Encoder Error Compensation', 'runout'),)
 
+    def _menu_layout(self):
+        """The Menu menu and the Actuator Calibration Steps submenu with
+        every item each had when built, in order, the step items by key
+        (frame.py lists them in run order).  Read once: hidden items are
+        out of the menus after that."""
+        layout = self.__dict__.get('_menu_layout_cache')
+        if layout is None:
+            bar = self.frame_menubar
+            top = bar.GetMenu(bar.FindMenu('Menu'))
+            steps = bar.FindItemById(
+                bar.FindMenuItem('Menu', 'Actuator Calibration Steps')).GetSubMenu()
+            step_items = list(steps.GetMenuItems())
+            assert len(step_items) == len(actuator.STEPS), 'frame.py steps menu'
+            layout = (top, list(top.GetMenuItems()), steps,
+                      list(zip(actuator.STEPS, step_items)))
+            self.__dict__['_menu_layout_cache'] = layout
+        return layout
+
     def _apply_firmware_gates(self, fw):
-        """Grey out what the selected puck's firmware cannot do: the
-        Actuator Calibration Steps it lacks the objects for (p4sysid.plans)
-        and the runout switch.  A 4.3.x puck still runs Actuator Calibration;
-        its unavailable steps are skipped."""
+        """Offer only what the selected puck's firmware can do: the Actuator
+        Calibration Steps it can run, numbered in run order, and the runout
+        switch.  The rest is left out of the menus, not greyed out.  A 4.3.x
+        puck still runs Actuator Calibration: the steps it can."""
         self.firmware = fw
-        print('Node {}: {}'.format(self.getID(), fw.summary()))
-        if fw.legacy:
-            self.frame_statusbar.SetStatusText(
-                'Firmware {}: some calibrations need {}'.format(
-                    fw.text, firmware.RECOMMENDED), 1)
-        bar = self.frame_menubar
-        for label, feature in self._FIRMWARE_MENU_FEATURES:
-            item = bar.FindMenuItem('Menu', label)
-            if item != wx.NOT_FOUND:
-                bar.Enable(item, fw.has(feature))
-        steps_id = bar.FindMenuItem('Menu', 'Actuator Calibration Steps')
-        if steps_id == wx.NOT_FOUND:
-            return
-        # The items are "N. ...", N numbering plans.ACTUATOR.
-        for item in bar.FindItemById(steps_id).GetSubMenu().GetMenuItems():
-            n = item.GetItemLabelText().split('.', 1)[0]
-            if n.isdigit() and 1 <= int(n) <= len(plans.ACTUATOR):
-                key = plans.ACTUATOR[int(n) - 1]
-                item.Enable(plans.unavailable(self.node, key) is None)
+        print('Node {}: firmware {}'.format(self.getID(), fw.text))
+        top, top_items, steps, step_items = self._menu_layout()
+        hidden = {label for label, feature in self._FIRMWARE_MENU_FEATURES
+                  if not fw.has(feature)}
+        _show_menu_items(top, top_items, [it for it in top_items
+                                          if it.GetItemLabelText() not in hidden])
+        supported = actuator.supported(self.node)
+        shown = [item for key, item in step_items if key in supported]
+        _show_menu_items(steps, [item for _k, item in step_items], shown)
+        titles = {key: title for _n, key, title in actuator.numbered(supported)}
+        for n, (key, item) in enumerate(
+                [(k, it) for k, it in step_items if k in supported], 1):
+            item.SetItemLabel('{}. {}'.format(n, titles[key]))
 
     def set_id(self, event):  # wxGlade: wxp3_frame.<event_handler>
         if self.check_for_node() == False:
@@ -2150,10 +2239,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             return
 
         if self.ADC_ON == True:
-            try:
-                self.node.network.sync.stop()
-            except Exception:
-                pass  # BCM rejects stop if sync was already stopped; harmless
+            self.sync_owner.set_sync_rate(0)
             time.sleep(0.05)  # Let any in-flight sync frame clear before SDO transactions
 
         if len(self.network.scanner.nodes) == 0:
@@ -2194,7 +2280,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.lastMode = 0
             if self.ADC_ON == True:
                 self.node.rpdo[1].transmit()
-                self.node.network.sync.start()
+                self.sync_owner.set_sync_rate(ADC_SYNC_HZ)
             return
 
         # Cal-sanity gate: never enable a drive mode with iSense cal that would cause phantom
@@ -2248,7 +2334,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.choice_test.SetSelection(0)
             if self.ADC_ON:
                 try:
-                    self.node.network.sync.start()
+                    self.sync_owner.set_sync_rate(ADC_SYNC_HZ)
                 except Exception:
                     pass
             return
@@ -2336,7 +2422,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             # Push fresh RPDO state so the first SYNC tick latches the new mode/CW,
             # not whatever stale data was last in the drive's RPDO inbox.
             self.node.rpdo[1].transmit()
-            self.node.network.sync.start()
+            self.sync_owner.set_sync_rate(ADC_SYNC_HZ)
 
     def run_test(self, event):  # wxGlade: wxp3_frame.<event_handler>
         if self._busy_reject("drive command"):
@@ -2366,10 +2452,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             return
 
         if self.ADC_ON == True:
-            try:
-                self.node.network.sync.stop()
-            except Exception:
-                pass  # BCM rejects stop if already stopped / bus hiccup -- harmless
+            self.sync_owner.set_sync_rate(0)
             time.sleep(0.05)  # Let any in-flight sync frame clear before SDO transactions
 
         if quick_test == 1:  # Torque
@@ -2392,7 +2475,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 self.choice_test.SetSelection(0)
                 try:
                     if self.ADC_ON == True:
-                        self.node.network.sync.start()
+                        self.sync_owner.set_sync_rate(ADC_SYNC_HZ)
                 except Exception:
                     pass
                 return
@@ -2474,7 +2557,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         if self.ADC_ON == True:
             # Push fresh RPDO state so the first SYNC tick latches it, not stale inbox data.
             self.node.rpdo[1].transmit()
-            self.node.network.sync.start()
+            self.sync_owner.set_sync_rate(ADC_SYNC_HZ)
 
         self.lastMode = quick_test
 
@@ -2642,10 +2725,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             pass
 
         # Stop SYNC traffic first so it doesn't fight the SDOs below.
-        try:
-            self.network.sync.stop()
-        except Exception:
-            pass
+        self.sync_owner.set_sync_rate(0)
 
         # Idle the active puck if there is one. Use a tight SDO timeout so a
         # disconnected/unresponsive puck can't hold the close path hostage
@@ -2707,7 +2787,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                         self.node.rpdo[1].transmit()
                     except Exception:
                         pass
-                    self.network.sync.start(0.01)
+                    self.sync_owner.set_sync_rate(ADC_SYNC_HZ)
                     self.ADC_ON = True
                     # Sync button state — required when on_off_adc is called
                     # from a path other than the button click itself (e.g. the
@@ -2718,10 +2798,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                     print('Turning off ADC Monitor...')
                     #Turn off ADC Monitoring
                     # Stop sync transmission
-                    try:
-                        self.network.sync.stop()
-                    except:
-                        pass
+                    self.sync_owner.set_sync_rate(0)
                     self.ADC_ON = False
 
                     # Reset monitor values to N/A
@@ -2754,11 +2831,11 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 # received and intentionally rejected.
                 self.onoff1.SetValue(1)
                 wx.CallLater(100, self.onoff1.SetValue, 0)
-        except:
-            # self.on_off_adc(None) # incorrect
-            # Reset Button to off
-            print('No Puck Connected -')
-            print('Turning off ADC Monitor...')
+        except Exception:
+            # Reset Button to off.  Print why: this path used to report every
+            # failure as "No Puck Connected", hiding real errors.
+            traceback.print_exc()
+            print('ADC Monitor could not be switched -- turning it off.')
             self.onoff1.SetValue(1)
             wx.CallLater(100, self.onoff1.SetValue, 0)
             pass

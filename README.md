@@ -102,11 +102,12 @@ results as JSON. Exit status: 0 done, 1 failed, 2 usage, 3 no adapter/puck,
 130 stopped.
 
 `calibrate` runs the actuator calibration the GUI's Actuator Calibration
-menu runs (p4sysid's steps): encoder, bias, gain, slope, fold, winding,
-runout, cogging, velocity_refine, position_refine (`puckutility calibrate
---help`).  Load the batch CSV first.  The motor turns, continuously for
-cogging and the refine steps.  Results stay in RAM unless `--save`
-(Save.All when every step passed).
+menu runs (p4core.actuator's steps): encoder, bias, gain, slope, fold,
+winding, runout, cogging (`puckutility calibrate --help`); without STEP
+arguments, the ones the puck's firmware can run.  Load the batch CSV first.
+The motor turns, continuously for cogging.  Results stay in RAM unless
+`--save` (Save.All when every step passed).  The loop-gain search and the
+system identification are pucktuner's.
 
 ### The old flags
 The flags of earlier versions still work and are translated to the commands

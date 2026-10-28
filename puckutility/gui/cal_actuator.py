@@ -3,28 +3,28 @@ the active puck or on every puck, and its numbered steps one at a time.
 
 A manufacturing batch shares one configuration CSV, loaded first (the
 config gate); the actuator calibration is what the CSV cannot carry,
-measured on each unit (p4sysid.plans.ACTUATOR).  A mixin of the calibrate
-menu (calibrate_menu.calibrate inherits it).  The steps are p4sysid's,
-through controllers.calibrate; this keeps the frame side: the gate and the
+measured on each unit (p4core.actuator.plans.ACTUATOR).  A mixin of the
+calibrate menu (calibrate_menu.calibrate inherits it).  The steps are
+p4core's, through controllers.calibrate; this keeps the frame side: the gate and the
 confirmations, the progress gauge, the ADC monitor, the reboot an encoder
 filter change needs, and the question whether to Save.All afterwards.
 Nothing is saved to NV unless the user says so.
 
-Each step item runs that step alone in this puck's cached p4sysid
-Session, so fold finds the slope sweep a Slope run left in it.  Bias and
-gain are p4sysid's steps like the rest: puckutility keeps no current-sense
-calibration of its own.
+Each step item runs that step alone in this puck's cached Session, so fold
+finds the slope sweep a Slope run left in it.  Bias and gain are p4core
+steps like the rest: puckutility keeps no current-sense calibration of its
+own.  Only the steps the puck's firmware can run are offered: the Steps
+menu lists those (app._apply_firmware_gates) and Active Puck runs those.
 
 Everything runs on the GUI thread, as the calibrate menu always has, with
-the window disabled; the reporter and p4sysid's pump keep it painting.
+the window disabled; the reporter and the drive's pump keep it painting.
 """
 import time
 
 import wx
 
-from p4core import firmware
 from p4core.cia402 import MODE_IDLE
-from p4sysid import plans
+from p4core.actuator import plans
 from ..controllers import calibrate as actuator
 from .cal_common import _sleep_responsive, _yield, GuiCalReporter
 
@@ -33,9 +33,9 @@ _REBOOT_TIMEOUT_S = 15.0
 
 
 def _pump():
-    """p4sysid's pump (P4Sysid *pump*): called at every abort check and
+    """The drive's pump (P4Drive *pump*): called at every abort check and
     through its settling waits, it keeps the window painting.  Only on the
-    GUI thread: p4sysid may get there from a PDO callback."""
+    GUI thread: a step may get there from a PDO callback."""
     if wx.GetApp() is not None and wx.IsMainThread():
         wx.YieldIfNeeded()
 
@@ -55,29 +55,32 @@ class _StepReporter(GuiCalReporter):
             _yield()
 
 
-def _numbered_list(keys):
-    """*keys* as the Steps menu numbers them."""
-    return '\n'.join('{:2d}. {}'.format(n, st.title)
-                     for n, _stage, st in plans.numbered(plans.ACTUATOR)
-                     if st.key in keys)
+def _numbered_list(node, keys):
+    """*keys* with the numbers the Steps menu gives them on *node* (its
+    firmware's steps, in run order)."""
+    return '\n'.join('{:2d}. {}'.format(n, title)
+                     for n, key, title in actuator.numbered(
+                         actuator.supported(node))
+                     if key in keys)
 
 
 class ActuatorCal:
     # -- the menu items ----------------------------------------------------
     def calibrate_actuator(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
-        """Actuator Calibration > Active Puck: every step on the active
-        puck, then the summary and the offer to Save.All."""
-        if not self._actuator_ready(plans.ACTUATOR):
+        """Actuator Calibration > Active Puck: every step the active puck's
+        firmware can run, then the summary and the offer to Save.All."""
+        keys = self._actuator_ready()
+        if not keys:
             return False
-        ok, session = self._run_actuator(plans.ACTUATOR, fresh=True)
-        self._actuator_done(session, plans.ACTUATOR)
+        ok, session = self._run_actuator(keys, fresh=True)
+        self._actuator_done(session, keys)
         return ok
 
     def calibrate_actuator_all_pucks(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
         """Actuator Calibration > All Pucks: every step on every puck, one
         after another.  Whether to Save.All each puck that passes is asked
-        once, up front."""
-        if not self._actuator_ready(plans.ACTUATOR, every_puck=True):
+        once, up front.  Each puck runs the steps its firmware can."""
+        if not self._actuator_ready(every_puck=True):
             return False
         save = self._prompt('Save to NV?',
                             "Save each puck's results to NV (Save.All) when "
@@ -89,7 +92,8 @@ class ActuatorCal:
             self.choice_id.SetSelection(self.network.scanner.nodes.index(node_id))
             self.select_id(None)
             print('--- Actuator calibration, node {} ---'.format(node_id))
-            ok, session = self._run_actuator(plans.ACTUATOR, fresh=True)
+            ok, session = self._run_actuator(actuator.supported(self.node),
+                                             fresh=True)
             verdict = 'PASS' if ok else 'FAILED'
             if ok and save and session is not None and session.unsaved:
                 ok = self._actuator_save(session)
@@ -131,12 +135,6 @@ class ActuatorCal:
     def calibrate_step_cogging(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
         return self._actuator_step('cogging')
 
-    def calibrate_step_velocity_refine(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
-        return self._actuator_step('velocity_refine')
-
-    def calibrate_step_position_refine(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
-        return self._actuator_step('position_refine')
-
     # -- the frame side ----------------------------------------------------
     def _config_gate(self):
         """Never drive control modes for calibration while a firmware flash
@@ -168,44 +166,37 @@ class ActuatorCal:
             self.on_off_adc(self)
 
     def _actuator_step(self, key):
-        """One actuator step alone, in this puck's cached session."""
-        node = getattr(self, 'node', None)
-        why = node is not None and plans.unavailable(node, key)
-        if why:
-            self._prompt_ok('Firmware Too Old',
-                            'This step {}.\nPlease update the firmware.'.format(why))
-            return False
+        """One actuator step alone, in this puck's cached session.  The
+        Steps menu lists only what the firmware can run."""
         if not self._actuator_ready((key,)):
             return False
         ok, session = self._run_actuator((key,))
         self._actuator_done(session, (key,))
         return ok
 
-    def _actuator_ready(self, keys, every_puck=False):
+    def _actuator_ready(self, keys=None, every_puck=False):
         """The config gate (the batch CSV first), a puck, and the user's
-        go-ahead for *keys*."""
+        go-ahead for *keys* (default: the steps the active puck's firmware
+        can run).  Returns the keys, or () when not going ahead."""
         if not self._config_gate():
-            return False
+            return ()
         if self.check_for_node() == False:
-            return False
-        moving = [k for k in keys if k in ('cogging', 'velocity_refine',
-                                           'position_refine')]
+            return ()
+        if keys is None:
+            keys = actuator.supported(self.node)
+        if not keys:
+            return ()
         msg = '{}:\n\n{}\n\n'.format(
             'Actuator calibration of every puck on the bus' if every_puck
             else 'Actuator calibration of puck {}'.format(self.getID()),
-            _numbered_list(keys))
-        skipped = [k for k in keys if plans.unavailable(self.node, k)]
-        if skipped:
-            msg += ('Skipped on this firmware ({}; these need {}):\n{}\n\n'.format(
-                firmware.detect(self.node).text, firmware.RECOMMENDED,
-                _numbered_list(skipped)))
+            _numbered_list(self.node, keys))
         msg += ('The motor turns{}: the output must be free to turn.\n\n'
-                'Continue?'.format(', continuously for cogging and the refine '
-                                   'steps' if moving else ''))
-        return bool(self._prompt('Actuator Calibration', msg))
+                'Continue?'.format(', continuously for cogging'
+                                   if 'cogging' in keys else ''))
+        return tuple(keys) if self._prompt('Actuator Calibration', msg) else ()
 
     def _actuator_session(self, reporter, fresh=False):
-        """This puck's p4sysid Session, reporting to *reporter*: cached per
+        """This puck's Session, reporting to *reporter*: cached per
         node ID, so one step can use another's result; a new one when
         *fresh* or when the node object changed (a rescan)."""
         cache = self.__dict__.setdefault('_actuator_sessions', {})
@@ -213,7 +204,8 @@ class ActuatorCal:
         session = cache.get(node_id)
         if fresh or session is None or session.dev.node is not self.node:
             session = actuator.make_session(self.node, reporter,
-                                            reboot=self._actuator_reboot)
+                                            reboot=self._actuator_reboot,
+                                            sync=self.sync_owner)
             cache[node_id] = session
         else:
             # A cached session still logs to the run that made it.
@@ -227,7 +219,7 @@ class ActuatorCal:
         running.  Returns (ok, session); session None when it could not
         start."""
         self._menu_idle_takeover()
-        self.Disable()
+        self._ui_lock()
         self._adc_quiet()
         self.OnStartTask(None)
         reporter = _StepReporter(self, self.UpdateUI)
@@ -236,7 +228,7 @@ class ActuatorCal:
             ok, session = actuator.calibrate_actuator(
                 self.node, reporter, steps=keys,
                 session=self._actuator_session(reporter, fresh))
-            if ok and set(plans.ACTUATOR) <= set(keys):
+            if ok and set(actuator.supported(self.node)) <= set(keys):
                 self.requireCal = False
             return ok, session
         except Exception as exc:
@@ -249,11 +241,14 @@ class ActuatorCal:
                 self.lastMode = 0
             except Exception:
                 pass
+            # SYNC off whatever a step left running; the ADC monitor (if it
+            # was on) starts its own again.
+            self.sync_owner.set_sync_rate(0)
             self._adc_restore()
             self.OnTaskComplete()
             print('Actuator calibration finished in {:.1f} s.'.format(
                 time.time() - t0))
-            self.Enable()
+            self._ui_unlock()
 
     def _actuator_done(self, session, keys):
         """The summary, then Save.All if the user wants it."""
@@ -270,7 +265,7 @@ class ActuatorCal:
             self._actuator_save(session)
 
     def _actuator_save(self, session):
-        self.Disable()
+        self._ui_lock()
         try:
             ok = actuator.save_results(session,
                                        _StepReporter(self, self.UpdateUI))
@@ -278,7 +273,7 @@ class ActuatorCal:
             self._cal_fault(exc)
             return False
         finally:
-            self.Enable()
+            self._ui_unlock()
         print('Save.All {}'.format('done' if ok else 'FAILED'))
         if not ok:
             self._prompt_ok('Save to NV', 'Save.All failed:\n\n' +
@@ -291,16 +286,13 @@ class ActuatorCal:
         dlg.Destroy()
 
     def _actuator_reboot(self):
-        """p4sysid's reboot (modelled on p4sysid.__main__.make_reboot): NMT
+        """The session's reboot: NMT
         reset, wait for the boot-up and for the application to answer (the
         flashloader answers SDO first, but not 0x6060), then select the node
         again so the app's PDO maps and state follow.  Returns the node."""
         node_id = self.getID()
         print('Rebooting node {} ...'.format(node_id))
-        try:
-            self.network.sync.stop()
-        except Exception:
-            pass
+        self.sync_owner.set_sync_rate(0)
         old = self.node
         old.nmt.send_command(0x81)
         try:

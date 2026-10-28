@@ -11,7 +11,7 @@
     puckutility flash-canable [FIRMWARE]
 
 scan, flash, config, set-id and reset are p4core's; calibrate runs the
-actuator calibration the GUI runs (controllers.calibrate, p4sysid's steps).  main.py turns the old
+actuator calibration the GUI runs (controllers.calibrate, p4core.actuator's steps).  main.py turns the old
 flat flags (--flash FW, --calibrate, ...) into these.
 """
 
@@ -106,8 +106,8 @@ def _step_name(name):
 def _cmd_calibrate(ctx):
     steps = ctx.args.steps
     if not ctx.reporter.confirm(
-            'Calibration turns the motor, continuously for cogging and the '
-            'refine steps. Is the output free to turn?', default=True):
+            'Calibration turns the motor, continuously for cogging. Is the '
+            'output free to turn?', default=True):
         return cli.EXIT_FAILED
     ok = True
     for node_id in cli.targets(ctx):

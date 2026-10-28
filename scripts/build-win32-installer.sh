@@ -5,7 +5,7 @@
 # CANable driver components.
 #
 # Run from Git Bash (or any bash) on Windows, in the repo root venv
-# (`python -m venv .` + `pip install -r requirements.txt` + `pip install ./p4core ./p4sysid .`).
+# (`python -m venv .` + `pip install -r requirements.txt` + `pip install ./p4core .`).
 #
 # Options:
 #   --no-bundle-peak   do not embed PeakOemDrv.exe (~150 MB); the installer
