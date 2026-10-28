@@ -2,21 +2,30 @@
 This is the repository for Barrett's PuckUtility App. 
 
 ## Description
-This Python3 (wxpython) application is compatible with Barrett's P4 series of motor controllers. It can be used to:
-* Find motor controllers on the CAN bus
-* Change CAN IDs
-* Update firmware
+This Python 3 application is compatible with Barrett's P4 series of motor
+controllers. It runs as a wxPython GUI, or as a command line that needs no
+display (and no wxPython). It can be used to:
+* Find motor controllers on the CAN bus, and read each one's firmware,
+  flashloader, model and live readings
+* Change CAN IDs (the PDO COB-IDs follow)
+* Update firmware (`.bin` / `.ebin`), one puck or every puck on the bus
 * Flash CAN-adapter (CandleLight / CANable) firmware
-* Configure the CANopen Object Dictionary
+* Load, export and check configuration CSVs (the CANopen Object Dictionary)
+* Bring a whole system to a set firmware and configuration from a
+  system-config INI
 * Calibrate each actuator (the per-unit steps a batch configuration CSV
   cannot carry)
-* Test Profile Torque / Velocity / Position control
+* Test Profile Torque / Velocity / Position control, and homing
 
-The app launches a GUI when run with no arguments, or runs a command without
-one (see [Command line](#command-line)).
+Gain tuning and motor identification are pucktuner's (and p4gui's), not
+puckutility's.
 
 ## Installation
-Set up the Python virtual environment and install dependencies.
+The code shared with p4gui and pucktuner is the `p4core` submodule; fetch it
+first:
+```
+git submodule update --init p4core
+```
 
 ### Linux
 ```
@@ -55,7 +64,8 @@ git submodule update --init p4core
 pip install ./p4core .
 ```
 `puckutility --help` lists the commands. Only the GUI needs wxPython and
-matplotlib (`pip install ".[gui]"`).
+matplotlib (`pip install ".[gui]"`); without them, starting the GUI prints
+that install line instead.
 
 ## CAN adapter setup
 
@@ -64,11 +74,13 @@ matplotlib (`pip install ".[gui]"`).
 scripts/setup-socketcan.sh
 ```
 Then plug in your Peak USB-CAN or CandleLight / CANable adapter. The adapter is
-brought up as a SocketCAN interface (e.g. `can0`).
+brought up as a SocketCAN interface (e.g. `can0`). The Linux installer (see
+[Building a release](#building-a-release)) sets this up for you.
 
 ### Windows (PCAN)
-On Windows, CAN access goes through PCAN. Pass the PCAN channel index to
-`--can` (e.g. `--can 0` selects `PCAN_USBBUS1`).
+On Windows, CAN access goes through PCAN. `--can` takes the channel index
+(`--can 0` selects `PCAN_USBBUS1`), a `canN` name (`can0` is also
+`PCAN_USBBUS1`) or a full `PCAN_USBBUSn` name.
 
 ### Flashing a CANable adapter
 Flash the bundled CandleLight Multiboard firmware to an STM32G431 CANable over
@@ -85,8 +97,35 @@ puckutility flash-canable path/to/custom.bin
 ```
 ./puckutilityapp.py              # from the checkout
 puckutility                      # once installed (setup-pip.sh installs it)
-puckutility --touchscreen        # fullscreen
+puckutility-gui                  # the GUI only (no console window on Windows)
+puckutility --touchscreen        # fullscreen (e.g. a 7" Raspberry Pi touchscreen)
+puckutility --can can1           # preselect a CAN port
 ```
+
+The main window:
+* **CAN Port / Scan Pucks / Select ID** — find the pucks and pick one
+* **New ID / Set** — change the selected puck's node ID
+* **Version / Update...** — its firmware version, and flash new firmware
+* **Configure / Browse...** — load a configuration CSV
+* **Test** — Idle, Torque (mNm), Velocity (RPM), Position (deg) or Homing,
+  with a value and Go
+* Live bus current, bus voltage, puck and motor temperature, and RPM
+
+Drop a `.bin` / `.ebin` (firmware), `.csv` (configuration) or `.ini`
+(system config) file onto the window to use it.
+
+The **Menu** menu has Scan Pucks, Update All Pucks (Firmware), Upload System
+Config, the ADC monitor, Actuator Calibration (Active Puck / All Pucks) and
+each Actuator Calibration Step on its own, Encoder Error Compensation, Set
+User Direction and Help. Only the calibration steps the selected puck's
+firmware can run are listed. **Log > Open Log...** shows the session log.
+
+### Working folders
+`firmware/`, `config/`, `logs/` and `system-config.ini` are looked up in the
+repository root when run from a checkout, beside the executable in a release
+build, and in `~/.local/share/puckutility` after a `pip install`. A
+system-config INI names its firmware and CSV files by filename, from
+`firmware/` and `config/`.
 
 ## Command line
 Every operation is also a command, and needs no display:
@@ -94,28 +133,33 @@ Every operation is also a command, and needs no display:
 ```
 puckutility --can can0 scan
 puckutility --can can0 --id 1 info            # --all for every puck; --no-flashloader
-puckutility --can can0 --id 1 flash firmware/P4-4.4.0.ebin
-puckutility --can can0 --id 1 config load config/motor.csv
+puckutility --can can0 --id 1 flash firmware/P4-4.4.0.ebin   # --all for every puck
+puckutility --can can0 --id 1 config load config/motor.csv   # save and reboot
+puckutility --can can0 --id 1 config export motor.csv        # the puck's values
+puckutility config check config/motor.csv     # validate, no puck needed
+puckutility config templates                  # the shipped templates
 puckutility --can can0 --all calibrate        # actuator calibration; --save
 puckutility --can can0 --id 1 calibrate slope fold
 puckutility --can can0 system-config system-config.ini
 puckutility --can can0 --id 5 set-id 7
+puckutility --can can0 --id 5 reset           # NMT reset, wait for it
 puckutility flash-canable [FIRMWARE]
 puckutility --help                            # and: puckutility COMMAND --help
 ```
 
-`--id` may be left out when there is one puck on the bus. `-y` answers yes to
-every question (calibration asks before the motor turns), `--json` prints
-results as JSON. Exit status: 0 done, 1 failed, 2 usage, 3 no adapter/puck,
-130 stopped.
+`--can` defaults to `$P4_CAN`, else `can0`. `--id` may be left out when there
+is one puck on the bus. `--fd` requires CAN FD, `--classic` uses classic CAN
+only. `-y` answers yes to every question (calibration asks before the motor
+turns), `-q` prints only results, warnings and errors, `-v` more, and
+`--json` prints results as JSON. Exit status: 0 done, 1 failed, 2 usage,
+3 no adapter/puck, 130 stopped.
 
 `calibrate` runs the actuator calibration the GUI's Actuator Calibration
 menu runs (p4core.actuator's steps): encoder, bias, gain, slope, fold,
 winding, runout, cogging (`puckutility calibrate --help`); without STEP
 arguments, the ones the puck's firmware can run.  Load the batch CSV first.
 The motor turns, continuously for cogging.  Results stay in RAM unless
-`--save` (Save.All when every step passed).  The loop-gain search and the
-system identification are pucktuner's.
+`--save` (Save.All when every step passed).
 
 ### The old flags
 The flags of earlier versions still work and are translated to the commands
@@ -141,15 +185,15 @@ python3 puckutilityapp.py --can can0 --id 1 2 --config config/motor.csv
 `puckutility/` is the package: `model.py` (the CAN session, from p4core),
 `controllers/` (the operations, UI-free), `cli.py` (the commands), `gui/`
 (the wx GUI). Code shared with p4gui and pucktuner (flashing, config CSVs,
-the CAN backends, the object dictionary) is in the `p4core` submodule:
-
-```
-git submodule update --init p4core
-```
+the CAN backends, the object dictionary, the actuator calibration) is in the
+`p4core` submodule.
 
 ## Building a release
 
-### Linux .deb package (recommended)
+Every build ships the puck firmware that `system-config.ini` names, from
+`firmware/` (or `FIRMWARE_DIR`); the build stops early if it is missing.
+
+### Linux
 
 Requires Docker. Your user must be in the `docker` group:
 ```
@@ -158,45 +202,53 @@ sudo usermod -aG docker $USER
 then log out and back in (or prefix the build commands below with
 `sg docker -c '…'` to apply the group without re-logging in).
 
-The build runs inside a pinned Ubuntu 20.04 container so the resulting binary
-runs on Ubuntu 20.04 → 26.04+ regardless of your host OS. The first build also
-builds the `puckutility-builder` image — this downloads the prebuilt wxPython
-wheel (no compilation) and takes a few minutes:
+The build runs inside a pinned Ubuntu 20.04 container so the result runs on
+Ubuntu 20.04 → 26.04+ regardless of your host OS. The first build also builds
+the `puckutility-builder` image — this downloads the prebuilt wxPython wheel
+(no compilation) and takes a few minutes; add `--rebuild-docker` to the first
+build, and again whenever `requirements.txt` changes. Later builds use
+`--docker` and are fast. Add `--clean-pyinstaller` if the binary seems stale
+after adding new imports.
 
+**Installer (recommended):**
 ```
-./scripts/build-linux-installer.sh --rebuild-docker --deb
+./scripts/build-linux-installer.sh --docker --installer
 ```
+Output: `build/PuckUtilityApp-lin-vX.Y.Z-installer.run`, a
+self-extracting installer. On the target machine:
+```
+sh ./PuckUtilityApp-lin-vX.Y.Z-installer.run
+```
+It asks which CAN adapters to support (Peak PCAN-USB, CANable; desktop or
+text questions), asks for sudo / pkexec, and installs the app plus the
+`puck-can-common` / `puck-can-peak` / `puck-can-canable` packages (udev
+rules, automatic `can0`, `can1`, … bring-up, `dfu-util` for CANable). It
+installs `linux-modules-extra` when the kernel lacks the adapter driver.
+Run it again to change the adapter selection. Options: `--peak` /
+`--no-peak`, `--canable` / `--no-canable`, `-y`, `--text`, `--dry-run`,
+`--uninstall` (`--help` for all).
 
-Subsequent builds reuse the cached image and are fast:
-
+**.deb packages only:**
 ```
 ./scripts/build-linux-installer.sh --docker --deb
 ```
+Output: `build/deb/puckutilityapp_X.Y.Z_amd64.deb` and the CAN support debs
+(`scripts/build-can-debs.sh`). Install with
+`sudo apt install ./puckutilityapp_X.Y.Z_amd64.deb` (plus the CAN debs you
+need).
 
-Re-run with `--rebuild-docker` any time `requirements.txt` changes.
-Re-run with `--clean-pyinstaller` if the binary seems stale after adding new imports.
-
-Output: `build/deb/puckutilityapp_X.Y.Z_amd64.deb`
-
-Install on the target machine:
-```
-sudo apt install ./puckutilityapp_X.Y.Z_amd64.deb
-```
-
-### Linux PyInstaller zip (legacy)
-
+**PyInstaller zip (legacy):**
 ```
 ./scripts/build-linux-installer.sh --pyinstaller
 ```
-
 Output: `build/PuckUtilityApp-lin-vX.Y.Z.zip`
 
-### Windows
+### Windows (10 / 11, x64)
 
-The build is a Bash script (it runs PyInstaller twice, copies in the data files,
-downloads the PCAN driver, and zips the result). PowerShell cannot execute a
-`.sh` file directly, and a bare `bash` resolves to WSL — which is usually not
-installed. Run it through **Git Bash** instead (bundled with
+The build is a Bash script (PyInstaller, the data files, the PEAK driver,
+the zip and the installer). PowerShell cannot execute a `.sh` file directly,
+and a bare `bash` resolves to WSL — which is usually not installed. Run it
+through **Git Bash** instead (bundled with
 [Git for Windows](https://gitforwindows.org/)).
 
 From a PowerShell prompt:
@@ -209,23 +261,42 @@ Or open a **Git Bash** terminal and run it directly:
 ./scripts/build-win32-installer.sh
 ```
 
+Outputs (`build/win/`):
+* `PuckUtilityApp-win32-vX.Y.Z/` — the app folder: `PuckUtilityApp.exe`
+  (windowed GUI) and `PuckUtilityAppCLI.exe` (console)
+* `PuckUtilityApp-win32-vX.Y.Z.zip` — a portable copy
+* `PuckUtilityApp-win-vX.Y.Z-setup.exe` — the installer, built when
+  [Inno Setup 6](https://jrsoftware.org/isinfo.php) is installed
+  (`scripts/windows/puckutility.iss`)
+
+The installer has app, PEAK PCAN driver and CANable components. The PEAK
+driver setup is bundled (or downloaded at install time with
+`--no-bundle-peak`) and skipped when PCAN-Basic is already installed. CANable
+needs no driver (WinUSB); the installer links STM32CubeProgrammer, which
+cannot be redistributed. Users can write to `firmware/`, `config/`, `logs/`
+and `system-config.ini` beside the exe.
+
 Notes:
 - You do **not** need to activate the venv first — the script locates
-  `Scripts/python.exe` itself.
-- An internet connection is required (the PCAN driver is downloaded fresh each
-  build).
-
-Output: `build/win/PuckUtilityApp-win32-vX.Y.Z.zip`, containing
-`PuckUtilityApp.exe` (windowed GUI) and `PuckUtilityAppCLI.exe` (console).
+  `Scripts/python.exe` itself (or set `PYTHON`).
+- Options: `--no-bundle-peak`, `--refresh-drivers` (re-download the PEAK
+  driver), `--no-setup` (stop after the zip). Environment: `ISCC` (the Inno
+  Setup compiler), `SIGNTOOL` (sign the setup), `FIRMWARE_DIR`.
+- An internet connection is needed the first time (the PEAK driver is cached
+  afterwards).
 
 ## Testing across Ubuntu versions
 
-`scripts/test-cross-ubuntu.sh` validates the dev/build environment on every
-supported Ubuntu release. For each version it spins up a clean container, runs
-this repo's own `scripts/setup-venv.sh`, then verifies the GUI stack actually
-initialises (`import wx` + `wx.App()` under a headless X server) and that every
-declared dependency imports. It exercises the *real* scripts, so run it whenever
-you touch `setup-venv.sh` / `requirements.txt`, or when a new Ubuntu ships.
+`scripts/test-cross-ubuntu.sh` validates both the dev environment and the
+shipped installer on every supported Ubuntu release. For each version it spins
+up a clean container, runs this repo's own `scripts/setup-venv.sh`, then
+verifies the GUI stack actually initialises (`import wx` + `wx.App()` under a
+headless X server) and that every declared dependency imports. It also builds
+the `.run` installer once, runs it unattended in each container, checks the
+CAN adapter options (select, deselect, uninstall) and launches the installed
+app. It exercises the *real* scripts, so run it whenever you touch
+`setup-venv.sh` / `requirements.txt` / the installer, or when a new Ubuntu
+ships.
 
 Requires Docker, with your user in the `docker` group:
 ```
@@ -249,15 +320,14 @@ failure, scroll up to that release's banner for the Python traceback.
 
 ## Puck Firmware
 Download the latest Puck Firmware at [barrett.com/puck-firmware](https://barrett.com/puck-firmware)  
-Place the .ebin files in puckutility/firmware 
+Place the .ebin files in `firmware/` (see [Working folders](#working-folders)).
 
 ## Support
 For technical support, email support@barrett.com.
 
 ## Roadmap
-* Tune current / velocity / position control gains
-* Command square-wave / sinusoidal trajectories, or use a USB knob/slider
-* Graph step-reponse and following error in realtime
+* Tune Gains and Save to CSV (in the menu, greyed out until implemented)
+* The Factory menu (J-Link flashing and board tests), hidden for now
 
 ## Contributing
 Pull requests are welcome!
