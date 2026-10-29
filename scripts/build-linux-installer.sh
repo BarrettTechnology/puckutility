@@ -28,16 +28,17 @@ done
 # reproducible glibc/GTK linkage. Ensures the binary runs on Ubuntu >= 20.04
 # regardless of the dev machine's OS.
 #
-# The builder image (puckutility-builder) pre-bakes all pip dependencies so
-# wxPython only compiles once. Use --rebuild-docker to force a fresh image
-# (e.g. after changing requirements.txt).
+# The builder image (puck-deb-u20, shared with the other app; override with
+# BUILDER_IMAGE) holds the system libs, CPython 3.12 and the prebuilt wxPython
+# wheel. This repo's requirements.txt is installed into it on every run, so
+# --rebuild-docker is only needed after a Python/wxPython or Dockerfile change.
 if [ "$USE_DOCKER" = true ]; then
     if ! command -v docker >/dev/null 2>&1; then
         echo "ERROR: docker not found. Install Docker and try again." >&2
         exit 1
     fi
 
-    IMAGE="puckutility-builder:latest"
+    IMAGE="${BUILDER_IMAGE:-puck-deb-u20:latest}"
 
     if [ "$REBUILD_DOCKER" = true ] || ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
         echo "Building Docker builder image..."
@@ -51,7 +52,7 @@ if [ "$USE_DOCKER" = true ]; then
         -v "$(pwd):/build" \
         -w /build \
         "$IMAGE" \
-        bash -c "VENV_ROOT=/opt/puckbuild bash scripts/build-linux-installer.sh --${FORMAT}"
+        bash -c "uv pip install -q --python /opt/puckbuild -r requirements.txt && VENV_ROOT=/opt/puckbuild bash scripts/build-linux-installer.sh --${FORMAT}"
     exit 0
 fi
 

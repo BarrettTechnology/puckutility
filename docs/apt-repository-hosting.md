@@ -56,7 +56,7 @@ Almost entirely the `.deb` files; the metadata is rounding error.
 | AppStream catalog (`Components-amd64.yml.gz` + `icons-*.tar.gz`) | tens of **KB**, up to ~**1–2 MB** |
 
 The `.deb`s are large because each is a PyInstaller one-file bundle embedding the
-whole Python 3.13 runtime + wxPython + the scientific stack. (A "thin" `.deb`
+whole Python 3.12 runtime + wxPython + the scientific stack. (A "thin" `.deb`
 that `Depends:` on system Python would be a few MB — but that reintroduces the
 cross-Ubuntu dependency problems we deliberately solved, so the self-contained
 ~175 MB is the safe trade.)

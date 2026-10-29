@@ -204,10 +204,11 @@ then log out and back in (or prefix the build commands below with
 
 The build runs inside a pinned Ubuntu 20.04 container so the result runs on
 Ubuntu 20.04 → 26.04+ regardless of your host OS. The first build also builds
-the `puckutility-builder` image — this downloads the prebuilt wxPython wheel
-(no compilation) and takes a few minutes; add `--rebuild-docker` to the first
-build, and again whenever `requirements.txt` changes. Later builds use
-`--docker` and are fast. Add `--clean-pyinstaller` if the binary seems stale
+the `puck-deb-u20` image (shared with pucktuner) — this downloads the prebuilt
+wxPython wheel (no compilation) and takes a few minutes. Each build installs
+`requirements.txt` into it first, so `--rebuild-docker` is only needed after a
+Python, wxPython or `Dockerfile.builder` change. Later builds use `--docker`
+and are fast. Add `--clean-pyinstaller` if the binary seems stale
 after adding new imports.
 
 **Installer (recommended):**
@@ -312,7 +313,7 @@ scripts/test-cross-ubuntu.sh 24.04 26.04     # a subset / a new release
 
 Nothing is installed on your host and nothing pops up on screen — it all runs
 headless inside the containers, independent of your local `.venv`. The first run
-pulls the base images and downloads the standalone Python 3.13 + wxPython /
+pulls the base images and downloads the standalone Python 3.12 + wxPython /
 scientific wheels (cached under `/tmp` afterward, shared between puckutility and
 pucktuner), so it takes a few minutes; later runs are fast. It prints a
 per-release `PASS`/`FAIL` summary and exits non-zero if any release fails — on a

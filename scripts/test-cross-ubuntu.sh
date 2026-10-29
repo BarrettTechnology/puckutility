@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Cross-Ubuntu smoke test — tests BOTH halves of "works on 20.04 -> 26.04":
 #
-#   SOURCE : run THIS repo's scripts/setup-venv.sh (uv + standalone CPython 3.13
+#   SOURCE : run THIS repo's scripts/setup-venv.sh (uv + standalone CPython 3.12
 #            + host-matched wxPython wheel) and verify `import wx` + `wx.App()`
 #            under a headless X server. This exercises the dev/from-source path,
 #            which uses each container's OWN system GLib.
