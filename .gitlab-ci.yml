@@ -1,87 +1,40 @@
 # GitLab CI for the PuckUtilityApp Linux installer.
 #
-# Branch push: build the installer + debs, then run the cross-Ubuntu tests
-#   (20.04 -> 26.04) in clean ubuntu:XX.04 containers. Test here, BEFORE tagging.
-# Tag push:    build the installer + debs and keep them (expire never). No tests:
-#   the tagged commit already passed on its branch.
+# Tag push (release-vX.Y.Z, optionally -suffix) only: build the .run installer + debs and keep it (expire never).
+# The cross-Ubuntu tests are NOT run here: run them before tagging (see
+# CONTRIBUTING.md); they need a host kernel >= 5.6 for the 26.04 container.
 #
 # Runner setup (once, on the gitlab-runner machine):
 #   docker build -t burt/puck-deb-u20 -f scripts/Dockerfile.builder .
 #   The image is local only, so the runner's docker pull_policy must allow it
 #   (if-not-present), as for burt/firmware-cmake-u20. Rebuild the image after a
 #   Python / wxPython / Dockerfile.builder change; requirements.txt changes are
-#   synced by the build job itself.
+#   synced by the job itself.
 # GitLab setup (once):
 #   p4core and stm32 > Settings > CI/CD > Job token permissions: add this
 #   project, so the job token can clone the p4core submodule and download the
 #   firmware (scripts/fetch-firmware.sh).
 
-stages:
-  - build
-  - test
-  - deploy
-
 variables:
   GIT_SUBMODULE_STRATEGY: recursive
 
-default:
+release:
+  image: burt/puck-deb-u20
   tags:
     - docker
-
-build-installer:
-  stage: build
-  image: burt/puck-deb-u20
+  rules:
+    - if: $CI_COMMIT_TAG
   script:
+    # The tag must name the version the app reports, and not a DEV build.
+    - VERSION=$(grep -m1 '^__version__' puckutility/__init__.py | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+    - 'case "$CI_COMMIT_TAG" in "release-v$VERSION"|"release-v$VERSION"-*) ;; *) echo "ERROR: tag $CI_COMMIT_TAG does not match __version__ $VERSION (expected release-v$VERSION[-suffix])"; exit 1 ;; esac'
+    - '! grep -m1 SetTitle puckutility/gui/app.py | grep -qiE "\bDEV\b" || { echo "ERROR: the window title still says DEV"; exit 1; }'
     - uv pip install -q --python /opt/puckbuild -r requirements.txt
     - scripts/fetch-firmware.sh
     - VENV_ROOT=/opt/puckbuild bash scripts/build-linux-installer.sh --installer
-  artifacts:
-    paths:
-      - build/*-installer.run
-      - build/deb/*.deb
-    expire_in: 1 week
-
-# SOURCE half: the dev venv (scripts/setup-venv.sh) on each Ubuntu's own GTK.
-xtest-source:
-  stage: test
-  image: ubuntu:${UBUNTU}
-  needs: []
-  parallel:
-    matrix:
-      - UBUNTU: ["20.04", "22.04", "24.04", "26.04"]
-  script:
-    - bash scripts/xtest/source.sh .
-  rules:
-    - if: $CI_COMMIT_TAG == null
-
-# DEB half: the shipped installer, installed + launched on each Ubuntu.
-xtest-deb:
-  stage: test
-  image: ubuntu:${UBUNTU}
-  needs: [build-installer]
-  variables:
-    GIT_SUBMODULE_STRATEGY: none
-  parallel:
-    matrix:
-      - UBUNTU: ["20.04", "22.04", "24.04", "26.04"]
-  script:
-    - bash scripts/xtest/deb.sh build/*-installer.run
-  rules:
-    - if: $CI_COMMIT_TAG == null
-
-release:
-  stage: deploy
-  image: burt/puck-deb-u20
-  needs: [build-installer]
-  variables:
-    GIT_STRATEGY: none
-  script:
-    - ls -l build/*-installer.run build/deb/*.deb
   artifacts:
     name: "puckutility-linux-${CI_COMMIT_TAG}"
     paths:
       - build/*-installer.run
       - build/deb/*.deb
     expire_in: never
-  rules:
-    - if: $CI_COMMIT_TAG

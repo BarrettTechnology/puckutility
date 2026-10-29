@@ -288,36 +288,10 @@ Notes:
 
 ## Testing across Ubuntu versions
 
-`scripts/test-cross-ubuntu.sh` validates both the dev environment and the
-shipped installer on every supported Ubuntu release. For each version it spins
-up a clean container, runs this repo's own `scripts/setup-venv.sh`, then
-verifies the GUI stack actually initialises (`import wx` + `wx.App()` under a
-headless X server) and that every declared dependency imports. It also builds
-the `.run` installer once, runs it unattended in each container, checks the
-CAN adapter options (select, deselect, uninstall) and launches the installed
-app. It exercises the *real* scripts, so run it whenever you touch
-`setup-venv.sh` / `requirements.txt` / the installer, or when a new Ubuntu
-ships.
-
-Requires Docker, with your user in the `docker` group:
-```
-sudo usermod -aG docker $USER
-```
-then log out and back in (or prefix the commands below with `sg docker -c '…'`
-to apply the group without re-logging in).
-
-```
-scripts/test-cross-ubuntu.sh                 # 20.04 22.04 24.04 26.04
-scripts/test-cross-ubuntu.sh 24.04 26.04     # a subset / a new release
-```
-
-Nothing is installed on your host and nothing pops up on screen — it all runs
-headless inside the containers, independent of your local `.venv`. The first run
-pulls the base images and downloads the standalone Python 3.12 + wxPython /
-scientific wheels (cached under `/tmp` afterward, shared between puckutility and
-pucktuner), so it takes a few minutes; later runs are fast. It prints a
-per-release `PASS`/`FAIL` summary and exits non-zero if any release fails — on a
-failure, scroll up to that release's banner for the Python traceback.
+`scripts/test-cross-ubuntu.sh` checks the developer setup and the shipped
+package on Ubuntu 20.04 → 26.04. Run it before every release: see
+[CONTRIBUTING.md](CONTRIBUTING.md) for its prerequisites and the release
+checklist.
 
 ## Puck Firmware
 Download the latest Puck Firmware at [barrett.com/puck-firmware](https://barrett.com/puck-firmware)  
@@ -331,7 +305,7 @@ For technical support, email support@barrett.com.
 * The Factory menu (J-Link flashing and board tests), hidden for now
 
 ## Contributing
-Pull requests are welcome!
+Pull requests are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Authors and acknowledgment
 Special thanks to Bailey Noack and Brian Zenowich for their contributions to this code!
