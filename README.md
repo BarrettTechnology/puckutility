@@ -204,7 +204,7 @@ then log out and back in (or prefix the build commands below with
 
 The build runs inside a pinned Ubuntu 20.04 container so the result runs on
 Ubuntu 20.04 → 26.04+ regardless of your host OS. The first build also builds
-the `puck-deb-u20` image (shared with pucktuner) — this downloads the prebuilt
+the `burt/puck-deb-u20` image (shared with pucktuner) — this downloads the prebuilt
 wxPython wheel (no compilation) and takes a few minutes. Each build installs
 `requirements.txt` into it first, so `--rebuild-docker` is only needed after a
 Python, wxPython or `Dockerfile.builder` change. Later builds use `--docker`

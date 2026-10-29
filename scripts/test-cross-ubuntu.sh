@@ -72,26 +72,8 @@ for ver in "${VERSIONS[@]}"; do
     if docker run --rm \
             -v "$REPO:/src:ro" \
             -v "$UV_CACHE:/root/.cache/uv" \
-            -e UV_LINK_MODE=copy -e DEBIAN_FRONTEND=noninteractive \
-            "ubuntu:${ver}" bash -euo pipefail -c '
-                apt-get update -qq
-                apt-get install -y -qq curl ca-certificates xvfb >/dev/null
-                mkdir -p /work/scripts
-                cp /src/requirements.txt /work/
-                cp -a /src/scripts/. /work/scripts/
-                cd /work
-                bash scripts/setup-venv.sh
-                xvfb-run -a .venv/bin/python - <<PY
-import importlib, wx
-app = wx.App()
-print("  wx", wx.__version__, "App() OK")
-for m in "canopen can msgpack numpy pandas matplotlib PIL fontTools PyInstaller".split():
-    try:
-        importlib.import_module(m); print("  import", m, "OK")
-    except ModuleNotFoundError:
-        pass
-PY
-            '; then
+            -e UV_LINK_MODE=copy \
+            "ubuntu:${ver}" bash /src/scripts/xtest/source.sh /src; then
         SRC["$ver"]=PASS
     else
         SRC["$ver"]=FAIL
@@ -100,9 +82,8 @@ PY
 done
 
 # ===========================================================================
-# DEB half: build the package once, then install + run --help on each version.
-# `<binary> --help` runs `import wx` (the crash point for bundled-lib clashes)
-# and exits before the GUI/CAN, so it needs no display or hardware.
+# DEB half: build the package once, then install + launch it on each version
+# (scripts/xtest/deb.sh). A failed build fails every version.
 # ===========================================================================
 if [ "$SOURCE_ONLY" = false ]; then
     echo "==================  building installer (once)  =================="
@@ -111,64 +92,16 @@ if [ "$SOURCE_ONLY" = false ]; then
         DEB_REL="$(ls -t build/*-installer.run 2>/dev/null | head -1)"
     fi
     if [ -z "$DEB_REL" ] || [ ! -f "$DEB_REL" ]; then
-        echo "ERROR: installer build failed / not found — marking DEB tests SKIP" >&2
-        for ver in "${VERSIONS[@]}"; do DEB["$ver"]=SKIP; done
+        echo "ERROR: installer build failed / not found — marking DEB tests FAIL" >&2
+        for ver in "${VERSIONS[@]}"; do DEB["$ver"]=FAIL; done
     else
         echo "Built: $DEB_REL"
         for ver in "${VERSIONS[@]}"; do
             echo "==================  DEB  ubuntu:${ver}  =================="
-            # Run ONLY the installer in a bare container: apt resolves and pulls
-            # the packages' declared Depends (the GTK/X11 runtime stack,
-            # can-utils, dfu-util) from the repo. This VALIDATES that the debs are
-            # self-sufficient on a minimal system -- if a runtime lib is missing
-            # from Depends, the launch below crashes and names it.
+            # scripts/xtest/deb.sh says what is checked.
             if docker run --rm \
                     -v "$REPO:/src:ro" \
-                    -e DEBIAN_FRONTEND=noninteractive \
-                    "ubuntu:${ver}" bash -euo pipefail -c "
-                        has() { dpkg-query -W -f='\${Status}' \"\$1\" 2>/dev/null | grep -q 'ok installed'; }
-                        R='/src/${DEB_REL}'
-                        echo '  installer: both adapters'
-                        bash \"\$R\" --yes >/tmp/inst.out 2>&1 || { cat /tmp/inst.out; exit 1; }
-                        for f in /usr/lib/udev/rules.d/60-can.rules /usr/lib/udev/rules.d/61-can-up.rules \\
-                                 /usr/lib/udev/rules.d/90-canable.rules /usr/lib/systemd/system/can-up@.service \\
-                                 /etc/NetworkManager/conf.d/99-puck-can.conf /usr/bin/dfu-util /usr/bin/candump; do
-                            [ -e \"\$f\" ] || { echo \"  missing \$f\"; exit 1; }
-                        done
-                        echo '  installer: deselect Peak'
-                        bash \"\$R\" --yes --no-peak >/tmp/inst.out 2>&1 || { cat /tmp/inst.out; exit 1; }
-                        ! has puck-can-peak || { echo '  puck-can-peak still installed'; exit 1; }
-                        has puck-can-canable || { echo '  puck-can-canable was removed'; exit 1; }
-                        echo '  installer: re-add Peak'
-                        bash \"\$R\" --yes >/tmp/inst.out 2>&1 || { cat /tmp/inst.out; exit 1; }
-                        has puck-can-peak || { echo '  puck-can-peak not reinstalled'; exit 1; }
-                        apt-get install -y -qq xvfb >/dev/null
-                        BIN=\$(ls /usr/share/*/*App 2>/dev/null | head -1)
-                        [ -n \"\$BIN\" ] || { echo 'installed binary not found'; exit 1; }
-                        echo \"  launching under xvfb: \$BIN\"
-                        # The app has no --help short-circuit; it starts the GUI.
-                        # Launch under a virtual display and time-box it: a clean
-                        # exit (rc 0) or still-running-at-timeout (rc 124) both
-                        # mean every bundled+system lib loaded and wx.App() came
-                        # up. An ImportError / symbol-version clash crashes in
-                        # <2s with some other non-zero rc -> real failure.
-                        set +e
-                        timeout 20 xvfb-run -a \"\$BIN\" >/tmp/run.out 2>&1
-                        rc=\$?
-                        set -e
-                        if [ \"\$rc\" = 0 ] || [ \"\$rc\" = 124 ]; then
-                            echo \"  launch OK (rc=\$rc: libs loaded, wx.App came up)\"
-                        else
-                            echo \"  launch FAILED (rc=\$rc) -- binary output:\"; cat /tmp/run.out; exit 1
-                        fi
-                        echo '  installer: uninstall'
-                        bash \"\$R\" --yes --uninstall >/tmp/inst.out 2>&1 || { cat /tmp/inst.out; exit 1; }
-                        for p in puckutilityapp puck-can-common puck-can-peak puck-can-canable; do
-                            ! has \"\$p\" || { echo \"  \$p still installed\"; exit 1; }
-                        done
-                        [ ! -e /etc/NetworkManager/conf.d/99-puck-can.conf ] || { echo '  NM conf left behind'; exit 1; }
-                        echo '  uninstall OK'
-                    "; then
+                    "ubuntu:${ver}" bash /src/scripts/xtest/deb.sh "/src/${DEB_REL}"; then
                 DEB["$ver"]=PASS
             else
                 DEB["$ver"]=FAIL

@@ -17,7 +17,8 @@ ENV PATH=/usr/local/bin:$PATH
 # --no-install-recommends is essential: without it libgtk-3-0's recommends chain
 # drags in a desktop (~1000 packages, emacs, evolution-data-server...).
 # Build tools: curl/ca-certificates for the uv installer; binutils for the
-# objdump/strip PyInstaller runs; zip for the release archive.
+# objdump/strip PyInstaller runs; zip for the release archive; unzip for
+# puckutility's scripts/fetch-firmware.sh.
 # Runtime libs: exactly the DT_NEEDED set of the wx wheel's core/base/adv/aui/
 # html/stc/xml/net libraries (readelf on wxPython-4.2.2 ubuntu-20.04 cp312).
 # PyInstaller copies these into the bundle, so they must exist here. Not
@@ -27,7 +28,7 @@ ENV PATH=/usr/local/bin:$PATH
 # symbolic icons render (see the loader step in build-linux-installer.sh).
 RUN apt-get update -qq && \
     apt-get install -y -qq --no-install-recommends \
-        curl ca-certificates binutils zip \
+        curl ca-certificates binutils zip unzip \
         libgtk-3-0 libgdk-pixbuf2.0-bin librsvg2-common \
         libsecret-1-0 libnotify4 libsdl2-2.0-0 \
         libxxf86vm1 libxtst6 libsm6 libxkbcommon0 \
@@ -55,4 +56,7 @@ RUN uv pip install --python /opt/puckbuild \
     chmod -R a+rX /opt/uv-python && chmod -R a+rwX /opt/puckbuild
 
 ENV UV_CACHE_DIR=/tmp/uv-cache
+# Every later `uv pip install` in this image (the build's re-sync, CI) finds the
+# prebuilt wxPython wheel instead of compiling the PyPI source package.
+ENV UV_FIND_LINKS=https://extras.wxpython.org/wxPython4/extras/linux/gtk3/ubuntu-20.04/
 ENV VENV_ROOT=/opt/puckbuild

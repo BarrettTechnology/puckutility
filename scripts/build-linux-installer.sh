@@ -28,7 +28,7 @@ done
 # reproducible glibc/GTK linkage. Ensures the binary runs on Ubuntu >= 20.04
 # regardless of the dev machine's OS.
 #
-# The builder image (puck-deb-u20, shared with the other app; override with
+# The builder image (burt/puck-deb-u20, shared with the other app; override with
 # BUILDER_IMAGE) holds the system libs, CPython 3.12 and the prebuilt wxPython
 # wheel. This repo's requirements.txt is installed into it on every run, so
 # --rebuild-docker is only needed after a Python/wxPython or Dockerfile change.
@@ -38,7 +38,7 @@ if [ "$USE_DOCKER" = true ]; then
         exit 1
     fi
 
-    IMAGE="${BUILDER_IMAGE:-puck-deb-u20:latest}"
+    IMAGE="${BUILDER_IMAGE:-burt/puck-deb-u20:latest}"
 
     if [ "$REBUILD_DOCKER" = true ] || ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
         echo "Building Docker builder image..."
