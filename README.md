@@ -230,18 +230,30 @@ after adding new imports.
 ./scripts/build-linux-installer.sh --docker --installer
 ```
 Output: `build/PuckUtilityApp-lin-vX.Y.Z-installer.run`, a
-self-extracting installer. On the target machine:
+self-extracting installer. It is not a different app format: it is a short
+shell header followed by a tar.gz of `install.sh` and the same `.deb`
+packages that `--deb` builds (`puckutilityapp`, `puck-can-common`,
+`puck-can-peak`, `puck-can-canable`). When run, it checks the payload's
+SHA-256 (a truncated download stops with "damaged; download it again"),
+unpacks it to a temporary folder and runs `install.sh`, which installs the
+debs with `apt-get` so their dependencies come in too. On the target machine:
 ```
 sh ./PuckUtilityApp-lin-vX.Y.Z-installer.run
 ```
 It asks which CAN adapters to support (Peak PCAN-USB, CANable; desktop or
-text questions), asks for sudo / pkexec, and installs the app plus the
+text questions), asks for the password (sudo in a terminal, a pkexec dialog
+when double-clicked without one), and installs the app plus the
 `puck-can-common` / `puck-can-peak` / `puck-can-canable` packages (udev
 rules, automatic `can0`, `can1`, … bring-up, `dfu-util` for CANable). It
 installs `linux-modules-extra` when the kernel lacks the adapter driver.
 Run it again to change the adapter selection. Options: `--peak` /
 `--no-peak`, `--canable` / `--no-canable`, `-y`, `--text`, `--dry-run`,
-`--uninstall` (`--help` for all).
+`--uninstall` (`--help` for all). `--extract DIR` only unpacks the debs and
+`install.sh` into `DIR`.
+
+Give end users the `.run`. Installing the app deb by itself installs only the
+app: no CAN interface bring-up and no adapter support unless the
+`puck-can-*` debs are installed too. pucktuner ships only a `.deb`.
 
 **.deb packages only:**
 ```
