@@ -77,7 +77,7 @@ else
     PY=""
 fi
 
-VERSION=v$(grep -m1 '^__version__' puckutility/__init__.py | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+VERSION=v$(grep -m1 '^__version__' puckutility/version.py | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
 TITLE_LINE=$(grep -m1 'SetTitle' puckutility/gui/app.py)
 if echo "$TITLE_LINE" | grep -qiE '\bDEV\b'; then
     VERSION="${VERSION}-dev"

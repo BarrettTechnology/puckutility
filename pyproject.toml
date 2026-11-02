@@ -30,7 +30,7 @@ puckutility = "puckutility.main:main"
 puckutility-gui = "puckutility.main:gui_main"
 
 [tool.setuptools.dynamic]
-version = {attr = "puckutility.__version__"}
+version = {attr = "puckutility.version.__version__"}
 
 [tool.setuptools.packages.find]
 include = ["puckutility*"]

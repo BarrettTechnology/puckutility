@@ -355,7 +355,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self._set_windows_icon(resource_path(os.path.join('images', 'BarrettIcon.ico')))
         else:
             self.SetIcon(wx.Icon(resource_path(os.path.join('images', 'BarrettIcon.png'))))
-        self.SetTitle("Puck Utility - v{} - DEV".format(__version__))
+        self.SetTitle("Puck Utility v{} - DEV".format(__version__))
         self.button_6.SetBackgroundColour(self.gray) # Initialize with gray button in idle
         self.Bind(wx.EVT_CHAR_HOOK, self.onKeyDown)  # EVT_CHAR_HOOK fires before focused child consumes the key
         self.Bind(wx.EVT_KEY_UP, self.onKeyUp)
@@ -3172,8 +3172,11 @@ def main(argv=None):
     """Launch the GUI.  --touchscreen runs it fullscreen; --can preselects a
     port (e.g. vcan0 for the SIL simulator)."""
     import argparse
-    parser = argparse.ArgumentParser(prog='puckutility-gui',
-                                     description='Puck Utility (GUI)')
+    parser = argparse.ArgumentParser(
+        prog='puckutility-gui',
+        description='Puck Utility v{} (GUI)'.format(__version__))
+    parser.add_argument('--version', action='version',
+                        version='%(prog)s v' + __version__)
     parser.add_argument('--can', metavar='DEVICE',
                         help='preselect this CAN device')
     parser.add_argument('--touchscreen', action='store_true',

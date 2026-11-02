@@ -8,4 +8,4 @@
   gui          the wx GUI (``puckutility`` with no command)
 """
 
-__version__ = '1.3.0'
+from .version import __version__  # noqa: F401

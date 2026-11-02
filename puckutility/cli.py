@@ -155,8 +155,9 @@ def _cmd_flash_canable(ctx):
 def build_parser():
     parser, sub = cli.make_parser(
         'puckutility',
-        'Flash, configure and calibrate P4 pucks. With no command, starts '
-        'the GUI.', version=__version__)
+        'puckutility v{}: flash, configure and calibrate P4 pucks. With no '
+        'command, starts the GUI.'.format(__version__),
+        version='v' + __version__)
     sub.add_parser('gui', help='start the GUI (the default)')
     cli.add_common_commands(
         sub, only=('scan', 'flash', 'config', 'set-id', 'reset'))

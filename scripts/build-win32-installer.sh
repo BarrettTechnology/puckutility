@@ -67,7 +67,7 @@ if [ ! -d "$FIRMWARE_DIR" ]; then
     exit 1
 fi
 
-VERSION=v$(grep -m1 '^__version__' puckutility/__init__.py | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+VERSION=v$(grep -m1 '^__version__' puckutility/version.py | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
 APP_VERSION="${VERSION#v}"
 WIN="build/win"
 OUTDIR="${WIN}/PuckUtilityApp-win32-${VERSION}"
