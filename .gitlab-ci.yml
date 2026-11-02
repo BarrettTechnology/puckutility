@@ -11,9 +11,10 @@
 #   Python / wxPython / Dockerfile.builder change; requirements.txt changes are
 #   synced by the job itself.
 # GitLab setup (once):
-#   p4core and stm32 > Settings > CI/CD > Job token permissions: add this
-#   project, so the job token can clone the p4core submodule and download the
-#   firmware (scripts/fetch-firmware.sh).
+#   p4core > Settings > CI/CD > Job token permissions: add this project, so
+#   the job token can clone the p4core submodule.
+# The installer ships a firmware/ folder holding only a README.txt (the
+# technician adds .ebin files after installing), so no firmware is fetched here.
 
 variables:
   GIT_SUBMODULE_STRATEGY: recursive
@@ -30,7 +31,6 @@ release:
     - 'case "$CI_COMMIT_TAG" in "release-v$VERSION"|"release-v$VERSION"-*) ;; *) echo "ERROR: tag $CI_COMMIT_TAG does not match __version__ $VERSION (expected release-v$VERSION[-suffix])"; exit 1 ;; esac'
     - '! grep -m1 SetTitle puckutility/gui/app.py | grep -qiE "\bDEV\b" || { echo "ERROR: the window title still says DEV"; exit 1; }'
     - uv pip install -q --python /opt/puckbuild -r requirements.txt
-    - scripts/fetch-firmware.sh
     - VENV_ROOT=/opt/puckbuild bash scripts/build-linux-installer.sh --installer
   artifacts:
     name: "puckutility-linux-${CI_COMMIT_TAG}"

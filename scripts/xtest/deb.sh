@@ -35,6 +35,14 @@ has puck-can-peak || { echo '  puck-can-peak not reinstalled'; exit 1; }
 apt-get install -y -qq xvfb >/dev/null
 BIN=$(ls /usr/share/*/*App 2>/dev/null | head -1)
 [ -n "$BIN" ] || { echo 'installed binary not found'; exit 1; }
+# The firmware folder beside the binary, writable by every user, holding the
+# README.txt that says where to get the firmware.
+FW="$(dirname "$BIN")/firmware"
+[ -d "$FW" ] && [ "$(stat -c %a "$FW")" = 777 ] \
+    || { echo "  $FW missing or not world-writable"; exit 1; }
+grep -q 'https://barrett.com/puck-firmware' "$FW/README.txt" \
+    || { echo "  $FW/README.txt missing"; exit 1; }
+echo "  $FW present, mode 777, README.txt"
 echo "  launching under xvfb: $BIN"
 # The app has no --help short-circuit; it starts the GUI. Time-box it under a
 # virtual display: a clean exit (rc 0) or still-running-at-timeout (rc 124) both

@@ -20,7 +20,8 @@
 #                 then Program Files); a wrapper script works for wine
 #   SIGNTOOL      sign command for the setup + uninstaller, Inno style, e.g.
 #                 'signtool sign /fd sha256 /a /tr http://timestamp.digicert.com /td sha256 $f'
-#   FIRMWARE_DIR  puck firmware folder to ship (default: firmware/)
+#   FIRMWARE_DIR  puck firmware to pre-fill the app's firmware folder with
+#                 (default: the folder ships empty)
 #
 # Outputs (build/win/):
 #   PuckUtilityApp-win32-vX.Y.Z/           the app folder
@@ -60,10 +61,10 @@ else
 fi
 echo "Using python: ${PY[*]}"
 
-FIRMWARE_DIR="${FIRMWARE_DIR:-firmware}"
-if [ ! -d "$FIRMWARE_DIR" ]; then
-    echo "ERROR: firmware folder '$FIRMWARE_DIR' not found -- the release ships the" >&2
-    echo "puck firmware that system-config.ini names. Create it or set FIRMWARE_DIR." >&2
+# The app ships a firmware folder holding only a README.txt for the technician's .ebin files
+# (the installer makes it user-writable); FIRMWARE_DIR pre-fills it.
+if [ -n "${FIRMWARE_DIR:-}" ] && [ ! -d "$FIRMWARE_DIR" ]; then
+    echo "ERROR: FIRMWARE_DIR '$FIRMWARE_DIR' not found." >&2
     exit 1
 fi
 
@@ -95,7 +96,8 @@ mkdir -p "${OUTDIR}/puckutility" "${OUTDIR}/p4core" "${OUTDIR}/firmware"
 cp -r puckutility/data "${OUTDIR}/puckutility/"
 cp -r p4core/data "${OUTDIR}/p4core/"
 cp -r config "${OUTDIR}/"
-cp -r "${FIRMWARE_DIR}/." "${OUTDIR}/firmware/"
+[ -z "${FIRMWARE_DIR:-}" ] || cp -r "${FIRMWARE_DIR}/." "${OUTDIR}/firmware/"
+printf 'Get the latest firmware from https://barrett.com/puck-firmware\r\n' > "${OUTDIR}/firmware/README.txt"
 cp system-config.ini "${OUTDIR}/"
 cp PuckUtilityAppGuide.pdf "${OUTDIR}/"
 

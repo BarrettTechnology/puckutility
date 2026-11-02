@@ -42,11 +42,14 @@ and reboot:
 sudo apt install --install-recommends linux-generic-hwe-20.04
 ```
 
-**5. The puck firmware** — every build ships the firmware that
-`system-config.ini` names, from `firmware/`. Fetch it from the stm32 tag
+**5. The puck firmware (optional)** — every build ships a user-writable `firmware/`
+folder holding only a `README.txt` that says where to get the firmware; technicians add the `.ebin` files after installing. To
+pre-fill it for a particular delivery, point `FIRMWARE_DIR` at a folder of
+firmware. `scripts/fetch-firmware.sh` fills `firmware/` from the stm32 tag
 pipeline with a GitLab personal access token (scope `read_api`):
 ```
 GITLAB_TOKEN=<token> scripts/fetch-firmware.sh
+FIRMWARE_DIR=firmware scripts/build-linux-installer.sh --docker --installer
 ```
 It takes the tag `v<fw_version>` from `system-config.ini` (override with
 `FIRMWARE_TAG=v4.3.5`) and fails if a file `system-config.ini` names is missing.

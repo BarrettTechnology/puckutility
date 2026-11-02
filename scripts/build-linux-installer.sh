@@ -47,22 +47,38 @@ if [ "$USE_DOCKER" = true ]; then
         docker build "${DOCKER_BUILD_FLAGS[@]}" -t "$IMAGE" -f scripts/Dockerfile.builder .
     fi
 
+    # FIRMWARE_DIR (optional) may be anywhere on the host: mount it read-only.
+    FW_ARGS=()
+    if [ -n "${FIRMWARE_DIR:-}" ]; then
+        [ -d "$FIRMWARE_DIR" ] || { echo "ERROR: FIRMWARE_DIR '$FIRMWARE_DIR' not found." >&2; exit 1; }
+        FW_ARGS=(-v "$(cd "$FIRMWARE_DIR" && pwd):/firmware:ro" -e FIRMWARE_DIR=/firmware)
+    fi
     docker run --rm \
         --user "$(id -u):$(id -g)" \
         -v "$(pwd):/build" \
+        "${FW_ARGS[@]}" \
         -w /build \
         "$IMAGE" \
         bash -c "uv pip install -q --python /opt/puckbuild -r requirements.txt && VENV_ROOT=/opt/puckbuild bash scripts/build-linux-installer.sh --${FORMAT}"
     exit 0
 fi
 
-# The release ships the puck firmware that system-config.ini names; check
-# before the (slow) PyInstaller run rather than failing at the copy after it.
-FIRMWARE_DIR="${FIRMWARE_DIR:-firmware}"
-if [ ! -d "$FIRMWARE_DIR" ]; then
-    echo "ERROR: firmware folder '$FIRMWARE_DIR' not found. Create it or set FIRMWARE_DIR." >&2
+# The app ships an empty firmware/ folder for the technician's .ebin files.
+# FIRMWARE_DIR (optional) pre-fills it; check it before the (slow) PyInstaller
+# run rather than failing at the copy after it.
+if [ -n "${FIRMWARE_DIR:-}" ] && [ ! -d "$FIRMWARE_DIR" ]; then
+    echo "ERROR: FIRMWARE_DIR '$FIRMWARE_DIR' not found." >&2
     exit 1
 fi
+# firmware/ under $1 with a README.txt saying where to get the firmware,
+# filled from FIRMWARE_DIR when set, writable by every user (the deb keeps the
+# mode: dpkg-deb --root-owner-group only changes owners).
+ship_firmware_dir() {
+    mkdir -p "$1/firmware"
+    [ -z "${FIRMWARE_DIR:-}" ] || cp -r "${FIRMWARE_DIR}/." "$1/firmware/"
+    echo 'Get the latest firmware from https://barrett.com/puck-firmware' > "$1/firmware/README.txt"
+    chmod 0777 "$1/firmware"
+}
 
 # VENV_ROOT is overridden to /opt/puckbuild when invoked from --docker above.
 # Defaults to the repo-root .venv created by scripts/setup-venv.sh.
@@ -220,7 +236,7 @@ if [ "$FORMAT" = "pyinstaller" ]; then
     cp scripts/install-ubuntu.sh   "${OUTDIR}/"
     cp PuckUtilityApp.desktop      "${OUTDIR}/"
     cp PuckUtilityAppGuide.pdf     "${OUTDIR}/"
-    mkdir -p "${OUTDIR}/firmware" && cp -r "${FIRMWARE_DIR}/." "${OUTDIR}/firmware/"
+    ship_firmware_dir "${OUTDIR}"
 
     cd build/lin
     zip -r "../PuckUtilityApp-lin-${VERSION}.zip" "PuckUtilityApp-lin-${VERSION}"
@@ -258,7 +274,7 @@ elif [ "$FORMAT" = "deb" ] || [ "$FORMAT" = "installer" ]; then
     cp -r config/        "${APP_DIR}/"
     cp system-config.ini "${APP_DIR}/"
     cp scripts/reset_can.sh "${APP_DIR}/"
-    mkdir -p "${APP_DIR}/firmware" && cp -r "${FIRMWARE_DIR}/." "${APP_DIR}/firmware/"
+    ship_firmware_dir "${APP_DIR}"
 
     # reset_can.sh at /usr/bin so the old udev rule path and manual invocation
     # both work (script uses sudo internally for manual use).

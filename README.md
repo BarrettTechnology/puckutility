@@ -199,8 +199,10 @@ the CAN backends, the object dictionary, the actuator calibration) is in the
 
 ## Building a release
 
-Every build ships the puck firmware that `system-config.ini` names, from
-`firmware/` (or `FIRMWARE_DIR`); the build stops early if it is missing.
+Every build ships a `firmware/` folder that every user can write to, holding
+only a `README.txt` that says where to get the firmware; add the `.ebin`
+files after installing (see [Puck Firmware](#puck-firmware)).
+Set `FIRMWARE_DIR` to a folder of firmware to pre-fill it.
 
 ### Linux
 
@@ -291,7 +293,8 @@ Notes:
   `Scripts/python.exe` itself (or set `PYTHON`).
 - Options: `--no-bundle-peak`, `--refresh-drivers` (re-download the PEAK
   driver), `--no-setup` (stop after the zip). Environment: `ISCC` (the Inno
-  Setup compiler), `SIGNTOOL` (sign the setup), `FIRMWARE_DIR`.
+  Setup compiler), `SIGNTOOL` (sign the setup), `FIRMWARE_DIR` (pre-fill
+  `firmware/`).
 - An internet connection is needed the first time (the PEAK driver is cached
   afterwards).
 
@@ -305,6 +308,9 @@ checklist.
 ## Puck Firmware
 Download the latest Puck Firmware at [barrett.com/puck-firmware](https://barrett.com/puck-firmware)  
 Place the .ebin files in `firmware/` (see [Working folders](#working-folders)).
+In an installed app that is the `firmware/` folder beside the program:
+`/usr/share/puckutilityapp/firmware` on Linux, `firmware\` in the install
+folder on Windows.
 
 ## Support
 For technical support, email support@barrett.com.
