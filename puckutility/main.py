@@ -36,14 +36,43 @@ LEGACY_OPS = ('--scan', '--info', '--flash', '--config', '--calibrate',
               '--flash-canable')
 
 
+def _gui_install_command():
+    """The pip command that adds the GUI to this install.
+
+    PyPI has no Linux wxPython wheel: plain pip would compile wxWidgets (20+
+    minutes, and it fails without the GTK headers).  wxPython publishes
+    wheels per Ubuntu release, mapped as scripts/setup-pip.sh does.
+    """
+    if not sys.platform.startswith('linux'):
+        return 'pip install ".[gui]"'
+    version = ''
+    try:
+        with open('/etc/os-release') as fh:
+            for line in fh:
+                if line.startswith(('UBUNTU_VERSION_ID=', 'VERSION_ID=')):
+                    version = line.split('=', 1)[1].strip().strip('"')
+                    if line.startswith('UBUNTU_'):
+                        break
+    except OSError:
+        pass
+    major = version.split('.')[0]
+    base = {'20': '20.04', '21': '20.04',
+            '22': '22.04', '23': '22.04'}.get(major, '24.04')
+    return ('pip install --only-binary wxPython --find-links '
+            'https://extras.wxpython.org/wxPython4/extras/linux/gtk3/'
+            'ubuntu-{}/ ".[gui]"'.format(base))
+
+
 def gui_main(argv=None):
     try:
         import wx  # noqa: F401 — only the GUI needs it
     except ImportError as exc:
         sys.stderr.write(
-            'puckutility: the GUI needs wxPython ({}); install it with\n'
-            '    pip install "puckutility[gui]"\n'
-            'The commands run without it: puckutility --help\n'.format(exc))
+            'puckutility: the GUI needs wxPython ({}); from the puckutility checkout,\n'
+            'install it with\n'
+            '    {}\n'
+            'The commands run without it: puckutility --help\n'.format(
+                exc, _gui_install_command()))
         return 2
     from .gui.app import main as run_gui
     return run_gui(argv)

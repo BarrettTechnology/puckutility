@@ -5,6 +5,10 @@
 #            + host-matched wxPython wheel) and verify `import wx` + `wx.App()`
 #            under a headless X server. This exercises the dev/from-source path,
 #            which uses each container's OWN system GLib.
+#   PIP    : pip-install the checkout the two ways the README documents
+#            (scripts/xtest/pip.sh): the command line alone must not pull in
+#            wxPython and must run without it; ".[gui]" with the prebuilt
+#            wxPython wheel for that Ubuntu must launch the GUI.
 #   DEB    : build the installer (.run wrapping the PyInstaller-frozen app deb,
 #            built on Ubuntu 20.04, and the puck-can-* adapter debs), run it
 #            unattended in each clean container, check the CAN adapter options
@@ -20,15 +24,18 @@
 #   scripts/test-cross-ubuntu.sh                 # 20.04 22.04 24.04 26.04
 #   scripts/test-cross-ubuntu.sh 24.04 26.04     # a subset / a new release
 #   scripts/test-cross-ubuntu.sh --source-only   # skip the (slower) .deb half
+#   scripts/test-cross-ubuntu.sh --no-pip        # skip the pip-install half
 set -uo pipefail
 cd "$(dirname "$0")/.."
 REPO="$(pwd)"
 
 SOURCE_ONLY=false
+NO_PIP=false
 VERSIONS=()
 for a in "$@"; do
     case "$a" in
         --source-only) SOURCE_ONLY=true ;;
+        --no-pip) NO_PIP=true ;;
         *) VERSIONS+=("$a") ;;
     esac
 done
@@ -62,7 +69,7 @@ colorize() {  # $1 = PASS|FAIL|SKIP -> the same word wrapped in its color
 UV_CACHE="${TMPDIR:-/tmp}/puck-xtest-uvcache"
 mkdir -p "$UV_CACHE"
 
-declare -A SRC DEB
+declare -A SRC DEB PIP
 
 # ===========================================================================
 # SOURCE half: setup-venv.sh + import wx + wx.App() in each clean container.
@@ -80,6 +87,25 @@ for ver in "${VERSIONS[@]}"; do
     fi
     echo "  ==> SOURCE ubuntu:${ver}: $(colorize "${SRC[$ver]}")"
 done
+
+# ===========================================================================
+# PIP half: the CLI-only and the GUI pip installs (scripts/xtest/pip.sh).
+# ===========================================================================
+if [ "$NO_PIP" = false ]; then
+    for ver in "${VERSIONS[@]}"; do
+        echo "==================  PIP  ubuntu:${ver}  =================="
+        if docker run --rm \
+                -v "$REPO:/src:ro" \
+                -v "$UV_CACHE:/root/.cache/uv" \
+                -e UV_LINK_MODE=copy \
+                "ubuntu:${ver}" bash /src/scripts/xtest/pip.sh /src; then
+            PIP["$ver"]=PASS
+        else
+            PIP["$ver"]=FAIL
+        fi
+        echo "  ==> PIP ubuntu:${ver}: $(colorize "${PIP[$ver]}")"
+    done
+fi
 
 # ===========================================================================
 # DEB half: build the package once, then install + launch it on each version
@@ -116,13 +142,14 @@ echo
 echo "==============================  summary  =============================="
 rc=0
 for ver in "${VERSIONS[@]}"; do
-    s="${SRC[$ver]:-FAIL}"; d="${DEB[$ver]:-SKIP}"
+    s="${SRC[$ver]:-FAIL}"; p="${PIP[$ver]:-SKIP}"; d="${DEB[$ver]:-SKIP}"
     # Status words are all 4 chars (PASS/FAIL/SKIP), so they align without a
     # printf width specifier -- which would otherwise miscount the invisible
     # color escapes and break the columns.
-    printf "  ${C_BOLD}ubuntu:%-8s${C_RESET} source: %s   deb: %s\n" \
-        "$ver" "$(colorize "$s")" "$(colorize "$d")"
+    printf "  ${C_BOLD}ubuntu:%-8s${C_RESET} source: %s   pip: %s   deb: %s\n" \
+        "$ver" "$(colorize "$s")" "$(colorize "$p")" "$(colorize "$d")"
     [ "$s" = PASS ] || rc=1
+    [ "$p" = PASS ] || [ "$p" = SKIP ] || rc=1
     [ "$d" = PASS ] || [ "$d" = SKIP ] || rc=1
 done
 if [ "$rc" -eq 0 ]; then

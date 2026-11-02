@@ -157,13 +157,18 @@ if [ "$(uname)" = "Linux" ]; then
     # (The old "find ... libpixbufloader-png.so | xargs dirname" aborted the WHOLE build
     # under `set -e`: when the file was absent, empty input made `xargs` run `dirname`
     # with no argument -> exit 123 -> build died right here, before PyInstaller.)
-    LOADERS_DIR=$(find /usr/lib /usr/lib64 -path '*/gdk-pixbuf-2.0/*/loaders' -type d 2>/dev/null | head -1)
+    # The build machine's own multiarch dir first: on a host with i386
+    # multiarch, /usr/lib/i386-linux-gnu sorts first and its 32-bit loaders
+    # (and query tool) cannot load into the 64-bit app. find lists matches in
+    # start-path order, so head -1 takes the native one when it exists.
+    PIXBUF_LIBS=("/usr/lib/$(uname -m)-linux-gnu" /usr/lib64 /usr/lib)
+    LOADERS_DIR=$(find "${PIXBUF_LIBS[@]}" -path '*/gdk-pixbuf-2.0/*/loaders' -type d 2>/dev/null | head -1)
     if [ -z "$LOADERS_DIR" ]; then
-        _loader=$(find /usr/lib /usr/lib64 -name 'libpixbufloader-*.so' 2>/dev/null | head -1)
+        _loader=$(find "${PIXBUF_LIBS[@]}" -name 'libpixbufloader-*.so' 2>/dev/null | head -1)
         [ -n "$_loader" ] && LOADERS_DIR=$(dirname "$_loader")
     fi
     GDK_QUERY=$(command -v gdk-pixbuf-query-loaders 2>/dev/null || \
-        find /usr/lib -name 'gdk-pixbuf-query-loaders' 2>/dev/null | head -1)
+        find "${PIXBUF_LIBS[@]}" -name 'gdk-pixbuf-query-loaders' 2>/dev/null | head -1)
     if [ -n "$LOADERS_DIR" ] && [ -n "$GDK_QUERY" ]; then
         CACHE_TEMPLATE="build/lin/pixbuf-loaders.cache"
         mkdir -p "$(dirname "$CACHE_TEMPLATE")"

@@ -61,12 +61,18 @@ Run them before every push. On a machine without a display, prefix with
 
 ## Cross-Ubuntu tests
 
-`scripts/test-cross-ubuntu.sh` checks both halves of "works on Ubuntu 20.04 →
+`scripts/test-cross-ubuntu.sh` checks three parts of "works on Ubuntu 20.04 →
 26.04", each in a clean `ubuntu:XX.04` container:
 
 - **source** (`scripts/xtest/source.sh`): runs this repo's `setup-venv.sh`,
   then `import wx`, `wx.App()` and every dependency under a virtual display —
   the developer setup on that release's own GTK.
+- **pip** (`scripts/xtest/pip.sh`): pip-installs a copy of the checkout the
+  two ways the README documents. The command-line install must not pull in
+  wxPython; `--version`, `--help` and every non-GUI module must work without
+  it, and the GUI entry point must print how to install the GUI. The
+  `".[gui]"` install, with the prebuilt wxPython wheel for that release, must
+  launch the GUI.
 - **deb** (`scripts/xtest/deb.sh`): builds the `.run` installer once (in the
   Ubuntu 20.04 build image), then in each container installs it unattended,
   checks the CAN adapter options (both, deselect Peak, re-add), launches the
@@ -76,17 +82,18 @@ Run them before every push. On a machine without a display, prefix with
 scripts/test-cross-ubuntu.sh                 # 20.04 22.04 24.04 26.04
 scripts/test-cross-ubuntu.sh 24.04 26.04     # a subset / a new release
 scripts/test-cross-ubuntu.sh --source-only   # skip the installer half
+scripts/test-cross-ubuntu.sh --no-pip        # skip the pip half
 ```
 
 Nothing is installed on your host and nothing opens on screen. The first run
 pulls the Ubuntu images, builds the `burt/puck-deb-u20` build image and
 downloads Python and the wheels, so it takes a while; later runs are faster.
 It ends with a per-release summary, then `ALL PASSED` (exit 0) or `SOME FAILED`
-(exit 1). On a failure, scroll up to that release's `SOURCE` / `DEB` banner for
+(exit 1). On a failure, scroll up to that release's `SOURCE` / `PIP` / `DEB` banner for
 the error.
 
 Run it before every release, and whenever you change `requirements.txt`,
-`scripts/setup-venv.sh`, the build or installer scripts, or a new Ubuntu ships.
+`scripts/setup-venv.sh`, `pyproject.toml`, the build or installer scripts, or a new Ubuntu ships.
 
 ## Releasing
 

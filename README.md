@@ -64,8 +64,17 @@ git submodule update --init p4core
 pip install ./p4core .
 ```
 `puckutility --help` lists the commands. Only the GUI needs wxPython and
-matplotlib (`pip install ".[gui]"`); without them, starting the GUI prints
-that install line instead.
+matplotlib. On Windows, add them with `pip install ".[gui]"`. On Linux, PyPI
+has no wxPython wheel and pip would spend 20+ minutes compiling it, so take
+the prebuilt wheel for your Ubuntu release (`ubuntu-20.04`, `ubuntu-22.04`,
+or `ubuntu-24.04` for 24.04 and later):
+```
+pip install --only-binary wxPython \
+    --find-links https://extras.wxpython.org/wxPython4/extras/linux/gtk3/ubuntu-24.04/ \
+    ".[gui]"
+```
+Without the GUI libraries, starting the GUI prints the right command for your
+system instead.
 
 ## CAN adapter setup
 

@@ -107,7 +107,24 @@ class TestWithoutWx(unittest.TestCase):
         with mock.patch.dict(sys.modules, {'wx': None}), \
                 mock.patch.object(sys, 'stderr', err):
             self.assertEqual(main.gui_main([]), 2)
-        self.assertIn('pip install "puckutility[gui]"', err.getvalue())
+        self.assertIn('".[gui]"', err.getvalue())
+
+    def test_linux_hint_uses_the_prebuilt_wx_wheel(self):
+        for os_release, base in (('VERSION_ID="20.04"\n', '20.04'),
+                                 ('VERSION_ID="22.04"\n', '22.04'),
+                                 ('VERSION_ID="26.04"\n', '24.04'),
+                                 ('VERSION_ID="22.3"\n'
+                                  'UBUNTU_VERSION_ID="22.04"\n', '22.04')):
+            with mock.patch.object(sys, 'platform', 'linux'), \
+                    mock.patch('builtins.open',
+                               mock.mock_open(read_data=os_release)):
+                cmd = main._gui_install_command()
+            with self.subTest(base=base):
+                self.assertIn('--only-binary wxPython', cmd)
+                self.assertIn('/ubuntu-{}/'.format(base), cmd)
+        with mock.patch.object(sys, 'platform', 'win32'):
+            self.assertEqual(main._gui_install_command(),
+                             'pip install ".[gui]"')
 
     def test_cli_imports_without_gui_libraries(self):
         code = ("import sys\n"
