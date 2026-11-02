@@ -280,8 +280,20 @@ through **Git Bash** instead (bundled with
 
 It builds with the venv from [Installation](#windows) (`Scripts\python.exe`
 in the repo root). It also finds `.venv\Scripts\python.exe` or an activated
-venv, or set `PYTHON` to a venv's `python.exe`. It can't build from Linux;
-use `build-linux-installer.sh` there.
+venv, or set `PYTHON` to a venv's `python.exe`.
+
+**From Linux, under wine:** run the same script on Linux and it builds the
+Windows outputs with wine instead (`scripts/build-win32-wine.sh`). It needs
+`wine` and `curl`, plus `xvfb-run` on a machine with no display. The first
+run downloads Windows Python 3.12 and Inno Setup 6, installs them into a
+private wine prefix in `~/.cache/puckutility-wine`, and creates the build venv
+there. That takes several minutes; later runs reuse it, and reinstall the
+requirements only when `requirements.txt` changes. The folder grows to a few
+GB, so keep it on disk, not on a tmpfs such as `/tmp`: set `WINE_BUILD_DIR` to
+move it, or delete it to start over. The
+script works around wine 9.0 gaps inside that prefix only: it patches
+Python's `shutil` (no `CopyFile2`), and falls back to numpy 2.0.2 in the
+build venv when the pinned numpy doesn't load (no `crealf`).
 
 From a PowerShell prompt:
 ```

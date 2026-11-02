@@ -33,6 +33,7 @@ cd "$(dirname "$0")/.."
 BUNDLE_PEAK=true
 REFRESH_DRIVERS=false
 MAKE_SETUP=true
+ARGS=("$@")
 while [ $# -gt 0 ]; do
     case "$1" in
         --no-bundle-peak)  BUNDLE_PEAK=false ;;
@@ -48,6 +49,11 @@ done
 # installed in the venv, not whatever bare `python` resolves to on PATH (on
 # Windows often a system Python without wxPython/canopen).
 # Order: PYTHON, the activated venv, a venv in the repo root, .venv.
+# Not on Windows and no PYTHON: build under wine (it sets PYTHON and ISCC).
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) ;;
+    *) [ -n "${PYTHON:-}" ] || exec bash scripts/build-win32-wine.sh "${ARGS[@]}" ;;
+esac
 VENV_PY=""
 if [ -n "${VIRTUAL_ENV:-}" ]; then
     VENV_PY="${VIRTUAL_ENV}/Scripts/python.exe"
@@ -64,20 +70,13 @@ elif [ -x ".venv/Scripts/python.exe" ]; then
     PY=(.venv/Scripts/python.exe)
 else
     echo "ERROR: could not find the venv python (Scripts/python.exe)." >&2
-    case "$(uname -s)" in
-        MINGW*|MSYS*|CYGWIN*)
-            echo "Looked in: ${VENV_PY:+$VENV_PY (activated venv), }./Scripts, ./.venv/Scripts." >&2
-            echo "Create the venv in the repo root (in PowerShell or cmd):" >&2
-            echo "    python -m venv ." >&2
-            echo "    Scripts\\activate" >&2
-            echo "    pip install -r requirements.txt" >&2
-            echo "    pip install ./p4core ." >&2
-            echo "or point PYTHON at a venv's python.exe." >&2 ;;
-        *)
-            echo "This builds the Windows app and needs a Windows Python: run it in" >&2
-            echo "Git Bash on Windows (see README, Building a release > Windows)." >&2
-            echo "For the Linux installer use scripts/build-linux-installer.sh." >&2 ;;
-    esac
+    echo "Looked in: ${VENV_PY:+$VENV_PY (activated venv), }./Scripts, ./.venv/Scripts." >&2
+    echo "Create the venv in the repo root (in PowerShell or cmd):" >&2
+    echo "    python -m venv ." >&2
+    echo "    Scripts\\activate" >&2
+    echo "    pip install -r requirements.txt" >&2
+    echo "    pip install ./p4core ." >&2
+    echo "or point PYTHON at a venv's python.exe." >&2
     exit 1
 fi
 echo "Using python: ${PY[*]}"
