@@ -361,7 +361,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self._set_windows_icon(resource_path(os.path.join('images', 'BarrettIcon.ico')))
         else:
             self.SetIcon(wx.Icon(resource_path(os.path.join('images', 'BarrettIcon.png'))))
-        self.SetTitle("Puck Utility v{} - DEV".format(__version__))
+        self.SetTitle("Puck Utility v{}".format(__version__))
         self.button_6.SetBackgroundColour(self.gray) # Initialize with gray button in idle
         self.Bind(wx.EVT_CHAR_HOOK, self.onKeyDown)  # EVT_CHAR_HOOK fires before focused child consumes the key
         self.Bind(wx.EVT_KEY_UP, self.onKeyUp)
