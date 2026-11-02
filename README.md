@@ -112,7 +112,10 @@ puckutility --can can1           # preselect a CAN port
 ```
 
 The main window:
-* **CAN Port / Scan Pucks / Select ID** — find the pucks and pick one
+* **CAN Port / Scan Pucks / Select ID** — find the pucks and pick one. The
+  port bar shows the last port that found pucks (or `--can`), but nothing is
+  opened, and no puck is reset, until you press Scan Pucks; picking another
+  port takes effect at the next scan.
 * **New ID / Set** — change the selected puck's node ID
 * **Version / Update...** — its firmware version, and flash new firmware
 * **Configure / Browse...** — load a configuration CSV

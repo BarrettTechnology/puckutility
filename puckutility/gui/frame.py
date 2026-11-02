@@ -249,7 +249,7 @@ class puckutilityapp_frame(wx.Frame):
         self.Layout()
 
         self.bitmap_button_1.Bind(wx.EVT_BUTTON, self.logo_click)
-        self.choice_port.Bind(wx.EVT_CHOICE, self.can_port)
+        self.choice_port.Bind(wx.EVT_CHOICE, self.on_port_choice)
         self.button_1.Bind(wx.EVT_BUTTON, self.scan_pucks)
         self.choice_id.Bind(wx.EVT_CHOICE, self.select_id)
         self.text_id.Bind(wx.EVT_TEXT_ENTER, self.set_id)
@@ -377,8 +377,8 @@ class puckutilityapp_frame(wx.Frame):
         print("Event handler 'logo_click' not implemented!")
         event.Skip()
 
-    def can_port(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
-        print("Event handler 'can_port' not implemented!")
+    def on_port_choice(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
+        print("Event handler 'on_port_choice' not implemented!")
         event.Skip()
 
     def select_id(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>

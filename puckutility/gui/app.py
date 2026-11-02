@@ -306,6 +306,12 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         self.settingID = False
         self.NetworkActive = True
         self.Rescanning = False
+        # Nothing opens a CAN port until Scan Pucks: opening an adapter's port
+        # with nothing plugged into it can hang the machine.  _open_port is the
+        # port Scan opened (None until then); the dropdown only picks the port
+        # the next Scan opens.
+        self.network = None
+        self._open_port = None
         # CAN auto-reconnect (after a mid-session adapter loss) is BOUNDED so a
         # port that keeps erroring -- e.g. a CANable on an empty/unterminated bus
         # that goes bus-off -- can't loop reconnects + USB resets + popups
@@ -504,7 +510,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         # guard, bus-off errors fired by the CAN controller during an empty
         # scan (no ACK receivers on Ubuntu 26+) loop indefinitely even though
         # there is nothing to reconnect to.
-        if self.node is None:
+        if self.node is None or self._open_port is None:
             return
         # Don't stack reconnects: if one is already pending, ignore further
         # notifier errors until it fires.
@@ -1246,8 +1252,17 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         except:
             pass
 
+        # A reconnect reopens the port Scan opened, even if the dropdown has
+        # moved on since; everything else opens the dropdown's port.
+        if auto_reconnect and self._open_port:
+            can_device = self._open_port
+        else:
+            can_device = self.choice_port.GetStringSelection()
+        if not can_device:
+            self.frame_statusbar.SetStatusText('No CAN port selected', 1)
+            return False
+
         print("Establishing a new network...")
-        can_device = self.choice_port.GetStringSelection()
 
         # Pre-flight the interface BEFORE we bring up our own master. On SocketCAN
         # the bus is shareable, so two masters don't error on connect -- they collide
@@ -1259,6 +1274,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         if _state == 'in_use':
             print('CAN pre-flight: {} -- {}'.format(_state, _msg))
             self.network = None
+            if not auto_reconnect:
+                self._open_port = None
             self.progress.Hide()
             self.frame_statusbar.SetStatusText('CAN busy: another master is on the bus', 1)
             self.frame_statusbar.Refresh()
@@ -1355,6 +1372,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                     dlg = wx.MessageDialog(None,msg)
                     dlg.ShowModal()
                     dlg.Destroy()
+                if not auto_reconnect:
+                    self._open_port = None
                 # No active puck — clear node reference, ID, firmware-version
                 # readout, and the Select ID dropdown so stale data isn't
                 # shown. On Windows the dropdown is an OwnerDrawnComboBox
@@ -1368,6 +1387,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 return False
         # Connected OK -- clear the bounded auto-reconnect state so a future
         # genuine adapter loss gets a fresh set of retries.
+        self._open_port = can_device
         self._reconnect_attempts = 0
         self._reconnect_gave_up = False
         # We may need to wait a short while here to allow all nodes to respond
@@ -1378,6 +1398,13 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.on_off_adc(self)
             self.adcWasON = False
         return True
+
+    def on_port_choice(self, event):
+        """Picking a port in the dropdown opens nothing: Scan Pucks does."""
+        port = self.choice_port.GetStringSelection()
+        if port and port != self._open_port:
+            self.frame_statusbar.SetStatusText(
+                'Press Scan Pucks to connect to {}'.format(port), 1)
 
     def scan_pucks(self, event,selfCALL=False,skipADC=False):  # wxGlade: wxp3_frame.<event_handler>
         #print("Event handler 'scan_pucks'")
@@ -1398,6 +1425,25 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.adcWasON = False
 
         self.progress.Hide()
+
+        # Scan Pucks is what opens the CAN port: the dropdown's port, when
+        # none is open yet or the dropdown has moved to another one.  A puck
+        # running on the old port is idled first; its pucks are forgotten.
+        if not selfCALL and (self.network is None or
+                             self._open_port != self.choice_port.GetStringSelection()):
+            if self.node is not None and self.lastMode != 0:
+                try:
+                    self.node.sdo["SetModeOfOperation"].raw = MODE_IDLE
+                except Exception:
+                    pass
+                self.button_6.SetBackgroundColour(self.gray)
+                self.button_6.SetLabel("Go")
+            self.lastMode = 0
+            self.node = None
+            self.choice_id.SetItems([])
+            self.choice_id.SetSelection(wx.NOT_FOUND)
+            if not self.can_port(None, skipADC=True):
+                return
 
         self.frame_statusbar.SetStatusText("Scanning Pucks...", 1)
         self.frame_statusbar.Update()
@@ -2942,37 +2988,9 @@ class MyApp(wx.App):
         self.Bind(wx.EVT_KEY_DOWN, self.frame.onKeyDown)
         self.Bind(wx.EVT_KEY_UP,   self.frame.onKeyUp)
         self.frame.set_tool_tips(None)
-
-        # Defer CAN connection until the frame is fully composited.  Running
-        # can_port immediately after Show() risks a brief event-loop stall
-        # from socket operations landing before the compositor has settled.
-        wx.CallLater(200, self._startup_connect)
-
-    def _startup_connect(self):
-        # silent=True so a missing CAN device surfaces only on the status bar.
-        result = self.frame.can_port(None, silent=True)
-
-        # Transmit an NMT reboot command to this node
-        if result == True:
-            try:
-                print("Booting...")
-                self.frame.network.send_message(0x0, [0x81, 0])
-                time.sleep(0.5) # wait for puck to reboot (avoids loss of communication)
-                self.frame.scan_pucks(self)
-                self.initialize = self.frame.network.scanner.nodes
-                # Placement causes node not to get added!!
-                if len(self.getNodes()) == 0:
-                    # print('No Pucks active')
-                    return
-                # print(self.frame.GetSize())
-
-                self.addPucks(self.frame.getID())
-                i = len(self.getNodes())
-                if i == 0:
-                    return
-            except Exception as e:
-                # print(e)
-                pass
+        # No CAN port is opened and no puck is reset at startup (desktop and
+        # touchscreen alike): Scan Pucks opens the port.
+        self.frame.frame_statusbar.SetStatusText('Press Scan Pucks to connect', 1)
 
     def addPucks(self,i): # Adds Puck ID to list of Active Frames
         # Idempotent: select_id's firstRun branch and OnInit can both end up

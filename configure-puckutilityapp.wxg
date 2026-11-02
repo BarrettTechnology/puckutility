@@ -255,7 +255,7 @@
                         <flag>wxLEFT|wxALIGN_CENTER</flag>
                         <object class="wxChoice" name="choice_port" base="EditChoice">
                             <events>
-                                <handler event="EVT_CHOICE">can_port</handler>
+                                <handler event="EVT_CHOICE">on_port_choice</handler>
                             </events>
                             <size>100, 34</size>
                             <max_size>100, 34</max_size>
