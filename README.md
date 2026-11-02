@@ -278,6 +278,11 @@ and a bare `bash` resolves to WSL — which is usually not installed. Run it
 through **Git Bash** instead (bundled with
 [Git for Windows](https://gitforwindows.org/)).
 
+It builds with the venv from [Installation](#windows) (`Scripts\python.exe`
+in the repo root). It also finds `.venv\Scripts\python.exe` or an activated
+venv, or set `PYTHON` to a venv's `python.exe`. It can't build from Linux;
+use `build-linux-installer.sh` there.
+
 From a PowerShell prompt:
 ```
 & "C:\Program Files\Git\bin\bash.exe" ./scripts/build-win32-installer.sh

@@ -47,16 +47,37 @@ done
 # Resolve the venv's python explicitly so PyInstaller bundles the packages
 # installed in the venv, not whatever bare `python` resolves to on PATH (on
 # Windows often a system Python without wxPython/canopen).
+# Order: PYTHON, the activated venv, a venv in the repo root, .venv.
+VENV_PY=""
+if [ -n "${VIRTUAL_ENV:-}" ]; then
+    VENV_PY="${VIRTUAL_ENV}/Scripts/python.exe"
+    # Git Bash may hand over VIRTUAL_ENV as C:\...; test it as /c/...
+    command -v cygpath >/dev/null 2>&1 && VENV_PY="$(cygpath -u "$VENV_PY")"
+fi
 if [ -n "${PYTHON:-}" ]; then
     read -ra PY <<<"$PYTHON"
+elif [ -n "$VENV_PY" ] && [ -x "$VENV_PY" ]; then
+    PY=("$VENV_PY")                     # the activated venv
 elif [ -x "Scripts/python.exe" ]; then
     PY=(Scripts/python.exe)            # venv in the repo root
 elif [ -x ".venv/Scripts/python.exe" ]; then
     PY=(.venv/Scripts/python.exe)
 else
     echo "ERROR: could not find the venv python (Scripts/python.exe)." >&2
-    echo "Create it with 'python -m venv .' and 'pip install -r requirements.txt'," >&2
-    echo "or point PYTHON at one." >&2
+    case "$(uname -s)" in
+        MINGW*|MSYS*|CYGWIN*)
+            echo "Looked in: ${VENV_PY:+$VENV_PY (activated venv), }./Scripts, ./.venv/Scripts." >&2
+            echo "Create the venv in the repo root (in PowerShell or cmd):" >&2
+            echo "    python -m venv ." >&2
+            echo "    Scripts\\activate" >&2
+            echo "    pip install -r requirements.txt" >&2
+            echo "    pip install ./p4core ." >&2
+            echo "or point PYTHON at a venv's python.exe." >&2 ;;
+        *)
+            echo "This builds the Windows app and needs a Windows Python: run it in" >&2
+            echo "Git Bash on Windows (see README, Building a release > Windows)." >&2
+            echo "For the Linux installer use scripts/build-linux-installer.sh." >&2 ;;
+    esac
     exit 1
 fi
 echo "Using python: ${PY[*]}"
