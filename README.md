@@ -221,7 +221,9 @@ then log out and back in (or prefix the build commands below with
 `sg docker -c '…'` to apply the group without re-logging in).
 
 The build runs inside a pinned Ubuntu 20.04 container so the result runs on
-Ubuntu 20.04 → 26.04+ regardless of your host OS. The first build also builds
+Ubuntu 20.04 → 26.04+ regardless of your host OS. Linux builds only run on Ubuntu
+20.04: on any other machine the script uses this container even without `--docker`,
+and stops with an error if Docker is not available. The first build also builds
 the `burt/puck-deb-u20` image (shared with pucktuner) — this downloads the prebuilt
 wxPython wheel (no compilation) and takes a few minutes. Each build installs
 `requirements.txt` into it first, so `--rebuild-docker` is only needed after a

@@ -122,10 +122,12 @@ release*).
 
 ## The build image
 
-The tag pipeline and `scripts/build-linux-installer.sh --docker` build in
+The tag pipeline and `scripts/build-linux-installer.sh` build in
 `burt/puck-deb-u20` (`scripts/Dockerfile.builder`, identical in pucktuner):
 Ubuntu 20.04 for the oldest glibc/GTK, CPython 3.12, the prebuilt wxPython
-wheel and `requirements.txt`. `--docker` builds it when it is missing. Rebuild it
+wheel and `requirements.txt`. The script only builds on Ubuntu 20.04: anywhere else it re-runs itself in
+this image, with or without `--docker`, building the image when it is missing, and it
+fails when Docker is not available. Rebuild it
 after a Python, wxPython or `Dockerfile.builder` change — on your machine with
 `--rebuild-docker`, and on the GitLab runner with:
 ```

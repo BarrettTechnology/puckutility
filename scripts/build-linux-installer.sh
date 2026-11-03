@@ -24,6 +24,26 @@ while [[ $# -gt 0 ]]; do
     shift
 done
 
+# Linux builds must be based on Ubuntu 20.04, whatever this machine runs: the
+# bundle carries the build system's libraries and glibc floor. Anywhere else the
+# build goes to the 20.04 builder image, and without Docker it stops. CI and
+# --docker run this script again inside that image, where the check passes.
+is_ubuntu_2004() {
+    ( . "${1:-/etc/os-release}" && [ "${ID:-}" = ubuntu ] && [ "${VERSION_ID:-}" = "20.04" ] ) 2>/dev/null
+}
+os_name() {
+    ( . /etc/os-release && echo "${PRETTY_NAME:-$ID}" ) 2>/dev/null || echo unknown
+}
+need_docker() {
+    echo "ERROR: Linux builds must run on Ubuntu 20.04 and this machine is $(os_name), but $1." >&2
+    echo "       Fix Docker so the build can use the 20.04 builder image, or run this on Ubuntu 20.04." >&2
+    exit 1
+}
+if ! is_ubuntu_2004 && [ "$USE_DOCKER" = false ]; then
+    echo "This machine is $(os_name), not Ubuntu 20.04: building in the 20.04 builder image."
+    USE_DOCKER=true
+fi
+
 # --docker: re-invoke this script inside a pinned Ubuntu 20.04 container for
 # reproducible glibc/GTK linkage. Ensures the binary runs on Ubuntu >= 20.04
 # regardless of the dev machine's OS.
@@ -33,10 +53,8 @@ done
 # wheel. This repo's requirements.txt is installed into it on every run, so
 # --rebuild-docker is only needed after a Python/wxPython or Dockerfile change.
 if [ "$USE_DOCKER" = true ]; then
-    if ! command -v docker >/dev/null 2>&1; then
-        echo "ERROR: docker not found. Install Docker and try again." >&2
-        exit 1
-    fi
+    command -v docker >/dev/null 2>&1 || need_docker "docker is not installed"
+    docker info >/dev/null 2>&1 || need_docker "the Docker daemon cannot be reached"
 
     IMAGE="${BUILDER_IMAGE:-burt/puck-deb-u20:latest}"
 
@@ -46,6 +64,9 @@ if [ "$USE_DOCKER" = true ]; then
         [ "$CLEAN_DOCKER" = true ] && DOCKER_BUILD_FLAGS+=(--no-cache)
         docker build "${DOCKER_BUILD_FLAGS[@]}" -t "$IMAGE" -f scripts/Dockerfile.builder .
     fi
+
+    CLEAN_ARG=""
+    [ "$CLEAN_PYINSTALLER" = true ] && CLEAN_ARG=" --clean-pyinstaller"
 
     # FIRMWARE_DIR (optional) may be anywhere on the host: mount it read-only.
     FW_ARGS=()
@@ -59,7 +80,7 @@ if [ "$USE_DOCKER" = true ]; then
         "${FW_ARGS[@]}" \
         -w /build \
         "$IMAGE" \
-        bash -c "uv pip install -q --python /opt/puckbuild -r requirements.txt && VENV_ROOT=/opt/puckbuild bash scripts/build-linux-installer.sh --${FORMAT}"
+        bash -c "uv pip install -q --python /opt/puckbuild -r requirements.txt && VENV_ROOT=/opt/puckbuild bash scripts/build-linux-installer.sh --${FORMAT}${CLEAN_ARG}"
     exit 0
 fi
 
