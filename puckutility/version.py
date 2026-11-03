@@ -7,4 +7,4 @@ the CI tag check and the installer build scripts.
 
 #: PEP 440 form (no leading 'v'); the title bar and the CLI show it as
 #: 'v' + __version__.
-__version__ = '1.4.0'
+__version__ = '1.4.1'

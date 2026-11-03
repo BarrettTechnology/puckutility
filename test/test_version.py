@@ -15,7 +15,7 @@ from puckutility.cli import build_parser  # noqa: E402
 class TestVersion(unittest.TestCase):
 
     def test_one_pep440_version(self):
-        self.assertEqual(version.__version__, '1.4.0')
+        self.assertEqual(version.__version__, '1.4.1')
         self.assertIs(__version__, version.__version__)
 
     def test_cli_version_and_help_show_it(self):
@@ -23,8 +23,8 @@ class TestVersion(unittest.TestCase):
         out = io.StringIO()
         with contextlib.redirect_stdout(out), self.assertRaises(SystemExit):
             parser.parse_args(['--version'])
-        self.assertEqual(out.getvalue().strip(), 'puckutility v1.4.0')
-        self.assertIn('puckutility v1.4.0', parser.format_help())
+        self.assertEqual(out.getvalue().strip(), 'puckutility v1.4.1')
+        self.assertIn('puckutility v1.4.1', parser.format_help())
 
     def test_title_bar_shows_it_after_the_name(self):
         here = os.path.dirname(os.path.abspath(__file__))
