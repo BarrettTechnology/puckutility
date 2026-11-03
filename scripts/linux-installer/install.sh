@@ -311,14 +311,16 @@ do_uninstall() {
     for p in "${SIBLING_APPS[@]}"; do
         if installed "$p"; then keep_common=true; fi
     done
-    for p in "$APP_PKG" puck-can-peak puck-can-canable; do
-        if installed "$p"; then pkgs+=("$p"); fi
-    done
-    if ! $keep_common && installed puck-can-common; then pkgs+=(puck-can-common); fi
+    if installed "$APP_PKG"; then pkgs+=("$APP_PKG"); fi
+    if ! $keep_common; then
+        for p in puck-can-peak puck-can-canable puck-can-common; do
+            if installed "$p"; then pkgs+=("$p"); fi
+        done
+    fi
     if [ ${#pkgs[@]} -eq 0 ]; then say "Puck Utility is not installed."; return; fi
     say "==> Removing: ${pkgs[*]}"
     DEBIAN_FRONTEND=noninteractive run apt-get remove -y -q "${pkgs[@]}"
-    if $keep_common; then say "Kept puck-can-common: another puck app still uses it."; fi
+    if $keep_common; then say "Kept the CAN adapter support: another puck app still uses it."; fi
     say "Puck Utility removed."
 }
 

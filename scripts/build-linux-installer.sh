@@ -442,6 +442,13 @@ CONTROL
 #!/bin/bash
 set -e
 
+# A puckutility deb from before the puck-can-* packages deletes this file when
+# it is upgraded, which can be after puck-can-common wrote it.
+if dpkg-query -W -f='${Status}' puck-can-common 2>/dev/null | grep -q 'ok installed'; then
+    mkdir -p /etc/NetworkManager/conf.d
+    printf '[keyfile]\nunmanaged-devices=type:can\n' > /etc/NetworkManager/conf.d/99-puck-can.conf
+fi
+
 # Best-effort refreshes (they fail harmlessly in a chroot / container).
 if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database -q /usr/share/applications || true

@@ -259,7 +259,7 @@ Run it again to change the adapter selection. Options: `--peak` /
 
 Give end users the `.run`. Installing the app deb by itself installs only the
 app: no CAN interface bring-up and no adapter support unless the
-`puck-can-*` debs are installed too. pucktuner ships only a `.deb`.
+`puck-can-*` debs are installed too.
 
 **.deb packages only:**
 ```
