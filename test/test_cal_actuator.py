@@ -1,6 +1,6 @@
 """The Actuator Calibration menu's handlers over a fake frame and a fake
 session: the confirmation, the plan's keys (those the firmware can run),
-one cached session per puck for the single steps, Save.All only when the
+one cached session per puck for the single steps, a Save.All retry only when the
 user says so, All Pucks, the reboot an encoder filter change needs, and the
 config gate in front of every calibration.  Bias and gain are p4core steps
 like the rest."""
@@ -81,7 +81,7 @@ class Frame:
 
 class FakeSession:
     """A steps.Session for plans.run/save: passes every step
-    (unless told to fail one) and leaves the results unsaved."""
+    (unless told to fail one), each saved as it passes."""
 
     def __init__(self, node, fail=()):
         self.dev = mock.Mock(node=node)
@@ -101,7 +101,7 @@ class FakeSession:
                 status, ok = 'fail', False
             else:
                 status = 'pass'
-                self.unsaved = k != 'save'
+                self.unsaved = False               # saved as it passed
             self.results[k] = {'status': status, 'detail': ''}
             on_update(k)
         return ok
@@ -157,12 +157,10 @@ class TestActuatorMenu(unittest.TestCase):
         p.start()
         self.addCleanup(p.stop)
 
-    def test_the_whole_calibration_asks_runs_the_plan_and_asks_to_save(self):
+    def test_the_whole_calibration_asks_and_runs_the_plan(self):
         f = AFrame()
-        f.answers = iter([True, False])           # go; don't save
-        f._prompt = lambda t, m: f.prompts.append(m) or next(f.answers)
         self.assertTrue(f.calibrate_actuator(None))
-        go, save = f.prompts
+        go, = f.prompts
         for n, key in enumerate(plans.run_order(plans.ACTUATOR), 1):
             self.assertIn('{:2d}. {}'.format(n, plans.title(key)), go)
         self.assertIn('continuously', go)
@@ -175,17 +173,23 @@ class TestActuatorMenu(unittest.TestCase):
         # calibration leaves the SYNC off (the ADC monitor restarts its own).
         self.assertIs(s.sync, f.sync_owner)
         f.sync_owner.set_sync_rate.assert_called_with(0)
-        self.assertIn('Save to NV (Save.All)?', save)
-        self.assertEqual(len(s.runs), 1)          # declined: no Save.All
+        self.assertEqual(len(s.runs), 1)          # no Save question or step
+        self.assertIn('saved to NV', f.messages[-1])
         self.assertFalse(f.requireCal)
         self.assertTrue(f.enabled)
 
-    def test_save_on_yes(self):
+    def test_a_save_all_that_failed_is_offered_again(self):
         f = AFrame()
+        real = cal_actuator.actuator.save_results
         self.assertTrue(f.calibrate_actuator(None))
         s, = self.sessions
+        s.unsaved = True
+        with mock.patch.object(cal_actuator.actuator, 'save_results',
+                               side_effect=real) as save:
+            f._actuator_done(s, plans.ACTUATOR)
+        self.assertIn('Try Save.All again?', f.prompts[-1])
+        save.assert_called_once()
         self.assertEqual(s.runs[-1], ['save'])
-        self.assertFalse(s.unsaved)
 
     def test_declined_or_gated_runs_nothing(self):
         f = AFrame()
@@ -205,7 +209,7 @@ class TestActuatorMenu(unittest.TestCase):
         self.assertTrue(f.requireCal)
         s, = self.sessions
         self.assertEqual(s.results['runout']['status'], 'skipped')
-        self.assertIn('FAIL', f.prompts[-1])      # unsaved: summary + ask
+        self.assertIn('FAIL', f.messages[-1])
 
     def test_legacy_firmware_offers_only_what_it_can_run(self):
         # No warning and no list of what the firmware lacks: the steps it
@@ -248,7 +252,7 @@ class TestActuatorMenu(unittest.TestCase):
         self.assertNotIn('continuously', f.prompts[0])
         self.assertIn(' 4. Current-sense slope', f.prompts[0])
         self.assertTrue(f.calibrate_step_cogging(None))
-        self.assertIn('continuously', f.prompts[-2])
+        self.assertIn('continuously', f.prompts[-1])
         # A whole calibration starts a fresh session.
         f.calibrate_actuator(None)
         self.assertEqual(len(self.sessions), 2)
@@ -264,24 +268,21 @@ class TestActuatorMenu(unittest.TestCase):
             getattr(f, 'calibrate_step_' + key)(None)
             self.assertEqual(self.sessions[0].runs[-1][0], key)
 
-    def test_all_pucks_asks_once_and_saves_each_passing_puck(self):
+    def test_all_pucks_asks_once_and_runs_each_puck(self):
         f = AFrame(nodes=(3, 4))
         self.assertTrue(f.calibrate_actuator_all_pucks(None))
-        self.assertEqual(len(f.prompts), 2)      # go, save-each
+        self.assertEqual(len(f.prompts), 1)      # go
         self.assertEqual([s.dev.node for s in self.sessions],
                          [f.nodes[3], f.nodes[4]])
-        for s in self.sessions:
-            self.assertEqual(s.runs[-1], ['save'])
         self.assertEqual(f.selected[-1], 3)       # back to the starting puck
         self.assertIn('Node 4: PASS, saved', f.messages[-1])
 
-    def test_all_pucks_without_saving(self):
+    def test_all_pucks_a_failure_says_what_is_saved(self):
+        self.fail_keys = ('winding',)
         f = AFrame(nodes=(3, 4))
-        f._prompt = lambda t, m: f.prompts.append(m) or 'Save' not in t
-        f.calibrate_actuator_all_pucks(None)
-        for s in self.sessions:
-            self.assertNotIn(['save'], s.runs)
-        self.assertIn('Node 3: PASS, not saved', f.messages[-1])
+        self.assertFalse(f.calibrate_actuator_all_pucks(None))
+        self.assertIn('Node 3: FAILED (the steps before the failure are saved)',
+                      f.messages[-1])
 
     def test_the_reboot(self):
         f = AFrame(nodes=(3, 4))

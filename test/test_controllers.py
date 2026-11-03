@@ -46,7 +46,7 @@ class FakePlanSession:
                 status, ok = 'fail', False
             else:
                 status = 'pass'
-                self.unsaved = k != 'save'
+                self.unsaved = False               # saved as it passed
             self.results[k] = {'status': status, 'detail': k + ' detail'}
             on_update(k)
         return ok
@@ -86,7 +86,7 @@ class TestCalibrate(unittest.TestCase):
                              calibrate.plans.ACTUATOR))])
         self.assertIs(self.make_session.call_args.args[0], self.node)
         self.assertIs(self.make_session.call_args.kwargs['reboot'], reboot)
-        self.assertTrue(session.unsaved)          # not saved: not asked
+        self.assertFalse(session.unsaved)         # each step saved itself
         self.assertIn('Encoder runout table', calibrate.summary_text(session))
 
     def test_legacy_firmware_runs_and_reports_only_what_it_can(self):
@@ -109,16 +109,11 @@ class TestCalibrate(unittest.TestCase):
             with self.assertRaises(calibrate.CalibrationFailed):
                 calibrate.step_keys([name])
 
-    def test_save_only_when_asked_and_passed(self):
-        self.make()
-        ok, session = calibrate.calibrate_actuator(self.node, save=True)
-        self.assertTrue(ok)
-        self.assertEqual(self.session.runs[-1], ['save'])
-        self.assertFalse(session.unsaved)
+    def test_a_failure_stops_and_runs_no_save_step(self):
         self.make(fail=('winding',))
-        ok, session = calibrate.calibrate_actuator(self.node, save=True)
+        ok, session = calibrate.calibrate_actuator(self.node)
         self.assertFalse(ok)
-        self.assertEqual(len(self.session.runs), 1)   # no Save.All
+        self.assertEqual(len(self.session.runs), 1)
         self.assertEqual(session.results['runout']['status'], 'skipped')
 
     def test_named_steps_run_in_order_in_a_given_session(self):

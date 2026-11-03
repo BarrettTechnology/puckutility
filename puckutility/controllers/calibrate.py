@@ -14,9 +14,8 @@ same functions with dialogs and the progress bar around them.  No wx here.
 A step the drive's firmware cannot run (plans.unavailable) is not offered:
 supported() is what the menus list and what a whole calibration runs.
 
-Nothing is saved to NV (Save.All) unless the caller asks: *save* here, the
-CLI's --save, a question in the GUI.  A few steps save their own register
-to take effect (p4core.actuator.steps), as they always have.
+Each step's results are saved to NV as soon as it passes (Save.All, in
+p4core.actuator.steps), so a later failure does not lose them.
 """
 
 from p4core.reporter import Reporter
@@ -68,27 +67,24 @@ def make_session(node, reporter=None, reboot=None, sync=None):
 
 
 def calibrate_actuator(node, reporter=None, steps=None, reboot=None,
-                       save=False, network=None, session=None):
+                       network=None, session=None):
     """The actuator calibration on *node*: every step its firmware can run
     (supported), or just the named *steps*, in run order, stopping at the
     first failure.
     *session*: a Session to run in (make_session), so a step can use an
-    earlier one's result (fold needs this session's slope sweep).  *save*:
-    Save.All when every step passed; otherwise the results stay in RAM.
+    earlier one's result (fold needs this session's slope sweep).
     Returns (ok, session)."""
     reporter = _reporter(reporter)
     keys = step_keys(steps) if steps else list(supported(node))
     if session is None:
         session = make_session(node, reporter, reboot)
     ok = plans.run(session, keys, reporter)
-    if ok and save:
-        ok = save_results(session, reporter)
     return ok, session
 
 
 def save_results(session, reporter=None):
-    """Save.All, and the reboot an i_cont change needs (plans.save).  The
-    caller asks the user first."""
+    """Save.All, and the reboot an i_cont change needs (plans.save): another
+    try when session.unsaved says a step's own Save.All failed."""
     return plans.save(session, reporter=reporter)
 
 

@@ -7,8 +7,7 @@ measured on each unit (p4core.actuator.plans.ACTUATOR).  A mixin of the
 calibrate menu (calibrate_menu.calibrate inherits it).  The steps are
 p4core's, through controllers.calibrate; this keeps the frame side: the gate and the
 confirmations, the progress gauge, the ADC monitor, the reboot an encoder
-filter change needs, and the question whether to Save.All afterwards.
-Nothing is saved to NV unless the user says so.
+filter change needs, and the offer to retry a Save.All that failed.
 
 Each step item runs that step alone in this puck's cached Session, so fold
 finds the slope sweep a Slope run left in it.  Bias and gain are p4core
@@ -68,7 +67,7 @@ class ActuatorCal:
     # -- the menu items ----------------------------------------------------
     def calibrate_actuator(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
         """Actuator Calibration > Active Puck: every step the active puck's
-        firmware can run, then the summary and the offer to Save.All."""
+        firmware can run, each saved as it passes, then the summary."""
         keys = self._actuator_ready()
         if not keys:
             return False
@@ -78,14 +77,10 @@ class ActuatorCal:
 
     def calibrate_actuator_all_pucks(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
         """Actuator Calibration > All Pucks: every step on every puck, one
-        after another.  Whether to Save.All each puck that passes is asked
-        once, up front.  Each puck runs the steps its firmware can."""
+        after another, each step saved to NV as it passes.  Each puck runs
+        the steps its firmware can."""
         if not self._actuator_ready(every_puck=True):
             return False
-        save = self._prompt('Save to NV?',
-                            "Save each puck's results to NV (Save.All) when "
-                            "its calibration passes?\n\nNo leaves them in RAM "
-                            "(lost at the next reboot).")
         starting_id = self.getID()
         lines, all_ok = [], True
         for node_id in list(self.network.scanner.nodes):
@@ -94,12 +89,10 @@ class ActuatorCal:
             print('--- Actuator calibration, node {} ---'.format(node_id))
             ok, session = self._run_actuator(actuator.supported(self.node),
                                              fresh=True)
-            verdict = 'PASS' if ok else 'FAILED'
-            if ok and save and session is not None and session.unsaved:
-                ok = self._actuator_save(session)
-                verdict = 'PASS, saved' if ok else 'PASS, Save.All FAILED'
-            elif ok and session is not None and session.unsaved:
-                verdict = 'PASS, not saved'
+            verdict = 'PASS, saved' if ok else \
+                'FAILED (the steps before the failure are saved)'
+            if session is not None and session.unsaved:
+                verdict = 'FAILED, the last results are NOT saved'
             all_ok = all_ok and ok
             lines.append('Node {}: {}'.format(node_id, verdict))
             if session is not None:
@@ -251,17 +244,19 @@ class ActuatorCal:
             self._ui_unlock()
 
     def _actuator_done(self, session, keys):
-        """The summary, then Save.All if the user wants it."""
+        """The summary.  Each step saved itself as it passed; if a Save.All
+        failed, offer it again."""
         if session is None:
             return
         text = actuator.summary_text(session, keys)
         print(text)
         if not session.unsaved:
-            self._actuator_message('Actuator Calibration', text)
+            self._actuator_message('Actuator Calibration', text +
+                                   '\n\nThe steps that passed are saved to NV.')
             return
         if self._prompt('Actuator Calibration',
-                        text + '\n\nThe results are in RAM only.\n'
-                        'Save to NV (Save.All)?'):
+                        text + '\n\nThe last results did not reach NV: they '
+                        'are in RAM only.\nTry Save.All again?'):
             self._actuator_save(session)
 
     def _actuator_save(self, session):

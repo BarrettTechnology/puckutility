@@ -150,7 +150,7 @@ puckutility --can can0 --id 1 config load config/motor.csv   # save and reboot
 puckutility --can can0 --id 1 config export motor.csv        # the puck's values
 puckutility config check config/motor.csv     # validate, no puck needed
 puckutility config templates                  # the shipped templates
-puckutility --can can0 --all calibrate        # actuator calibration; --save
+puckutility --can can0 --all calibrate        # actuator calibration
 puckutility --can can0 --id 1 calibrate slope fold
 puckutility --can can0 system-config system-config.ini
 puckutility --can can0 --id 5 set-id 7
@@ -170,8 +170,10 @@ turns), `-q` prints only results, warnings and errors, `-v` more, and
 menu runs (p4core.actuator's steps): encoder, bias, gain, slope, fold,
 winding, runout, cogging (`puckutility calibrate --help`); without STEP
 arguments, the ones the puck's firmware can run.  Load the batch CSV first.
-The motor turns, continuously for cogging.  Results stay in RAM unless
-`--save` (Save.All when every step passed).
+The motor turns, continuously for cogging.  Each step's results are saved to
+NV (Save.All) as soon as it passes, so a later failure does not lose them.  A
+failed step saves nothing, and the next run reboots the puck first so that
+what it left in RAM cannot be saved.
 
 ### The old flags
 The flags of earlier versions still work and are translated to the commands

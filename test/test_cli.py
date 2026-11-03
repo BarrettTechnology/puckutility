@@ -85,16 +85,16 @@ class TestInfo(CliTest):
         self.assertEqual([r['node_id'] for r in json.loads(out)], [1, 2])
 
 
-def _session(unsaved=True):
+def _session(unsaved=False):
     return mock.Mock(unsaved=unsaved, results={})
 
 
 class TestCalibrate(CliTest):
 
-    def patch(self, ok=True, unsaved=True):
+    def patch(self, ok=True, unsaved=False):
         p = mock.patch.object(calibrate, 'calibrate_actuator',
                               side_effect=lambda *a, **kw: (ok, _session(
-                                  unsaved and not kw.get('save'))))
+                                  unsaved)))
         fn = p.start()
         self.addCleanup(p.stop)
         q = mock.patch.object(calibrate, 'summary_text', return_value='')
@@ -102,22 +102,24 @@ class TestCalibrate(CliTest):
         self.addCleanup(q.stop)
         return fn
 
-    def test_the_actuator_calibration_in_ram(self):
+    def test_the_actuator_calibration(self):
         fn = self.patch()
         code, out, _err = self.run_cli('-y', 'calibrate')
         self.assertEqual(code, 0)
         self.assertIsNone(fn.call_args.kwargs['steps'])
-        self.assertFalse(fn.call_args.kwargs['save'])
         self.assertIs(fn.call_args.kwargs['network'], self.session.network)
         self.assertTrue(callable(fn.call_args.kwargs['reboot']))
-        self.assertIn('RAM only', out)
+        self.assertIn('saved to NV', out)
 
-    def test_save(self):
-        fn = self.patch()
-        code, out, _err = self.run_cli('-y', 'calibrate', '--save')
-        self.assertEqual(code, 0)
-        self.assertTrue(fn.call_args.kwargs['save'])
-        self.assertIn('Save.All', out)
+    def test_a_save_all_that_failed_is_reported(self):
+        self.patch(ok=False, unsaved=True)
+        code, out, err = self.run_cli('-y', 'calibrate')
+        self.assertEqual(code, 1)
+        self.assertIn('RAM only', out + err)
+
+    def test_the_old_save_flag_still_runs(self):
+        self.patch()
+        self.assertEqual(self.run_cli('-y', 'calibrate', '--save')[0], 0)
 
     def test_steps(self):
         fn = self.patch()
@@ -171,7 +173,7 @@ class TestOtherCommands(CliTest):
         self.assertEqual(code, 0)
         self.assertIn('node 2: missing', out)
 
-    def test_system_config_calibrates_the_actuator_and_asks_to_save(self):
+    def test_system_config_calibrates_the_actuator(self):
         hooks = []
         with mock.patch.object(system_config, 'apply',
                                side_effect=lambda s, ini, rep, calibrate:
@@ -179,14 +181,9 @@ class TestOtherCommands(CliTest):
             self.run_cli('-y', 'system-config', 's.ini')
         session = _session()
         with mock.patch.object(calibrate, 'calibrate_actuator',
-                               return_value=(True, session)) as fn, \
-                mock.patch.object(calibrate, 'summary_text', return_value=''), \
-                mock.patch.object(calibrate, 'save_results',
-                                  return_value=True) as save:
+                               return_value=(True, session)), \
+                mock.patch.object(calibrate, 'summary_text', return_value=''):
             self.assertTrue(hooks[0](1))
-        self.assertFalse(fn.call_args.kwargs['save'])
-        save.assert_called_once()                     # -y: yes to saving
-        self.assertIs(save.call_args.args[0], session)
         with mock.patch.object(system_config, 'apply',
                                return_value={1: 'flash failed'}):
             self.assertEqual(self.run_cli('system-config', 's.ini')[0], 1)

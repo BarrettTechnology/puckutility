@@ -74,21 +74,22 @@ def _reboot(ctx, node_id):
     return lambda: ctx.session.reset_node(node_id)
 
 
-def _calibrate_node(ctx, node_id, steps=None, save=False):
-    """The actuator calibration on *node_id*, its summary printed.  Returns
-    (ok, session): ok when every step passed (and, with *save*, Save.All
-    did)."""
+def _calibrate_node(ctx, node_id, steps=None):
+    """The actuator calibration on *node_id*, its summary printed.  Each step
+    saves to NV as it passes.  Returns (ok, session): ok when every step
+    passed."""
     node = ctx.session.add_node(node_id)
     ok, session = _calibrate.calibrate_actuator(
         node, ctx.reporter, steps=steps, reboot=_reboot(ctx, node_id),
-        save=save, network=ctx.session.network)
+        network=ctx.session.network)
     ctx.reporter.note('node {}:\n{}'.format(
         node_id, _calibrate.summary_text(session, steps)))
-    if save and ok:
-        ctx.reporter.note('node {}: saved to NV (Save.All)'.format(node_id))
-    elif session.unsaved:
-        ctx.reporter.note('node {}: results are in RAM only (run with --save '
-                          'to keep them)'.format(node_id))
+    if session.unsaved:
+        ctx.reporter.warn('node {}: the last results did not reach NV: they '
+                          'are in RAM only'.format(node_id))
+    else:
+        ctx.reporter.note('node {}: the steps that passed are saved to NV'
+                          .format(node_id))
     return ok, session
 
 
@@ -112,8 +113,7 @@ def _cmd_calibrate(ctx):
     ok = True
     for node_id in cli.targets(ctx):
         ctx.reporter.status('--- Node {} ---'.format(node_id))
-        if not _calibrate_node(ctx, node_id, steps or None,
-                               ctx.args.save)[0]:
+        if not _calibrate_node(ctx, node_id, steps or None)[0]:
             ctx.reporter.warn('node {}: calibration failed'.format(node_id))
             ok = False
     return cli.EXIT_OK if ok else cli.EXIT_FAILED
@@ -126,13 +126,7 @@ def _cmd_system_config(ctx):
     from .controllers import system_config
 
     def calibrate(node_id):
-        # The actuator calibration; Save.All only when the user says so.
-        ok, session = _calibrate_node(ctx, node_id)
-        if ok and session.unsaved and ctx.reporter.confirm(
-                'Save node {}\'s calibration to NV (Save.All)?'.format(node_id),
-                default=False):
-            ok = _calibrate.save_results(session, ctx.reporter)
-        return ok
+        return _calibrate_node(ctx, node_id)[0]
 
     outcome = system_config.apply(ctx.session, ctx.args.ini, ctx.reporter,
                                   calibrate=calibrate)
@@ -179,8 +173,8 @@ def build_parser():
     p.set_defaults(func=_cmd_calibrate, needs_bus=True)
     p.add_argument('steps', nargs='*', metavar='STEP', type=_step_name,
                    help='any of ' + ', '.join(_calibrate.STEPS))
-    p.add_argument('--save', action='store_true',
-                   help='Save.All when every step passed (default: RAM only)')
+    # Each step saves as it passes: kept so that old command lines still run.
+    p.add_argument('--save', action='store_true', help=argparse.SUPPRESS)
     p.add_argument('--all', action='store_true', help='every puck on the bus')
 
     p = sub.add_parser('system-config',
