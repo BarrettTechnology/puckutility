@@ -110,6 +110,7 @@ class TestCalibrate(CliTest):
         self.assertIs(fn.call_args.kwargs['network'], self.session.network)
         self.assertTrue(callable(fn.call_args.kwargs['reboot']))
         self.assertIn('saved to NV', out)
+        self.assertIs(fn.call_args.kwargs['autosave'], True)
 
     def test_a_save_all_that_failed_is_reported(self):
         self.patch(ok=False, unsaved=True)
@@ -117,9 +118,25 @@ class TestCalibrate(CliTest):
         self.assertEqual(code, 1)
         self.assertIn('RAM only', out + err)
 
-    def test_the_old_save_flag_still_runs(self):
+    def test_no_save_leaves_the_results_in_ram(self):
+        fn = self.patch(unsaved=True)
+        code, out, err = self.run_cli('-y', 'calibrate', '--no-save')
+        self.assertEqual(code, 0)
+        self.assertIs(fn.call_args.kwargs['autosave'], False)
+        self.assertIn('RAM only (--no-save)', out + err)
+        self.assertNotIn('saved to NV', out + err)
+
+    def test_no_save_with_nothing_in_ram_does_not_claim_a_save(self):
         self.patch()
-        self.assertEqual(self.run_cli('-y', 'calibrate', '--save')[0], 0)
+        _code, out, err = self.run_cli('-y', 'calibrate', '--no-save')
+        self.assertNotIn('saved to NV', out + err)
+
+    def test_the_old_save_flag_is_gone(self):
+        fn = self.patch()
+        with self.assertRaises(SystemExit) as caught:
+            self.run_cli('-y', 'calibrate', '--save')
+        self.assertEqual(caught.exception.code, 2)
+        fn.assert_not_called()
 
     def test_steps(self):
         fn = self.patch()

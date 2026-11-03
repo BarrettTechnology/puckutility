@@ -4,7 +4,7 @@
     puckutility info [--all] [--no-flashloader]
     puckutility flash FIRMWARE [--all]
     puckutility config load CSV [--all]       (and export/check/templates)
-    puckutility calibrate [STEP ...] [--save] [--all]
+    puckutility calibrate [STEP ...] [--no-save] [--all]
     puckutility system-config INI
     puckutility set-id NEW_ID
     puckutility reset [--all]
@@ -74,20 +74,23 @@ def _reboot(ctx, node_id):
     return lambda: ctx.session.reset_node(node_id)
 
 
-def _calibrate_node(ctx, node_id, steps=None):
+def _calibrate_node(ctx, node_id, steps=None, autosave=True):
     """The actuator calibration on *node_id*, its summary printed.  Each step
-    saves to NV as it passes.  Returns (ok, session): ok when every step
-    passed."""
+    saves to NV as it passes, unless *autosave* is False.  Returns (ok,
+    session): ok when every step passed."""
     node = ctx.session.add_node(node_id)
     ok, session = _calibrate.calibrate_actuator(
         node, ctx.reporter, steps=steps, reboot=_reboot(ctx, node_id),
-        network=ctx.session.network)
+        network=ctx.session.network, autosave=autosave)
     ctx.reporter.note('node {}:\n{}'.format(
         node_id, _calibrate.summary_text(session, steps)))
-    if session.unsaved:
+    if session.unsaved and not autosave:
+        ctx.reporter.note('node {}: the results are in RAM only (--no-save): a '
+                          'reboot loses them'.format(node_id))
+    elif session.unsaved:
         ctx.reporter.warn('node {}: the last results did not reach NV: they '
                           'are in RAM only'.format(node_id))
-    else:
+    elif autosave:
         ctx.reporter.note('node {}: the steps that passed are saved to NV'
                           .format(node_id))
     return ok, session
@@ -113,7 +116,8 @@ def _cmd_calibrate(ctx):
     ok = True
     for node_id in cli.targets(ctx):
         ctx.reporter.status('--- Node {} ---'.format(node_id))
-        if not _calibrate_node(ctx, node_id, steps or None)[0]:
+        if not _calibrate_node(ctx, node_id, steps or None,
+                               autosave=not ctx.args.no_save)[0]:
             ctx.reporter.warn('node {}: calibration failed'.format(node_id))
             ok = False
     return cli.EXIT_OK if ok else cli.EXIT_FAILED
@@ -167,14 +171,16 @@ def build_parser():
         'calibrate', help='actuator calibration (the motor turns)',
         description='The actuator calibration: the per-unit steps a batch '
         'CSV cannot carry (load the CSV first). With no STEP, all of them in '
-        'order; named steps run in that order too. Results stay in RAM '
-        'unless --save. Steps: ' +
+        'order; named steps run in that order too. Each step saves to NV as it '
+        'passes, unless --no-save. Steps: ' +
         '; '.join('{}: {}'.format(k, t) for k, t in _calibrate.STEPS.items()))
     p.set_defaults(func=_cmd_calibrate, needs_bus=True)
     p.add_argument('steps', nargs='*', metavar='STEP', type=_step_name,
                    help='any of ' + ', '.join(_calibrate.STEPS))
-    # Each step saves as it passes: kept so that old command lines still run.
-    p.add_argument('--save', action='store_true', help=argparse.SUPPRESS)
+    p.add_argument('--no-save', action='store_true',
+                   help='leave the winding, runout and cogging results in RAM '
+                   'instead of saving each step to NV (the board calibrations '
+                   'and the encoder filter still save themselves)')
     p.add_argument('--all', action='store_true', help='every puck on the bus')
 
     p = sub.add_parser('system-config',

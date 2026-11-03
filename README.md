@@ -173,7 +173,9 @@ arguments, the ones the puck's firmware can run.  Load the batch CSV first.
 The motor turns, continuously for cogging.  Each step's results are saved to
 NV (Save.All) as soon as it passes, so a later failure does not lose them.  A
 failed step saves nothing, and the next run reboots the puck first so that
-what it left in RAM cannot be saved.
+what it left in RAM cannot be saved.  `--no-save` leaves the winding, runout
+and cogging results in RAM instead, where a reboot loses them; the board
+calibrations and the encoder filter save themselves either way.
 
 ### The old flags
 The flags of earlier versions still work and are translated to the commands

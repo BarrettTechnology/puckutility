@@ -56,28 +56,30 @@ def step_keys(names):
     return plans.run_order(keys)
 
 
-def make_session(node, reporter=None, reboot=None, sync=None):
+def make_session(node, reporter=None, reboot=None, sync=None, autosave=True):
     """A p4core.actuator Session on *node* reporting to *reporter*.  *reboot()*
     NMT-resets the drive and returns its node (an encoder filter change
     takes effect only at boot); without it that step stops and asks for a
     reboot.  *sync*: the SYNC's owner (controllers.sync.SyncOwner), so a
-    measurement stream puts back the rate it found."""
+    measurement stream puts back the rate it found.  *autosave* False leaves
+    the steps' results in RAM."""
     return plans.make_session(node, _reporter(reporter), sync=sync,
-                              reboot=reboot)
+                              reboot=reboot, autosave=autosave)
 
 
 def calibrate_actuator(node, reporter=None, steps=None, reboot=None,
-                       network=None, session=None):
+                       network=None, session=None, autosave=True):
     """The actuator calibration on *node*: every step its firmware can run
     (supported), or just the named *steps*, in run order, stopping at the
     first failure.
     *session*: a Session to run in (make_session), so a step can use an
-    earlier one's result (fold needs this session's slope sweep).
+    earlier one's result (fold needs this session's slope sweep).  *autosave*
+    False (for a new session) leaves the steps' results in RAM.
     Returns (ok, session)."""
     reporter = _reporter(reporter)
     keys = step_keys(steps) if steps else list(supported(node))
     if session is None:
-        session = make_session(node, reporter, reboot)
+        session = make_session(node, reporter, reboot, autosave=autosave)
     ok = plans.run(session, keys, reporter)
     return ok, session
 

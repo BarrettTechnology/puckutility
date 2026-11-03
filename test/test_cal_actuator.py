@@ -146,7 +146,7 @@ class TestActuatorMenu(unittest.TestCase):
         self.sessions = []
         self.fail_keys = ()
 
-        def make(node, reporter=None, reboot=None, sync=None):
+        def make(node, reporter=None, reboot=None, sync=None, autosave=True):
             s = FakeSession(node, self.fail_keys)
             s.reboot = reboot
             s.sync = sync
