@@ -1,7 +1,7 @@
 """main.py — the ``puckutility`` entry point: the GUI, or a command.
 
     puckutility                          the GUI
-    puckutility [--can DEV] [--touchscreen]
+    puckutility [--can DEV | --ethercat NIC] [--touchscreen]
                                          the GUI, on that port / fullscreen
     puckutility gui [...]                the GUI
     puckutility <command> [...]          the command line (--help)
@@ -20,7 +20,7 @@ commands::
     --set-id NEW (--id OLD)      set-id NEW
     --flash-canable [FW]         flash-canable [FW]
 
-with --can, --all and --verbose carried over, and ``--id 1 2 3`` running
+with --can, --ethercat, --all and --verbose carried over, and ``--id 1 2 3`` running
 the command once per puck, one after another.
 
 ``puckutility-gui`` (a gui_scripts entry, no console window on Windows)
@@ -54,7 +54,9 @@ def _legacy_parser():
         prog='puckutility',
         description='The old puckutilityapp.py flags (see: puckutility --help '
                     'for the commands they map to).')
-    parser.add_argument('--can', metavar='DEVICE')
+    port = parser.add_mutually_exclusive_group()
+    port.add_argument('--can', metavar='DEVICE')
+    port.add_argument('--ethercat', metavar='NIC')
     parser.add_argument('--id', type=int, nargs='+', metavar='ID')
     parser.add_argument('--all', action='store_true')
     parser.add_argument('--touchscreen', action='store_true')
@@ -82,6 +84,8 @@ def translate_legacy(argv):
     common = []
     if a.can:
         common += ['--can', a.can]
+    if a.ethercat:
+        common += ['--ethercat', a.ethercat]
     if a.verbose:
         common.append('--verbose')
     per_node = True             # honours --id / --all
@@ -125,9 +129,9 @@ def _gui_only(argv):
     i = 0
     while i < len(argv):
         token = argv[i]
-        if token == '--touchscreen' or token.startswith('--can='):
+        if token == '--touchscreen' or token.startswith(('--can=', '--ethercat=')):
             i += 1
-        elif token == '--can' and i + 1 < len(argv):
+        elif token in ('--can', '--ethercat') and i + 1 < len(argv):
             i += 2
         else:
             return False

@@ -93,6 +93,51 @@ To flash a specific firmware file instead:
 puckutility flash-canable path/to/custom.bin
 ```
 
+### EtherCAT (through the EtherCAT-CAN bridge)
+Instead of a CAN adapter, Puck Utility can reach the pucks through the P4
+Playground board running the EtherCAT-CAN bridge firmware (`ecat-can-bridge`,
+vendor 0x408, product 0xCA01). The bridge only tunnels raw CAN frames; Puck
+Utility does the CANopen (SDO, NMT, PDO, SYNC) itself, so scanning, info,
+configuration and the tests work as over a CAN adapter.
+
+What it needs:
+* **pysoem** (the SOEM EtherCAT master) in the Python that runs Puck Utility:
+  `pip install pysoem` (or `pip install "puckutility[ethercat]"`). It is
+  only imported when an EtherCAT port is used.
+* **A dedicated network interface** wired to the bridge's EtherCAT IN port,
+  not your LAN connection. Nothing else (NetworkManager DHCP, another
+  EtherCAT master) should use it; e.g. `nmcli device set enp3s0 managed no`.
+* **Raw-socket permission**: run as root, or once give the interpreter the
+  capabilities (this applies to every script that interpreter runs):
+  `sudo setcap cap_net_raw,cap_net_admin+eip "$(readlink -f .venv/bin/python)"`.
+  On Windows, install Npcap.
+* **The bridge's SII/ESI in its EEPROM** (56-byte outputs, 64-byte inputs).
+  With the old prototype SII the bridge refuses SAFEOP (AL status 0x001D).
+  The bridge firmware's `bridge/README.md` explains how to write it
+  (`esi/P4_CAN_Bridge_sii.bin`, or the ESI `esi/P4_CAN_Bridge.xml` in
+  TwinCAT).
+
+Use it:
+```
+puckutility --ethercat enp3s0 scan
+puckutility --ethercat enp3s0 --id 127 info
+puckutility --ethercat enp3s0              # the GUI, preselected
+```
+`--ethercat NIC` replaces `--can` (they can't be combined). In the GUI, pick
+**EtherCAT...** at the end of the CAN Port list: choose the network
+interface, **Scan** lists the EtherCAT slaves on it (name, vendor, product,
+state), and OK connects to `EtherCAT:<nic>` and scans for pucks.
+
+Limits: classic CAN with 11-bit IDs only (no CAN FD, `--fd` is refused). The
+process data carries at most 4 CAN frames per EtherCAT cycle each way, and a
+batch needs about two cycles to be acknowledged. At the 1 ms cycle that is
+about 2000 frames/s each way: enough for SDO and NMT work and a few pucks'
+PDOs, but not a full 1 Mbit/s bus. Each SDO request/response takes a few
+milliseconds instead of under one. The bridge sends CAN frames only in OP; if
+it drops out of OP (for example, the process-data watchdog expires because
+the PC stalled), Puck Utility acknowledges the error and takes it back to OP.
+Frames queued at that moment are lost, and canopen's SDO retry covers them.
+
 ## Usage (launch the GUI)
 ```
 ./puckutilityapp.py              # from the checkout
@@ -100,6 +145,7 @@ puckutility                      # once installed (setup-pip.sh installs it)
 puckutility-gui                  # the GUI only (no console window on Windows)
 puckutility --touchscreen        # fullscreen (e.g. a 7" Raspberry Pi touchscreen)
 puckutility --can can1           # preselect a CAN port
+puckutility --ethercat enp3s0    # preselect EtherCAT on that network interface
 ```
 
 The main window:
@@ -147,7 +193,8 @@ puckutility flash-canable [FIRMWARE]
 puckutility --help                            # and: puckutility COMMAND --help
 ```
 
-`--can` defaults to `$P4_CAN`, else `can0`. `--id` may be left out when there
+`--can` defaults to `$P4_CAN`, else `can0`; `--ethercat NIC` goes through
+the EtherCAT-CAN bridge instead (see [EtherCAT](#ethercat-through-the-ethercat-can-bridge)). `--id` may be left out when there
 is one puck on the bus. `--fd` requires CAN FD, `--classic` uses classic CAN
 only. `-y` answers yes to every question (calibration asks before the motor
 turns), `-q` prints only results, warnings and errors, `-v` more, and

@@ -62,6 +62,12 @@ class TestLegacyFlags(unittest.TestCase):
         with mock.patch('sys.stderr'), self.assertRaises(SystemExit):
             self.t('--scan --info')
 
+    def test_ethercat_is_carried_over(self):
+        self.assertEqual(self.t('--ethercat enp3s0 --info --id 127'),
+                         [['--ethercat', 'enp3s0', '--id', '127', 'info']])
+        with mock.patch('sys.stderr'), self.assertRaises(SystemExit):
+            self.t('--can can0 --ethercat enp3s0 --scan')
+
 
 class TestRouting(unittest.TestCase):
 
@@ -73,7 +79,8 @@ class TestRouting(unittest.TestCase):
 
     def test_no_arguments_or_gui_flags_start_the_gui(self):
         for argv in ([], ['--touchscreen'], ['--can', 'vcan0'],
-                     ['--can=can1', '--touchscreen']):
+                     ['--can=can1', '--touchscreen'], ['--ethercat', 'enp3s0'],
+                     ['--ethercat=enp3s0']):
             gui, cli = self.route(argv)
             gui.assert_called_once_with(argv)
             cli.assert_not_called()

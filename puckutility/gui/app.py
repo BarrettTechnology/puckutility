@@ -53,6 +53,7 @@ import os
 import canopen
 from p4core import can_backend
 from p4core import firmware
+from p4core.ethercat_bus import ethercat_port, is_ethercat_port, nic_of
 from ..controllers import calibrate as actuator
 from canopen.sdo import SdoAbortedError
 import platform
@@ -89,6 +90,10 @@ from ..controllers.sync import ADC_SYNC_HZ, SyncOwner
 
 #: The P4 object dictionary (p4core's copy).
 EDS = paths.eds()
+
+#: The CAN Port choice's last item: picks a network interface for EtherCAT
+#: (the EtherCAT-CAN bridge), which then shows up as 'EtherCAT:<nic>'.
+ETHERCAT_ITEM = 'EtherCAT...'
 
 # Puck-specific EMCY fault descriptions (from firmware app/faults.c codes[]). The canopen
 # library's get_desc() only knows generic CiA ranges -- e.g. it renders 0x2311 as just
@@ -589,10 +594,14 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             # Specifications
         # print('Setting Tool Tips...')   # cosmetic UI wiring -- no diagnostic value
         self.choice_port.SetToolTip('Select CAN port')
+        # Last item: opens the EtherCAT dialog (see _choose_ethercat).
+        self.choice_port.Append(ETHERCAT_ITEM)
         self.settings = AppSettings("puckutility")   # persistent "memory" of user defaults
         _saved_port = self.settings.get("can_port")
         if _saved_port:
             try:
+                if is_ethercat_port(_saved_port):
+                    self._add_port_item(_saved_port)
                 self.choice_port.SetStringSelection(_saved_port)
             except Exception:
                 pass
@@ -600,8 +609,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         # + selected even if it isn't auto-enumerated. Takes precedence over the saved port.
         if MyApp.can_arg:
             try:
-                if self.choice_port.FindString(MyApp.can_arg) == wx.NOT_FOUND:
-                    self.choice_port.Append(MyApp.can_arg)
+                self._add_port_item(MyApp.can_arg)
                 self.choice_port.SetStringSelection(MyApp.can_arg)
             except Exception:
                 pass
@@ -1219,6 +1227,56 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         except Exception:
             return False
 
+    def _add_port_item(self, port):
+        """Make *port* selectable in the CAN Port choice (ahead of the
+        'EtherCAT...' item)."""
+        if self.choice_port.FindString(port) != wx.NOT_FOUND:
+            return
+        pos = self.choice_port.FindString(ETHERCAT_ITEM)
+        if pos == wx.NOT_FOUND:
+            self.choice_port.Append(port)
+        else:
+            self.choice_port.Insert(port, pos)
+
+    def _choose_ethercat(self):
+        """'EtherCAT...' was picked: ask for the network interface (the
+        dialog can scan it for EtherCAT slaves).  Returns True with a port
+        to connect to selected ('EtherCAT:<nic>', or the previous port if a
+        scan released it), False with the previous port restored."""
+        from .ethercat_dialog import EtherCATDialog
+        previous = getattr(self, '_last_port', None)
+        released = []
+
+        def release():
+            # A scan opens the NIC itself: let go of our own EtherCAT link.
+            if (not released and is_ethercat_port(previous or '')
+                    and getattr(self, 'network', None) is not None):
+                try:
+                    self.network.disconnect()
+                except Exception:
+                    pass
+                self.network = None
+                released.append(True)
+
+        dlg = EtherCATDialog(self, nic=nic_of(previous) if is_ethercat_port(previous or '') else None,
+                             before_scan=release)
+        try:
+            ok = dlg.ShowModal() == wx.ID_OK
+            nic = dlg.selected_nic()
+        finally:
+            dlg.Destroy()
+        if ok and nic:
+            port = ethercat_port(nic)
+            self._add_port_item(port)
+            self.choice_port.SetStringSelection(port)
+            self.choice_port.SetToolTip(port)
+            return True
+        if previous and self.choice_port.FindString(previous) != wx.NOT_FOUND:
+            self.choice_port.SetStringSelection(previous)
+        else:
+            self.choice_port.SetSelection(0)
+        return bool(released)
+
     def can_port(self,event,skipADC=False,silent=False,auto_reconnect=False):
         self.Rescanning = False
         # Cancel any pending auto-reconnect: this connect attempt supersedes it.
@@ -1240,6 +1298,13 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.adcWasON = True
         else:
             self.adcWasON = False
+
+        if self.choice_port.GetStringSelection() == ETHERCAT_ITEM:
+            if silent or auto_reconnect or not self._choose_ethercat():
+                if self.adcWasON == True:
+                    self.on_off_adc(self)
+                return False
+        self._last_port = self.choice_port.GetStringSelection()
 
         try:
             self.network.disconnect() # Close any open networks
@@ -1328,6 +1393,13 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                     print('No Pucks Found') # Establish error for no pucks
                     status_msg = 'No Pucks Found'
                     msg = 'No Pucks Found! \nDebug:\nPower Connection\nCAN Connection\n\nVerify Connection and Retry'
+                elif is_ethercat_port(can_device):
+                    print('EtherCAT connect failed: {}'.format(e2))
+                    status_msg = 'EtherCAT error: {}'.format(e2)
+                    msg = ('EtherCAT connection failed on {}:\n\n{}\n\n'
+                           'Check the cable to the bridge, the bridge power, pysoem, and '
+                           'raw-socket permission (run as root or setcap python).'
+                           .format(nic_of(can_device), e2))
                 else:
                     print('No CAN device found!')
                     status_msg = 'Scan Error: No CAN device found'
@@ -3179,6 +3251,9 @@ def main(argv=None):
                         version='%(prog)s v' + __version__)
     parser.add_argument('--can', metavar='DEVICE',
                         help='preselect this CAN device')
+    parser.add_argument('--ethercat', metavar='NIC',
+                        help='preselect EtherCAT: the EtherCAT-CAN bridge on '
+                             'this network interface')
     parser.add_argument('--touchscreen', action='store_true',
                         help='fullscreen (e.g. the 7" Raspberry Pi touchscreen)')
     args, _unknown = parser.parse_known_args(argv)
@@ -3188,7 +3263,7 @@ def main(argv=None):
         os.chdir(os.path.dirname(sys.executable))
     _setup_logging()
     MyApp.touchscreen = args.touchscreen
-    MyApp.can_arg = args.can
+    MyApp.can_arg = ethercat_port(args.ethercat) if args.ethercat else args.can
     # Before MyApp() creates the first window, so the Wayland app_id is set
     # when the toplevel is mapped.
     _setup_linux_desktop_integration('PuckUtilityApp', 'Puck Utility')
