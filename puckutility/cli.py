@@ -158,7 +158,7 @@ def build_parser():
         version='v' + __version__)
     sub.add_parser('gui', help='start the GUI (the default)')
     cli.add_common_commands(
-        sub, only=('scan', 'flash', 'config', 'set-id', 'reset'))
+        sub, only=('scan', 'flash', 'config', 'set-id', 'reset', 'wipe-nvm'))
 
     p = sub.add_parser('info', help='firmware, flashloader, model and live '
                        'readings (reads the flashloader by rebooting the puck)')

@@ -171,7 +171,7 @@ menu runs (p4core.actuator's steps): encoder, bias, gain, slope, fold,
 winding, runout, cogging (`puckutility calibrate --help`); without STEP
 arguments, the ones the puck's firmware can run.  Load the batch CSV first.
 The motor turns, continuously for cogging.  Each step's results are saved to
-NV (Save.All) as soon as it passes, so a later failure does not lose them.  A
+NV (Save.App + Save.Mfg) as soon as it passes, so a later failure does not lose them.  A
 failed step saves nothing, and the next run reboots the puck first so that
 what it left in RAM cannot be saved.  `--no-save` leaves the winding, runout
 and cogging results in RAM instead, where a reboot loses them; the board

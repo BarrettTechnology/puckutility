@@ -1,6 +1,6 @@
 """The Actuator Calibration menu's handlers over a fake frame and a fake
 session: the confirmation, the plan's keys (those the firmware can run),
-one cached session per puck for the single steps, a Save.All retry only when the
+one cached session per puck for the single steps, a Save.App + Save.Mfg retry only when the
 user says so, All Pucks, the reboot an encoder filter change needs, and the
 config gate in front of every calibration.  Bias and gain are p4core steps
 like the rest."""
@@ -187,7 +187,7 @@ class TestActuatorMenu(unittest.TestCase):
         with mock.patch.object(cal_actuator.actuator, 'save_results',
                                side_effect=real) as save:
             f._actuator_done(s, plans.ACTUATOR)
-        self.assertIn('Try Save.All again?', f.prompts[-1])
+        self.assertIn('Try Save.App + Save.Mfg again?', f.prompts[-1])
         save.assert_called_once()
         self.assertEqual(s.runs[-1], ['save'])
 

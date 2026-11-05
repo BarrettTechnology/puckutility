@@ -14,7 +14,7 @@ same functions with dialogs and the progress bar around them.  No wx here.
 A step the drive's firmware cannot run (plans.unavailable) is not offered:
 supported() is what the menus list and what a whole calibration runs.
 
-Each step's results are saved to NV as soon as it passes (Save.All, in
+Each step's results are saved to NV as soon as it passes (Save.App + Save.Mfg, in
 p4core.actuator.steps), so a later failure does not lose them.
 """
 
@@ -85,8 +85,8 @@ def calibrate_actuator(node, reporter=None, steps=None, reboot=None,
 
 
 def save_results(session, reporter=None):
-    """Save.All, and the reboot an i_cont change needs (plans.save): another
-    try when session.unsaved says a step's own Save.All failed."""
+    """Save.App + Save.Mfg, and the reboot an i_cont change needs (plans.save): another
+    try when session.unsaved says a step's own Save.App + Save.Mfg failed."""
     return plans.save(session, reporter=reporter)
 
 

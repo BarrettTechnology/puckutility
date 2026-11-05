@@ -7,7 +7,7 @@ measured on each unit (p4core.actuator.plans.ACTUATOR).  A mixin of the
 calibrate menu (calibrate_menu.calibrate inherits it).  The steps are
 p4core's, through controllers.calibrate; this keeps the frame side: the gate and the
 confirmations, the progress gauge, the ADC monitor, the reboot an encoder
-filter change needs, and the offer to retry a Save.All that failed.
+filter change needs, and the offer to retry a Save.App + Save.Mfg that failed.
 
 Each step item runs that step alone in this puck's cached Session, so fold
 finds the slope sweep a Slope run left in it.  Bias and gain are p4core
@@ -244,7 +244,7 @@ class ActuatorCal:
             self._ui_unlock()
 
     def _actuator_done(self, session, keys):
-        """The summary.  Each step saved itself as it passed; if a Save.All
+        """The summary.  Each step saved itself as it passed; if a Save.App + Save.Mfg
         failed, offer it again."""
         if session is None:
             return
@@ -256,7 +256,7 @@ class ActuatorCal:
             return
         if self._prompt('Actuator Calibration',
                         text + '\n\nThe last results did not reach NV: they '
-                        'are in RAM only.\nTry Save.All again?'):
+                        'are in RAM only.\nTry Save.App + Save.Mfg again?'):
             self._actuator_save(session)
 
     def _actuator_save(self, session):
@@ -269,9 +269,9 @@ class ActuatorCal:
             return False
         finally:
             self._ui_unlock()
-        print('Save.All {}'.format('done' if ok else 'FAILED'))
+        print('Save.App + Save.Mfg {}'.format('done' if ok else 'FAILED'))
         if not ok:
-            self._prompt_ok('Save to NV', 'Save.All failed:\n\n' +
+            self._prompt_ok('Save to NV', 'Save.App + Save.Mfg failed:\n\n' +
                             plans.summary_text(session, ('save',)))
         return ok
 

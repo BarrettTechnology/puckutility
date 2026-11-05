@@ -80,6 +80,7 @@ from p4core.cia402 import (
 import csv
 import traceback
 from p4core import flash as flashp4
+from p4core.pdo_defaults import apply_default_pdos
 import logging
 
 from .. import paths, __version__
@@ -950,7 +951,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         finally:
             canopen.sdo.SdoClient.RESPONSE_TIMEOUT = _timeout
 
-    def configure_Puck(self, configure_pdos=True):
+    def configure_Puck(self):
         print("Configuring Puck...")
 
         # Read and set gear ratio from object dictionary
@@ -981,61 +982,18 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         print('Gear Ratio determined: {}'.format(self.gearRatio))
 
         try:
-            self.node.tpdo.read()
-            self.node.rpdo.read()
+            apply_default_pdos(self.node)
         except Exception as e:
-            print(f"Failed to read PDOs: {e!r}")
+            print(f"Failed to set up PDOs: {e}")
 
-        if self.node.rpdo[1].cob_id is None:
-            self.node.rpdo[1].cob_id = 0x200 + self.node.id
-        if self.node.rpdo[2].cob_id is None:
-            self.node.rpdo[2].cob_id = 0x300 + self.node.id
-
-        # NEW
-
-        if configure_pdos:
-            try:
-                self.node.tpdo.read()
-                self.node.tpdo[3].clear()
-                self.node.tpdo[3].add_variable('Amplifier', 'Temperature')
-                self.node.tpdo[3].add_variable('Motor', 'Therm')
-                self.node.tpdo[3].trans_type = 10
-                self.node.tpdo[3].enabled = True
-                # TPDO4: Motor.id on every SYNC — the cal fast-read reads it under continuous SYNC.
-                # PDO mapping only changes while not operational, so it's set here at configure time.
-                self.node.tpdo[4].clear()
-                self.node.tpdo[4].add_variable('Motor', 'id')
-                self.node.tpdo[4].trans_type = 1
-                self.node.tpdo[4].enabled = True
-                self.node.tpdo.save()
-            except Exception as e:
-                print(f"Failed to set up TPDOs: {e}")
-            finally:
-                # Re-sync local map with what firmware actually accepted.
-                # If save() was rejected, this prevents a local/firmware mismatch
-                # that would cause Motor.Therm to read the wrong bytes in TPDO[3].
-                try:
-                    self.node.tpdo.read()
-                except Exception:
-                    pass
-
-            self.node.tpdo[1].callbacks.clear()
-            self.node.tpdo[2].callbacks.clear()
-            self.node.tpdo[3].callbacks.clear()
-            self.node.emcy.callbacks.clear()
-            self.node.tpdo[1].add_callback(self.tpdo1_callback)
-            self.node.tpdo[2].add_callback(self.tpdo2_callback)
-            self.node.tpdo[3].add_callback(self.tpdo3_callback)
-            self.node.emcy.add_callback(self.on_emcy_received)
-
-            try:
-                self.node.rpdo[2].clear()
-                self.node.rpdo[2].add_variable('TargetVelocity')  # 0x60FF, 32-bit
-                self.node.rpdo[2].add_variable('TargetPosition')  # 0x607A, 32-bit
-                self.node.rpdo[2].enabled = True
-                self.node.rpdo.save()
-            except Exception as e:
-                print(f"Failed to configure RPDOs: {e}")
+        self.node.tpdo[1].callbacks.clear()
+        self.node.tpdo[2].callbacks.clear()
+        self.node.tpdo[3].callbacks.clear()
+        self.node.emcy.callbacks.clear()
+        self.node.tpdo[1].add_callback(self.tpdo1_callback)
+        self.node.tpdo[2].add_callback(self.tpdo2_callback)
+        self.node.tpdo[3].add_callback(self.tpdo3_callback)
+        self.node.emcy.add_callback(self.on_emcy_received)
 
         # Each time we receive this PDO from the puck, execute a callback
         # node.tpdo[1].add_callback(self.tpdo1_callback)
@@ -2142,6 +2100,12 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
         can_device = self.choice_port.GetStringSelection()
         node_id = self.choice_id.GetString(self.choice_id.GetSelection())
+
+        # The Save.All below stores all of RAM: start from NV, without the PDO
+        # map this app runs with, so that only the file changes what NV holds.
+        self.network.send_message(0x0, [0x81, int(node_id)])
+        time.sleep(0.5)
+        self._wait_for_node(int(node_id), timeout=10.0)
 
         print("Writing OD entries...")
         _cfg_t0 = time.time()
