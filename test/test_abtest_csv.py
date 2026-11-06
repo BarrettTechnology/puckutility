@@ -48,6 +48,15 @@ class TemplateTest(Base):
                 self.assertEqual((r['missing'], r['errors'], r['warnings']), ([], [], []))
                 self.assertEqual(r['line'], 'legacy' if line == '4.3.5' else 'current')
 
+    def test_shipped_csvs_audit_clean(self):
+        shipped = sorted(os.listdir(os.path.join(AB, 'csv')))
+        self.assertEqual(len(shipped), 4)
+        for name in shipped:
+            line = '4.3.5' if 'fw4.3.5' in name else '5.x'
+            with self.subTest(csv=name):
+                r = csvaudit.audit(os.path.join(AB, 'csv', name), EDS[line])
+                self.assertEqual((r['missing'], r['errors'], r['warnings']), ([], [], []))
+
     def test_main_exit_status(self):
         out = io.StringIO()
         sys_stdout, sys.stdout = sys.stdout, out
