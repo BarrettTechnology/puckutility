@@ -9,7 +9,7 @@ Every non-volatile, writable entry the firmware has is listed as one of
   MISSING    the CSV leaves it at whatever the puck had
 
 and the CSV must also
-  - set 0x21B2 = 0, 0x1F80 = 0, 0x1017 = 0, 0x1015 = 50 and 0x2406 = 0,
+  - set 0x21B2 = 0, 0x1F80 = 4, 0x1017 = 0, 0x1015 = 50 and 0x2406 = 0,
   - set every RPDO/TPDO mapping count (0x1600-3,0 / 0x1A00-3,0) to 0,
   - give each row the EDS's data type, REAL32 rows in float form,
   - on 5.x, once the velocity loop is tuned (0x2381,1 not 0), set the CSI
@@ -31,10 +31,11 @@ from canopen.objectdictionary import ODVariable
 from p4core import config_csv, nvjson
 from p4core.config_csv import BOARD_CALIBRATION
 
-#: The values every A/B CSV sets: termination off, boot to operational, no
-#: heartbeat, 5 ms EMCY inhibit, no SYNC-loss fault (the A/B script runs SYNC
-#: from the host and a stopped script must not fault the drive).
-REQUIRED = {(0x21B2, 0): 0, (0x1F80, 0): 0, (0x1017, 0): 0, (0x1015, 0): 50,
+#: The values every A/B CSV sets: termination off, boot to PRE-OPERATIONAL
+#: (the tools start the node themselves), no heartbeat, 5 ms EMCY inhibit,
+#: no SYNC-loss fault (the A/B script runs SYNC from the host and a stopped
+#: script must not fault the drive).
+REQUIRED = {(0x21B2, 0): 0, (0x1F80, 0): 4, (0x1017, 0): 0, (0x1015, 0): 50,
             (0x2406, 0): 0}
 PDO_COUNTS = [(i, 0) for i in (0x1600, 0x1601, 0x1602, 0x1603,
                                0x1A00, 0x1A01, 0x1A02, 0x1A03)]

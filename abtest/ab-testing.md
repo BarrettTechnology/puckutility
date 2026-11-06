@@ -276,12 +276,12 @@ Programming puck4.app.stm32.release.v4.3.5-0-g6605fba.bin (55704 bytes)...
 Application validated. Launching...
 Node 4 running 4.3.5
 ```
-The package ships plain `.bin` images, for flashloader 3.0.7, which the
-test actuators run. 3.1.0 and later take only an encrypted `.ebin`; ask for
-those if `info` (without `--no-flashloader`) shows a newer flashloader. An
-`.ebin` that fails authentication leaves the node in its flashloader with
-no application: flash the `.bin` to recover it. Flashing does not touch
-NV, which is why a downgrade must be followed by a wipe (section 1.3).
+The package ships encrypted `.ebin` images; the output above is from a
+bench run with an unencrypted build. An `.ebin` that fails authentication
+leaves the node in its flashloader with no application: `info` (without
+`--no-flashloader`) shows the flashloader version, and an image can be
+built for it on request. Flashing does not touch NV, which is why a
+downgrade must be followed by a wipe (section 1.3).
 
 ### 2.9 Calibrate: `calibrate [STEP ...]`
 
@@ -1130,10 +1130,8 @@ values of each prepare (`prepare.log`), the firmware and CSV SHA-256
   then restore its NV.
 - **`flash` fails with "the encrypted image failed authentication".**
   The `.ebin` was encrypted for another flashloader. The node waits in its
-  flashloader (`version` shows the flashloader's 3.x.x): flash the package's
-  `.bin` (section 2.8).
-- **`flash` of a `.bin` fails at once.** Flashloader 3.1.0 or later, which
-  takes only `.ebin`.
+  flashloader (`version` shows the flashloader's 3.x.x): ask for an image
+  built for that flashloader (section 2.8).
 - **4.3.5 behaves wildly after a downgrade.** The bias trap (section 1.3):
   `nv save` the node and check 0x3008,3 / 0x3009,3. Values near 32000 mean
   5.x NV. Run `prepare` (wipe, load, calibrate) before enabling again.

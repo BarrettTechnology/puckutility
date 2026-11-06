@@ -1,15 +1,17 @@
 #!/bin/bash
 # Assemble the A/B test package folder (plan: p4gui notes/ab-test-plan.md §1, §10).
 #
-#   abtest/make_package.sh [--force] [--firmware DIR] [OUTDIR]
+#   abtest/make_package.sh [--force] --firmware DIR [OUTDIR]
+#   abtest/make_package.sh [--force] --test [OUTDIR]
 #
 # OUTDIR defaults to ~/code/p4gui/ab-testing-YYYYMMDD and is not overwritten
 # unless --force. The folder is not zipped.
 #
-# Firmware: by default the plain STM32 .bin images built at the tags
-# (./build.sh stm32 app release in a checkout at v4.3.5 and at v5.0.5),
-# found in $STM32 or one of its worktrees. --firmware DIR copies the
-# puck4.app.stm32.* images (.ebin or .bin) from DIR instead.
+# Firmware: --firmware DIR copies the encrypted puck4.app.stm32.*.ebin
+# images from DIR. A .bin is never shipped; --test (a bench package only)
+# takes the plain .bin images built at the tags (./build.sh stm32 app
+# release in a checkout at v4.3.5 and at v5.0.5) from $STM32 or one of its
+# worktrees instead.
 #
 # Inputs from this repo: abtest/{ab-testing,install,can-adapters}.md,
 # abtest/README-package.md, abtest/{ab_testing,csvdiff}.py, sandbox/testp4.py,
@@ -28,13 +30,15 @@ MANUAL_435=${MANUAL_435:-feature/manual-4.3.5}
 TAGS=(v4.3.5 v5.0.5)
 
 force=0
+test=0
 fwdir=
 out=
 while [ $# -gt 0 ]; do
     case "$1" in
         --force) force=1 ;;
         --firmware) fwdir=$2; shift ;;
-        -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
+        --test) test=1 ;;
+        -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
         -*) echo "unknown option $1" >&2; exit 2 ;;
         *) out=$1 ;;
     esac
@@ -44,6 +48,10 @@ out=${out:-$P4GUI/ab-testing-$(date +%Y%m%d)}
 out=$(realpath -m "$out")
 
 die() { echo "make_package: $*" >&2; exit 1; }
+
+if [ -z "$fwdir" ] && [ $test = 0 ]; then
+    die "--firmware DIR (the .ebin images), or --test for a bench package with .bin"
+fi
 
 if [ -e "$out" ] && [ $force = 0 ]; then
     die "$out exists (use --force to replace it)"
@@ -59,8 +67,8 @@ exe=$REPO/build/win/PuckUtilityApp-win-v$ver-setup.exe
 fw=()
 if [ -n "$fwdir" ]; then
     for t in "${TAGS[@]}"; do
-        f=$(ls "$fwdir"/puck4.app.stm32.*"$t"*.ebin "$fwdir"/puck4.app.stm32.*"$t"*.bin 2>/dev/null | head -1 || true)
-        [ -n "$f" ] || die "no puck4.app.stm32 image for $t in $fwdir"
+        f=$(ls "$fwdir"/puck4.app.stm32.*"$t"*.ebin 2>/dev/null | head -1 || true)
+        [ -n "$f" ] || die "no puck4.app.stm32 .ebin for $t in $fwdir"
         fw+=("$f")
     done
 else
@@ -70,6 +78,7 @@ else
         [ -n "$f" ] || die "no $name in $STM32 or its worktrees: ./build.sh stm32 app release at $t"
         fw+=("$f")
     done
+    echo "make_package: --test: plain .bin firmware, NOT for shipping" >&2
 fi
 
 tmp=$out.tmp.$$
