@@ -34,7 +34,7 @@ the installer for the CAN support). You need two things on the
 PATH or importable:
 - the `puckutility` command (the CLI, sections 2 and 3);
 - Python 3.9+ with `p4core`, `numpy` and `matplotlib` importable, for
-  `abtest/ab_testing.py`. It runs its stages as `python -m p4core ...` with
+  `ab_testing.py`. It runs its stages as `python -m p4core ...` with
   the same interpreter, so p4core must be importable from that one.
 
 Check:
@@ -396,15 +396,15 @@ Bench values (42 V) for comparison. They should repeat within a few counts.
 
 ## 4. The A/B procedure
 
-`abtest/ab_testing.py` drives the whole test. It needs the CSVs in
-`abtest/csv/` and the firmware images in `abtest/firmware/` (or `--csv`,
+`ab_testing.py` drives the whole test. It needs the CSVs in
+`csv/` and the firmware images in `firmware/` (or `--csv`,
 `--bin`).
 ```
-python abtest/ab_testing.py --can can3 --id 4 prepare --fw 4.3.5 --actuator BO4523
-python abtest/ab_testing.py --can can3 --id 4 run --actuator BO4523 [--profile chirp,square]
-python abtest/ab_testing.py plot runs/RUN_A [runs/RUN_B]
-python abtest/ab_testing.py compare runs/RUN_A runs/RUN_B
-python abtest/ab_testing.py profiles
+python ab_testing.py --can can3 --id 4 prepare --fw 4.3.5 --actuator BO4523
+python ab_testing.py --can can3 --id 4 run --actuator BO4523 [--profile chirp,square]
+python ab_testing.py plot runs/RUN_A [runs/RUN_B]
+python ab_testing.py compare runs/RUN_A runs/RUN_B
+python ab_testing.py profiles
 ```
 `--runs DIR` sets where results go (default `./runs`).
 
@@ -516,7 +516,7 @@ maximum, or on any fault, and records every EMCY.
 
 A real 4.3.5 run on node 4:
 ```
-$ python abtest/ab_testing.py --can can3 --id 4 run --actuator BO4523
+$ python ab_testing.py --can can3 --id 4 run --actuator BO4523
 node 4: firmware 4.3.5
 -- chirp: position sine swept 0.2 -> 10 Hz (log), constant velocity amplitude until the acceleration limit
    20261106-131356-n4-4.3.5-chirp: pos err rms 0.680 deg, peak 1.135 (lag 32 ms, then rms 0.047); vel err rms 11.00 deg/s; iq rms 308 mA, peak 1222; iq vs 0x6078 r +0.546; TPDO {'tpdo1': 4102, 'tpdo2': 4102}
@@ -603,12 +603,12 @@ record over 8 bytes; then read by SDO).
 This captures position command and feedback, then velocity, iq and current,
 mid-way through a constant-speed CSP move. It is the capture that found the
 asynchronous-RPDO problem (section 4.2). It uses the helpers in
-`sandbox/testp4.py` and `ab_testing.py`.
+`testp4.py` and `ab_testing.py`; run it from the package folder.
 ```python
 import math, struct, sys
 import canopen
-import testp4 as T                          # puckutility/sandbox
-import ab_testing as A                      # puckutility/abtest
+import testp4 as T                          # the package folder
+import ab_testing as A
 from p4core import cia402
 from p4core.actuator import playback
 from p4core.can_backend import make_network
@@ -1021,7 +1021,7 @@ at once on both.
 
 ### 10.1 Plots
 ```
-$ python abtest/ab_testing.py plot runs/20261106-131449-n4-4.3.5-ramp runs/20261106-130811-n4-5.0.5-ramp
+$ python ab_testing.py plot runs/20261106-131449-n4-4.3.5-ramp runs/20261106-130811-n4-5.0.5-ramp
 ```
 draws, against time, Id and Iq, the velocity error and the position error,
 one firmware over the other. One run alone gives its own figure (`plot.png`
@@ -1029,7 +1029,7 @@ is written by `run` too).
 
 ### 10.2 Metrics
 ```
-$ python abtest/ab_testing.py compare runs/20261106-131449-n4-4.3.5-ramp runs/20261106-130811-n4-5.0.5-ramp
+$ python ab_testing.py compare runs/20261106-131449-n4-4.3.5-ramp runs/20261106-130811-n4-5.0.5-ramp
                             4.3.5 4.3.5    5.0.5 5.0.5
 pos_err_rms_deg                  0.6663         0.2458
 pos_err_peak_deg                  1.152          0.496

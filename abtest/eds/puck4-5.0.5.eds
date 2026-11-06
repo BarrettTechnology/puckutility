@@ -1,14 +1,14 @@
 [FileInfo]
-FileName=puck4-505.eds
+FileName=puck4.eds
 FileVersion=5
 FileRevision=0
 EDSVersion=4.0
-Description=Barrett Puck 4 PMSM motor controller (firmware 5.0.4)
-CreationTime=10:00PM
-CreationDate=11-05-2026
+Description=Barrett Puck 4 PMSM motor controller (firmware 5.0.5)
+CreationTime=02:34PM
+CreationDate=11-06-2026
 CreatedBy=scripts/gen_eds.py
-ModificationTime=10:00PM
-ModificationDate=11-05-2026
+ModificationTime=02:34PM
+ModificationDate=11-06-2026
 ModifiedBy=scripts/gen_eds.py
 
 [DeviceInfo]

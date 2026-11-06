@@ -4,11 +4,11 @@ FileVersion=4
 FileRevision=3
 EDSVersion=4.0
 Description=Barrett Puck 4 PMSM motor controller (firmware 4.3.5)
-CreationTime=09:29PM
-CreationDate=11-05-2026
+CreationTime=02:23PM
+CreationDate=11-06-2026
 CreatedBy=scripts/gen_eds.py
-ModificationTime=09:29PM
-ModificationDate=11-05-2026
+ModificationTime=02:23PM
+ModificationDate=11-06-2026
 ModifiedBy=scripts/gen_eds.py
 
 [DeviceInfo]
@@ -2660,7 +2660,7 @@ AccessType=rw
 DefaultValue=0
 
 [3013sub3]
-ParameterName=EncUPolarity
+ParameterName=UserPolarity
 ObjectType=0x07
 DataType=0x0002
 AccessType=rw
@@ -2674,7 +2674,7 @@ AccessType=rw
 DefaultValue=0
 
 [3013sub5]
-ParameterName=LatencyUs
+ParameterName=LagFactor
 ObjectType=0x07
 DataType=0x0006
 AccessType=rw
@@ -2841,7 +2841,7 @@ AccessType=ro
 DefaultValue=3
 
 [3025sub1]
-ParameterName=ValuePercentX10
+ParameterName=Value
 ObjectType=0x07
 DataType=0x0003
 AccessType=ro
@@ -3117,7 +3117,7 @@ AccessType=rw
 DefaultValue=0
 
 [607E]
-ParameterName=Polarity
+ParameterName=UserEncoderPolarity
 ObjectType=0x07
 DataType=0x0002
 AccessType=rw
