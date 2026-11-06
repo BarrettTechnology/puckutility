@@ -418,8 +418,9 @@ def find_csv(actuator, fw, csv_dir):
 
 
 def find_firmware(fw, fw_dir):
-    found = sorted(glob.glob(os.path.join(fw_dir, '*{}*.ebin'.format(fw))) +
-                   glob.glob(os.path.join(fw_dir, '*{}*.bin'.format(fw))))
+    # The .bin first: flashloader 3.0.7 rejects the CI .ebin (another key).
+    found = sorted(glob.glob(os.path.join(fw_dir, '*{}*.bin'.format(fw)))) + \
+        sorted(glob.glob(os.path.join(fw_dir, '*{}*.ebin'.format(fw))))
     if not found:
         raise AbError('no {} firmware (.ebin or .bin) in {}: give --bin'.format(fw, fw_dir))
     return found[0]

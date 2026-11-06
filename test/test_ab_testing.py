@@ -185,6 +185,15 @@ class TestFiles(unittest.TestCase):
         with self.assertRaises(A.AbError):
             A.find_csv('BO3518', '4.3.5', self.tmp.name)
 
+    def test_find_firmware_takes_the_bin_before_the_ebin(self):
+        self.touch('puck4.app.stm32.release.v5.0.5-0-gc38572a.ebin')
+        self.touch('puck4.app.stm32.release.v4.3.5-0-g6605fba.bin')
+        self.assertTrue(A.find_firmware('5.0.5', self.tmp.name).endswith('.ebin'))
+        b = self.touch('puck4.app.stm32.release.v5.0.5-0-gc38572a.bin')
+        self.assertEqual(A.find_firmware('5.0.5', self.tmp.name), b)
+        with self.assertRaises(A.AbError):
+            A.find_firmware('4.3.3', self.tmp.name)
+
     def test_the_package_csvs_are_found(self):
         # the bench drafts, when this checkout sits in p4gui/worktrees/
         csv_dir = os.path.join(ROOT, '..', '..', '..', 'notes', 'bench', 'abtest', 'csv')
