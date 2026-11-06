@@ -47,13 +47,13 @@ def numbered(keys):
 
 
 def step_keys(names):
-    """Step keys for *names* (keys or plans.ALIASES names), actuator steps
-    only, in run order; CalibrationFailed names the choices otherwise."""
+    """Step keys for *names* (keys, plans.ALIASES or plans.GROUPS names),
+    actuator steps only, each once, in run order; CalibrationFailed names the
+    choices otherwise."""
     try:
-        keys = [plans.canonical(n, plans.ACTUATOR) for n in names]
+        return plans.expand(names, plans.ACTUATOR)
     except plans.PlanError as exc:
         raise CalibrationFailed(str(exc)) from None
-    return plans.run_order(keys)
 
 
 def make_session(node, reporter=None, reboot=None, sync=None, autosave=True):
