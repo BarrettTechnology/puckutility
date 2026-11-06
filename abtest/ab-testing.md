@@ -29,7 +29,8 @@ Contents
 
 ### 1.1 Install
 
-Install the tools as described in `install.md`. You need two things on the
+Install the tools as described in `install.md` (Python wheels for the CLI,
+the installer for the CAN support). You need two things on the
 PATH or importable:
 - the `puckutility` command (the CLI, sections 2 and 3);
 - Python 3.9+ with `p4core`, `numpy` and `matplotlib` importable, for
