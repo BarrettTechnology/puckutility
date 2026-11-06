@@ -109,8 +109,8 @@ DQ-Axis current Kp,,0x2380,1,REAL32,0
 DQ-Axis current Ki,,0x2380,2,REAL32,0
 
 # Impedance control (CSI)
-Stiffness kp (rated trq/1000 per count),,0x2383,1,REAL32,0
-Damping kd (rated trq/1000 per count/s),,0x2383,2,REAL32,0
+Stiffness kp (rated trq/1000 per count),,0x2383,1,REAL32,0 # CSI; start from position Kp x velocity Kp
+Damping kd (rated trq/1000 per count/s),,0x2383,2,REAL32,0 # CSI; start from velocity Kp
 
 # Amplifier settings
 PWM freq (Hz),,0x3001,1,UNSIGNED32,20000 # STM32 floor 20000 (stm32 aabf97d)

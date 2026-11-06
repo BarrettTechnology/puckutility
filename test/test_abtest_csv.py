@@ -87,6 +87,19 @@ class AuditTest(Base):
                         + ',0.05\n')
         self.assertTrue(any('type REAL32 but the EDS says UNSIGNED32' in e for e in r['errors']))
 
+    def test_csi_gains_left_at_zero_in_a_tuned_csv(self):
+        r = self.edited('5.x', 'Kp,,0x2381,1,REAL32,0', 'Kp,,0x2381,1,REAL32,0.0125')
+        self.assertEqual(sum('CSI kp is 0' in e for e in r['errors']), 1)
+        self.assertEqual(sum('CSI kd is 0' in e for e in r['errors']), 1)
+        with open(TEMPLATES['5.x']) as f:
+            text = f.read().replace('Kp,,0x2381,1,REAL32,0', 'Kp,,0x2381,1,REAL32,0.0125')
+        text = text.replace(',0x2383,1,REAL32,0', ',0x2383,1,REAL32,1.25')
+        text = text.replace(',0x2383,2,REAL32,0', ',0x2383,2,REAL32,0.0125')
+        out = self.path('csi.csv')
+        with open(out, 'w') as f:
+            f.write(text)
+        self.assertEqual(csvaudit.audit(out, EDS['5.x'])['errors'], [])
+
     def test_missing_row(self):
         r = self.edited('5.x', 'Motor poles,,0x3011,3,UNSIGNED8,0\n', '')
         self.assertEqual([k for k, _ in r['missing']], [(0x3011, 3)])

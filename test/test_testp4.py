@@ -416,6 +416,30 @@ class TestRunner(unittest.TestCase):
         self.assertEqual(sdo.get(0x2406, 0, 'H'), 0)
         self.assertEqual(sdo.sw(), SW_RTSO)
 
+    def test_csi_gains_come_from_the_drive_or_its_loop(self):
+        d, sdo, *_ = make()
+        sdo.put(0x2381, 1, 'f', 0.02)
+        sdo.put(0x2382, 1, 'H', 50)
+        sdo.put(0x2383, 1, 'f', 0.0)
+        sdo.put(0x2383, 2, 'f', 0.0)
+        kp, kd = T._csi_gains(d)
+        self.assertAlmostEqual(kp, 1.0, places=5)
+        self.assertAlmostEqual(kd, 0.02, places=6)
+        d.restore()
+        sdo.put(0x2383, 1, 'f', 1.5)
+        sdo.put(0x2383, 2, 'f', 0.03)
+        self.assertEqual(tuple(round(x, 5) for x in T._csi_gains(d)), (1.5, 0.03))
+        d.restore()
+        d.args.csi_kp = 2.0
+        self.assertEqual(round(T._csi_gains(d)[0], 5), 2.0)
+        d.restore()
+        sdo.put(0x2381, 1, 'f', 0.0)
+        sdo.put(0x2383, 1, 'f', 0.0)
+        sdo.put(0x2383, 2, 'f', 0.0)
+        d.args.csi_kp = None
+        with self.assertRaises(T.TestFail):
+            T._csi_gains(d)
+
     def test_heartbeat_skips_on_435(self):
         d, *_ = make(legacy=True)
         r = T.run_test(d, 'heartbeat', T.t_heartbeat, T.cia402.MODE_PROFILE_VEL)

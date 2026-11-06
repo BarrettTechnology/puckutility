@@ -12,6 +12,8 @@ and the CSV must also
   - set 0x21B2 = 0, 0x1F80 = 0, 0x1017 = 0, 0x1015 = 50 and 0x2406 = 0,
   - set every RPDO/TPDO mapping count (0x1600-3,0 / 0x1A00-3,0) to 0,
   - give each row the EDS's data type, REAL32 rows in float form,
+  - on 5.x, once the velocity loop is tuned (0x2381,1 not 0), set the CSI
+    gains 0x2383,1-2 too: at 0, cyclic sync impedance (-2) gives no torque,
   - write nothing the EDS does not have, and nothing read-only.
 
 Exit status 1 on any MISSING row or error.  Rows that are writable but not
@@ -181,6 +183,8 @@ def audit(csv_path, eds_path, line=None):
             errors.append('line {} ({:04X},{}): {} but must be {}'.format(
                 row.line, *key, row.data, want))
 
+    errors += _csi_gains(written)
+
     present, excluded, missing = [], [], []
     for key in sorted(nv):
         var = eds.get(key)
@@ -197,6 +201,30 @@ def audit(csv_path, eds_path, line=None):
             missing.append(item)
     return dict(line=line, present=present, excluded=excluded, missing=missing,
                 errors=errors, warnings=warnings)
+
+
+def _value(row):
+    try:
+        return config_csv.encode(row.datatype, row.data, 1)[1]
+    except (ValueError, TypeError):
+        return None
+
+
+def _csi_gains(written):
+    """The CSI gains must not be left at 0 in a tuned CSV.  The usual
+    starting point is the node's own loop: kd = 0x2381,1 and
+    kp = 0x2382,1 x 0x2381,1 (notes/impedance.html)."""
+    vel = written.get((0x2381, 1))
+    if vel is None or not _value(vel):
+        return []
+    out = []
+    for sub, name in ((1, 'kp'), (2, 'kd')):
+        row = written.get((0x2383, sub))
+        if row is not None and not _value(row):
+            out.append('line {} (2383,{}): CSI {} is 0 but the loop is tuned; mode -2 '
+                       'gives no torque (start from kd = velocity Kp 0x2381,1, kp = position Kp 0x2382,1 x velocity Kp)'
+                       .format(row.line, sub, name))
+    return out
 
 
 def report(result, verbose=False, out=None):

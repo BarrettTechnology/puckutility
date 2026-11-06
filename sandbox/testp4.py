@@ -64,7 +64,7 @@ SW_FOLLOWING_ERROR = 0x2000
 # Mode-unsupported aborts: 4.3.5 refuses a mode with 0x05040001, 5.x 0x06090030.
 UNSUPPORTED_ABORTS = (0x05040001, 0x06090030)
 # EMCY codes a test provokes, either firmware line.
-SYNC_TIMEOUT_CODES = (0x8700, 0x8180)
+SYNC_TIMEOUT_CODES = (0x8180,)
 HEARTBEAT_CODES = (0x8130,)
 FOLLOWING_CODES = {True: (0x8614,), False: (0x8611,)}    # by legacy
 # Where 4.3.5 means something else by a code than p4core's table says.
@@ -770,15 +770,34 @@ def t_home(d):
     return 'offset 1234 -> {}, 0 -> {}'.format(*got)
 
 
+def _csi_gains(d):
+    """The drive's CSI gains (from its CSV), or --csi-kp/--csi-kd.  Gains
+    left at 0 get the usual start from the drive's own loop: kd = velocity
+    Kp 0x2381,1, kp = position Kp 0x2382,1 x velocity Kp."""
+    kp, kd = d.r(0x2383, 1, 'f'), d.r(0x2383, 2, 'f')
+    vel_kp = d.r(0x2381, 1, 'f')
+    if not kp:
+        kp = d.r(0x2382, 1, 'H') * vel_kp
+    if not kd:
+        kd = vel_kp
+    kp = d.args.csi_kp if d.args.csi_kp is not None else kp
+    kd = d.args.csi_kd if d.args.csi_kd is not None else kd
+    if not kp or not kd:
+        raise TestFail('no CSI gains: 0x2383 and the loop gains are 0 (give --csi-kp/--csi-kd)')
+    d.change(0x2383, 1, kp, 'f')
+    d.change(0x2383, 2, kd, 'f')
+    return kp, kd
+
+
 def _cyclic_tracking(d, mode, series, amp, per, cycles, home_first=False, min_corr=0.9,
                      ratio=(0.7, 1.3)):
     """A sinusoid in *series* ('vel' or 'pos'), checked against TPDO feedback."""
     if home_first:
         home(d, 0)
     rate = d.args.rate
+    gains = ''
     if mode == cia402.MODE_CYCLIC_SYNC_IMP:
-        d.change(0x2383, 1, d.args.csi_kp, 'f')
-        d.change(0x2383, 2, d.args.csi_kd, 'f')
+        gains = ', kp {:.4g} kd {:.4g}'.format(*_csi_gains(d))
     enter(d, mode, rate)
     w = 2 * math.pi / per
     run = per * cycles
@@ -805,7 +824,7 @@ def _cyclic_tracking(d, mode, series, amp, per, cycles, home_first=False, min_co
         corr, 1000.0 * lag / rate, gain, d.tpdo_count[0], d.tpdo_count[1])
     if corr < min_corr or not ratio[0] <= gain <= ratio[1]:
         raise TestFail(detail)
-    return detail
+    return detail + gains
 
 
 @test('cst', 'cyclic sync torque: a torque ramp each way until the rotor spins',
@@ -1197,10 +1216,12 @@ def parse_args(argv=None):
                    help='pva d-axis current, fraction of i_cal (default 0.5)')
     p.add_argument('--pva-ud-max', type=int, default=4000,
                    help='pva: the most ud the ramp may use (default 4000 of 32767)')
-    p.add_argument('--csi-kp', type=float, default=1.08,
-                   help='csi stiffness 0x2383,1, per-mille/count (default 1.08, RAM)')
-    p.add_argument('--csi-kd', type=float, default=0.01125,
-                   help='csi damping 0x2383,2, per-mille/(count/s) (default 0.01125, RAM)')
+    p.add_argument('--csi-kp', type=float,
+                   help='csi stiffness 0x2383,1, per-mille/count, in RAM (default: the '
+                        'drive\'s, or position Kp x velocity Kp when it is 0)')
+    p.add_argument('--csi-kd', type=float,
+                   help='csi damping 0x2383,2, per-mille/(count/s), in RAM (default: the '
+                        'drive\'s, or velocity Kp when it is 0)')
     p.add_argument('--host-id', type=int, default=0x7D,
                    help='heartbeat test: the node ID the host produces as (default 125)')
     return p.parse_args(argv)
