@@ -322,8 +322,16 @@ class TestParameters(unittest.TestCase):
         self.assertEqual(sdo.get(0x1800, 2, 'B'), 1)
         self.assertTrue(sdo.get(0x1400, 1, 'I') & T.COB_INVALID)       # RPDOs off
         self.assertFalse(sdo.get(0x1800, 1, 'I') & T.COB_INVALID)
+        self.assertEqual(sdo.get(0x1401, 2, 'B'), 255)                 # and async
         d.rpdos(True)
         self.assertFalse(sdo.get(0x1400, 1, 'I') & T.COB_INVALID)
+        for comm in (0x1400, 0x1401):       # applied at SYNC while they run
+            self.assertEqual(sdo.get(comm, 2, 'B'), 1, hex(comm))
+        self.assertEqual(sdo.get(0x1601, 0, 'B'), 2)
+        d.rpdos(False)
+        for comm in (0x1400, 0x1401):       # 4.3.5 replays a SYNC type when invalid
+            self.assertTrue(sdo.get(comm, 1, 'I') & T.COB_INVALID, hex(comm))
+            self.assertEqual(sdo.get(comm, 2, 'B'), 255, hex(comm))
         d.unmap_pdos()
         for key, raw in before.items():
             if key[0] in range(0x1400, 0x1C00):

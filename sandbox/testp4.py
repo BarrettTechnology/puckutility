@@ -15,12 +15,15 @@ a summary table follows, and the exit code is 1 if any test failed, 2 if the puc
 could not be set up.  EMCY frames print as they arrive, one line each.
 
 The PDOs are mapped here, in PRE-OPERATIONAL, so the CSV's own PDOs do not matter:
-  RPDO1 = 0x6040 controlword, 0x6060 mode, 0x6071 target torque   (event, 255)
-  RPDO2 = 0x60FF target velocity, 0x607A target position           (event, 255)
+  RPDO1 = 0x6040 controlword, 0x6060 mode, 0x6071 target torque   (SYNC, 1)
+  RPDO2 = 0x60FF target velocity, 0x607A target position           (SYNC, 1)
   TPDO1 = 0x6041 statusword, 0x6061 mode display, 0x6064 position  (SYNC, 1)
   TPDO2 = 0x606C velocity, 0x6078 current                          (SYNC, 1)
 The host sends SYNC only in the cyclic tests: RPDO1, RPDO2, then SYNC each period.
-The RPDOs are invalid (COB-ID bit 31) outside those tests, so nothing replays.
+The RPDOs apply at that SYNC, after the drive takes the previous target as the start
+of its interpolation; asynchronous, they would land first and the drive would jump.
+Outside those tests the RPDOs are invalid (COB-ID bit 31) and asynchronous (255):
+4.3.5 replays a synchronous RPDO's last frame at every SYNC, valid or not.
 0x60F4 (following error) does not fit a TPDO and is read by SDO.
 """
 
@@ -71,6 +74,7 @@ FOLLOWING_CODES = {True: (0x8614,), False: (0x8611,)}    # by legacy
 LEGACY_ERROR_CODES = {0x8611: 'position tracking warning',
                       0x8180: 'SYNC timeout'}
 
+RPDO_SYNC = 1          # the RPDOs' type while valid: rpdos()
 PDO_LAYOUT = {
     'rpdo1': (0x1400, 0x1600, 0x200, 255, ((0x6040, 0, 16), (0x6060, 0, 8), (0x6071, 0, 16))),
     'rpdo2': (0x1401, 0x1601, 0x300, 255, ((0x60FF, 0, 32), (0x607A, 0, 32))),
@@ -312,10 +316,19 @@ class Drive:
         self.sleep(0.05)
 
     def rpdos(self, valid):
-        """Make RPDO1/2 valid or invalid (COB-ID bit 31)."""
+        """RPDO1/2 valid and applied at SYNC, or invalid (COB-ID bit 31) and
+        asynchronous.  The type changes while the COB-ID is invalid, and 4.3.5
+        reads it only when the mapping count is written, so that is written too."""
         for name in ('rpdo1', 'rpdo2'):
-            comm, _, base, _, _ = PDO_LAYOUT[name]
-            self.w(comm, 1, (base + self.id) | (0 if valid else COB_INVALID), 'I')
+            comm, mapping, base, trans, objects = PDO_LAYOUT[name]
+            if valid:
+                self.w(comm, 2, RPDO_SYNC, 'B')
+                self.w(mapping, 0, len(objects), 'B')
+                self.w(comm, 1, base + self.id, 'I')
+            else:
+                self.w(comm, 1, (base + self.id) | COB_INVALID, 'I')
+                self.w(comm, 2, trans, 'B')
+                self.w(mapping, 0, len(objects), 'B')
 
     def unmap_pdos(self):
         """Put the mapping map_pdos() found back (RAM)."""
