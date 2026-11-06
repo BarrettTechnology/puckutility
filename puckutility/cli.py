@@ -110,17 +110,24 @@ def _step_name(name):
 
 def _cmd_calibrate(ctx):
     steps = ctx.args.steps
-    if not ctx.reporter.confirm(
-            'Calibration turns the motor, continuously for cogging. Is the '
-            'output free to turn?', default=True):
+    turns, cogging = _calibrate.moves(steps or None)
+    if turns and not ctx.reporter.confirm(
+            'Calibration turns the motor{}. Is the output free to turn?'.format(
+                ', continuously for cogging' if cogging else ''), default=True):
         return cli.EXIT_FAILED
     ok = True
+    rows = {}
     for node_id in cli.targets(ctx):
         ctx.reporter.status('--- Node {} ---'.format(node_id))
-        if not _calibrate_node(ctx, node_id, steps or None,
-                               autosave=not ctx.args.no_save)[0]:
+        passed, session = _calibrate_node(ctx, node_id, steps or None,
+                                          autosave=not ctx.args.no_save)
+        if not passed:
             ctx.reporter.warn('node {}: calibration failed'.format(node_id))
             ok = False
+        if ctx.args.json:
+            rows[str(node_id)] = _calibrate.summary_rows(session, steps or None)
+    if ctx.args.json:
+        ctx.emit(rows)
     return cli.EXIT_OK if ok else cli.EXIT_FAILED
 
 

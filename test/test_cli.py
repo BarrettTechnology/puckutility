@@ -144,6 +144,31 @@ class TestCalibrate(CliTest):
         self.assertEqual(code, 0)
         self.assertEqual(fn.call_args.kwargs['steps'], ['fold', 'slope'])
 
+    def test_the_question_names_what_moves(self):
+        self.patch()
+        asked = []
+        with mock.patch('p4core.reporter.ConsoleReporter.confirm', autospec=True,
+                        side_effect=lambda rep, q, **kw: asked.append(q) or True):
+            self.run_cli('calibrate', 'offsets')
+            self.run_cli('calibrate', 'ab')
+            self.run_cli('calibrate')
+        self.assertEqual(len(asked), 2)                 # bias alone: no question
+        self.assertNotIn('cogging', asked[0])
+        self.assertIn('continuously for cogging', asked[1])
+
+    def test_json_is_one_row_per_step(self):
+        p = mock.patch.object(calibrate, 'calibrate_actuator', side_effect=lambda *a, **kw: (
+            True, mock.Mock(unsaved=False, results={
+                'bias': {'status': 'pass', 'detail': 'alpha 1991', 'seconds': 2.8}})))
+        p.start()
+        self.addCleanup(p.stop)
+        code, out, _err = self.run_cli('-y', '--json', 'calibrate', 'offsets')
+        self.assertEqual(code, 0)
+        rows = json.loads(out[out.index('{'):])
+        self.assertEqual(rows['5'], [{'step': 'bias', 'title': calibrate.STEPS['bias'],
+                                      'status': 'pass', 'detail': 'alpha 1991',
+                                      'seconds': 2.8}])
+
     def test_a_failure_is_exit_1(self):
         self.patch(ok=False)
         code, _out, _err = self.run_cli('-y', 'calibrate')

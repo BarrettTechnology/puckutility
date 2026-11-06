@@ -9,8 +9,9 @@
 #     CANable / CandleLight  ->  gs_usb
 #     Peak PCAN-USB          ->  peak_usb
 #
-# Bring-up config mirrors reset_can.sh: CAN-FD (1 Mbit nominal / 5 Mbit data),
-# falling back to classic 1 Mbit for adapters without FD.
+# Bring-up config mirrors reset_can.sh: CAN-FD (1 Mbit nominal / 5 Mbit data,
+# 68.7 % sample point, bench SJW), then CAN-FD on default timing, then classic
+# 1 Mbit for adapters without FD.
 #
 # Usage:
 #   set-can-iface.sh list                       # show every CAN adapter present
@@ -91,7 +92,15 @@ usage() {
 bring_up() {
     local ifc="$1" bitrate="$2" dbitrate="$3"
     $SUDO ip link set "$ifc" down 2>/dev/null || true
-    $SUDO ip link set "$ifc" type can bitrate "$bitrate" fd on dbitrate "$dbitrate" \
+    # The bench timing (sample points, SJW) is for 1M/5M; other rates take the
+    # kernel's default timing.
+    local timing=""
+    if [ "$bitrate" = "$BITRATE_DEFAULT" ] && [ "$dbitrate" = "$DBITRATE_DEFAULT" ]; then
+        timing="sample-point 0.687 sjw 50 dsample-point 0.687 dsjw 10"
+    fi
+    { [ -n "$timing" ] && $SUDO ip link set "$ifc" type can bitrate "$bitrate" \
+          dbitrate "$dbitrate" $timing fd on; } \
+        || $SUDO ip link set "$ifc" type can bitrate "$bitrate" fd on dbitrate "$dbitrate" \
         || $SUDO ip link set "$ifc" type can bitrate "$bitrate"
     $SUDO ip link set "$ifc" type can restart-ms 100 2>/dev/null || true
     $SUDO ip link set "$ifc" txqueuelen 1000
