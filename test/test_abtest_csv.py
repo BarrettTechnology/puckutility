@@ -168,6 +168,28 @@ class DiffTest(Base):
         self.assertEqual(missing, [((0x3011, 3), 'Poles')])
         self.assertEqual(csvdiff.main([a, b], out=io.StringIO()), 1)
 
+    def test_the_puck_read_by_sdo(self):
+        from canopen.sdo.exceptions import SdoAbortedError
+
+        class Node:
+            id = 13
+
+            class sdo:
+                store = {(0x3011, 3): b'\x0e', (0x3001, 1): (160000).to_bytes(4, 'little'),
+                         (0x1017, 0): b'\x00\x00', (0x2381, 1): b'\x00\x00\x00\x3f'}
+
+                @classmethod
+                def upload(cls, index, sub):
+                    if (index, sub) not in cls.store:
+                        raise SdoAbortedError(0x06020000)
+                    return cls.store[(index, sub)]
+        a = self.write('a.csv', 'Poles,,0x3011,3,UNSIGNED8,14\nPWM,,0x3001,1,UNSIGNED32,200000\n'
+                       'Heartbeat,,0x1017,0,UNSIGNED16,0\nKp,,0x2381,1,REAL32,0.5\n'
+                       'Gone,,0x2406,0,UNSIGNED16,0\n')
+        differ, missing = csvdiff.diff_puck(a, Node)
+        self.assertEqual(differ, [((0x3001, 1), 'PWM', '200000', '160000')])
+        self.assertEqual([k for k, _ in missing], [(0x2406, 0)])
+
 
 if __name__ == '__main__':
     unittest.main()
