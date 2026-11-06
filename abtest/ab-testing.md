@@ -684,8 +684,8 @@ So on 4.3.5 everything comes over TPDO1/2 at the SYNC rate. The A/B uses
 50 Hz on both firmwares, which is also the set-point rate.
 
 For a faster same-path comparison, run SYNC at 1 kHz and send a set-point
-every SYNC, interpolated on the host. 4.3.5 interpolates over the SYNC
-period it sees, not 0x60C2 (section 9). That is a different test from the
+every SYNC, interpolated on the host, with 0x60C2 = 1 ms (its default).
+4.3.5 interpolates over the SYNC period it sees, 5.x over 0x60C2 (section 9). That is a different test from the
 50 Hz one; label it so.
 
 ### 6.1 dq currents from raw alpha/beta
@@ -988,16 +988,20 @@ that arrived for the next, at 1 kHz on both firmwares. Which period it
 spreads that over differs:
 - **4.3.5** re-measures every SYNC: the interpolation period *is* the SYNC
   period. 0x60C2 is not used for it.
-- **5.x** starts from 0x60C2 (0x60C2,1 x 10^0x60C2,2 s; here 20 x 10^-3).
-  If the measured SYNC period is more than a quarter off 0x60C2, and steady
-  over two SYNCs, 5.x switches to the measured period.
+- **5.x** uses 0x60C2 only (0x60C2,1 x 10^0x60C2,2 s; here 20 x 10^-3),
+  as CiA 402 has it. It does not measure SYNC. 0x60C2 is read when the
+  mode is entered and again at every SYNC, so a write in the mode applies
+  from the next SYNC.
 
-So set 0x60C2 to the SYNC period you run. The A/B runs 50 Hz SYNC with
+So set 0x60C2 to the SYNC period you run. On 5.x a mismatch shows: a 0x60C2
+longer than SYNC stops short of every target, and one shorter than half the
+SYNC period clears statusword bit 12 between SYNCs (and drops CSV/CST
+targets to zero until the next one). The A/B runs 50 Hz SYNC with
 0x60C2 = 20 ms on both. The target must reach the drive in an RPDO of type 1
 (section 4.2).
 
 **When SYNC stops**, the drive holds the last target and, on 5.x, statusword
-bit 12 drops (target no longer followed) after two periods. Whether it also
+bit 12 drops (target no longer followed) after two 0x60C2 periods. Whether it also
 faults is set by 0x2406, the SYNC timeout in ms:
 - 0x2406 = 0 (all four CSVs): no fault. 4.3.5 stays enabled, holding; 5.x
   holds and clears bit 12.
