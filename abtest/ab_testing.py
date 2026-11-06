@@ -84,7 +84,10 @@ REPS = 2
 
 PDO_MAP = {
     # name: (comm, mapping, cob base, transmission, ((index, sub, bits), ...))
-    'rpdo1': (0x1400, 0x1600, 0x200, 255, ((0x6040, 0, 16), (0x607A, 0, 32))),
+    # RPDO1 is synchronous: the target applies at the SYNC after it, which is when the
+    # drive takes the previous one as the start of the interpolation.  Asynchronous
+    # (255), it lands before that SYNC and the drive jumps to it with no feed-forward.
+    'rpdo1': (0x1400, 0x1600, 0x200, 1, ((0x6040, 0, 16), (0x607A, 0, 32))),
     'tpdo1': (0x1800, 0x1A00, 0x180, 1, ((0x3008, 1, 16), (0x3009, 1, 16),
                                          (0x60EA, 0, 16), (0x6078, 0, 16))),
     'tpdo2': (0x1801, 0x1A01, 0x280, 1, ((0x6064, 0, 32), (0x606C, 0, 32))),
@@ -248,13 +251,21 @@ def analyse(data, meta):
     vhost[1:-1] = (pos[2:] - pos[:-2]) / (2 * T)
     ia, ib = alpha_beta_ma(data['raw_a'], data['raw_b'], meta['cal'])
     idq, iqq = park(ia, ib, data['theta'])
-    # The user's sign of torque: 0x6078 follows the motion direction, the
-    # Park frame follows the windings; take the sign that agrees.
-    m = _finite(iqq, data['i6078'])
-    sign, corr = 1.0, float('nan')
-    if m.sum() > 10 and np.std(iqq[m]) > 0 and np.std(data['i6078'][m]) > 0:
-        corr = float(np.corrcoef(iqq[m], data['i6078'][m])[0, 1])
-        sign = -1.0 if corr < 0 else 1.0
+    # The user's sign of torque.  The Park frame follows the windings, so its
+    # sign differs between pucks.  Over a motion that comes back, the drive's
+    # net work goes into friction: mean iq x velocity > 0 fixes the sign.
+    # 0x6078 is only a check -- on 4.3.5 it follows steps loosely and has
+    # given either sign on the same node.
+    # Without motion (hold) use -1, what every moving bench run gave on
+    # nodes 4 and 13, both lines (2026-11-06).
+    m = _finite(iqq, vhost) & (np.abs(np.nan_to_num(vref)) > 0)
+    power = float(np.sum(iqq[m] * vhost[m])) if m.sum() > 10 else 0.0
+    m6 = _finite(iqq, data['i6078'])
+    corr6 = float('nan')
+    if m6.sum() > 10 and np.std(iqq[m6]) > 0 and np.std(data['i6078'][m6]) > 0:
+        corr6 = float(np.corrcoef(iqq[m6], data['i6078'][m6])[0, 1])
+    sign = 1.0 if power > 0 else -1.0
+    corr = sign * corr6
     out = {
         't': np.arange(len(sp)) * T, 'rate_hz': meta['rate_hz'], 'sp_deg': sp / kdeg,
         'ref_deg': ref / kdeg, 'pos_deg': pos / kdeg,
@@ -734,10 +745,9 @@ def run(args, out=print):
                     if 'lag_ms' in met else '',
                     met['vel_err_rms_dps'], met['iq_rms_ma'], met['iq_peak_ma'],
                     met['iq_6078_corr'], meta['tpdo_frames']))
-            # 4.3.5's 0x6078 follows the one-sample spikes of a step loosely (r ~0.3);
-            # nan = 0x6078 flat at rest
-            if abs(met['iq_6078_corr']) < 0.25 and 'lag_ms' in met:
-                out('   WARNING: the alpha/beta -> iq reconstruction does not follow 0x6078 '
+            # 4.3.5's 0x6078 follows the one-sample spikes of a step loosely (r ~0.3)
+            if met['iq_6078_corr'] < 0 and 'lag_ms' in met:
+                out('   WARNING: the alpha/beta -> iq reconstruction runs against 0x6078 '
                     '(r {:.3f}); check the calibration values in meta.json'.format(
                         met['iq_6078_corr']))
             if meta['emcy']:

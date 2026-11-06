@@ -120,11 +120,16 @@ class TestAnalysis(unittest.TestCase):
         self.assertLess(m['pos_err_rms_deg'], 1e-9)
         self.assertGreater(m['iq_6078_corr'], 0.99)
 
-    def test_iq_takes_the_sign_of_0x6078(self):
+    def test_iq_takes_the_sign_that_does_work_not_that_of_0x6078(self):
         data, meta, iq = self.run_data(flip=True)
         a = A.analyse(data, meta)
+        self.assertEqual(a['iq_sign'], 1.0)
+        np.testing.assert_allclose(a['iq_ma'], iq, atol=1e-6)
+        self.assertLess(a['iq_6078_corr'], -0.99)          # the check says so
+        data['raw_a'], data['raw_b'] = raw_from_dq(np.zeros(len(iq)), -iq, data['theta'], CAL)
+        a = A.analyse(data, meta)
         self.assertEqual(a['iq_sign'], -1.0)
-        np.testing.assert_allclose(a['iq_ma'], -iq, atol=1e-6)
+        np.testing.assert_allclose(a['iq_ma'], iq, atol=1e-6)
 
     def test_a_lag_shows_as_position_error_and_is_fitted(self):
         data, meta, _ = self.run_data()
@@ -325,8 +330,8 @@ class TestRun(unittest.TestCase):
             self.assertEqual(sdo.sw() & 0x6F, 0x21)         # Ready to Switch On
             a = A.analyse(data, meta)
             self.assertLess(np.nanmax(np.abs(a['pos_err_deg'])), 1e-9)
-            self.assertGreater(abs(a['iq_6078_corr']), 0.99)
-            self.assertEqual(a['iq_sign'], -1.0)
+            self.assertLess(a['iq_6078_corr'], -0.99)     # the fake's 0x6078 is -iq
+            self.assertEqual(a['iq_sign'], 1.0)
             path = A.run_dir(self.tmp.name, 4, meta['fw'], 'square')
             A.save_run(path, meta, data)
             paths.append(path)
