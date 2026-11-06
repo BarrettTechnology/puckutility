@@ -252,19 +252,30 @@ def analyse(data, meta):
     ia, ib = alpha_beta_ma(data['raw_a'], data['raw_b'], meta['cal'])
     idq, iqq = park(ia, ib, data['theta'])
     # The user's sign of torque.  The Park frame follows the windings, so its
-    # sign differs between pucks.  Over a motion that comes back, the drive's
-    # net work goes into friction: mean iq x velocity > 0 fixes the sign.
-    # 0x6078 is only a check -- on 4.3.5 it follows steps loosely and has
-    # given either sign on the same node.
-    # Without motion (hold) use -1, what every moving bench run gave on
-    # nodes 4 and 13, both lines (2026-11-06).
-    m = _finite(iqq, vhost) & (np.abs(np.nan_to_num(vref)) > 0)
-    power = float(np.sum(iqq[m] * vhost[m])) if m.sum() > 10 else 0.0
+    # sign differs between pucks.  On 5.x the drive's own iq (0x3010,9) gives
+    # it.  On 4.3.5: over a motion that comes back, the drive's net work goes
+    # into friction, so mean iq x velocity > 0 fixes the sign.  That fails on
+    # 5.x square steps, which settle within a SYNC or two: sampled at 50 Hz
+    # the braking outweighs (bench, 2026-11-06).  0x6078 is only a check --
+    # on 4.3.5 it follows steps loosely and has given either sign on the same
+    # node.  Without motion or drive iq (4.3.5 hold) use +1, what every
+    # moving bench run gave on nodes 4 and 13, both lines (2026-11-06).
     m6 = _finite(iqq, data['i6078'])
     corr6 = float('nan')
     if m6.sum() > 10 and np.std(iqq[m6]) > 0 and np.std(data['i6078'][m6]) > 0:
         corr6 = float(np.corrcoef(iqq[m6], data['i6078'][m6])[0, 1])
-    sign = 1.0 if power > 0 else -1.0
+    corr_fw = float('nan')
+    if 'iq_fw' in data:
+        mf = _finite(iqq, data['iq_fw'])
+        if mf.sum() > 10 and np.std(iqq[mf]) > 0 and np.std(data['iq_fw'][mf]) > 0:
+            corr_fw = float(np.corrcoef(iqq[mf], data['iq_fw'][mf])[0, 1])
+    m = _finite(iqq, vhost) & (np.abs(np.nan_to_num(vref)) > 0)
+    if np.isfinite(corr_fw):
+        sign = 1.0 if corr_fw > 0 else -1.0
+    elif m.sum() > 10:
+        sign = 1.0 if np.sum(iqq[m] * vhost[m]) > 0 else -1.0
+    else:
+        sign = 1.0
     corr = sign * corr6
     out = {
         't': np.arange(len(sp)) * T, 'rate_hz': meta['rate_hz'], 'sp_deg': sp / kdeg,
@@ -281,10 +292,7 @@ def analyse(data, meta):
     if 'err60f4' in data and np.isfinite(data['err60f4']).any():
         out['err60f4_deg'] = np.asarray(data['err60f4'], float) / kdeg
     if 'iq_fw' in data and np.isfinite(data['iq_fw']).any():
-        m = _finite(data['iq_fw'], iqq)
-        out['iq_fw_corr'] = float(np.corrcoef(data['iq_fw'][m], sign * iqq[m])[0, 1]) \
-            if m.sum() > 10 and np.std(iqq[m]) > 0 and np.std(data['iq_fw'][m]) > 0 \
-            else float('nan')
+        out['iq_fw_corr'] = sign * corr_fw
     return out
 
 

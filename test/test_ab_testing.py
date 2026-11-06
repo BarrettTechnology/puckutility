@@ -131,6 +131,16 @@ class TestAnalysis(unittest.TestCase):
         self.assertEqual(a['iq_sign'], -1.0)
         np.testing.assert_allclose(a['iq_ma'], iq, atol=1e-6)
 
+    def test_iq_takes_the_sign_of_the_drive_iq_on_5x(self):
+        # 5.x square steps: the sampled work comes out negative, the drive's
+        # iq (0x3010,9) still gives the sign
+        data, meta, iq = self.run_data()
+        data['raw_a'], data['raw_b'] = raw_from_dq(np.zeros(len(iq)), -iq, data['theta'], CAL)
+        data['iq_fw'] = -iq
+        a = A.analyse(data, meta)
+        self.assertEqual(a['iq_sign'], 1.0)
+        self.assertGreater(a['iq_fw_corr'], 0.99)
+
     def test_a_lag_shows_as_position_error_and_is_fitted(self):
         data, meta, _ = self.run_data()
         m = A.metrics(A.analyse(data, meta))
