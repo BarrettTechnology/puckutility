@@ -90,6 +90,22 @@ def save_results(session, reporter=None):
     return plans.save(session, reporter=reporter)
 
 
+def summary_rows(session, steps=None):
+    """summary_text() as data, for --json: [{step, title, status, detail,
+    seconds}, ...] in run order."""
+    keys = plans.run_order(step_keys(steps) if steps else supported(session.dev.node))
+    return [{'step': k, 'title': t, 'status': st, 'detail': d,
+             'seconds': session.results.get(k, {}).get('seconds')}
+            for k, (_n, t, st, d) in zip(keys, plans.summary(session, keys))]
+
+
+def moves(steps=None):
+    """Whether *steps* (default: all) turn the motor, and whether
+    continuously (cogging).  The bias step alone holds it still."""
+    keys = set(step_keys(steps)) if steps else set(STEPS)
+    return bool(keys - {'bias'}), 'cogging' in keys
+
+
 def summary_text(session, steps=None):
     """One line per step: number, title, verdict, detail.  Without *steps*,
     the steps the drive's firmware can run (supported)."""

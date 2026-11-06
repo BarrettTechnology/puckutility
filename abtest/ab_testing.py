@@ -20,7 +20,7 @@ run drives cyclic sync position (CSP, mode 8) with a 50 Hz SYNC from the host
 and 0x60C2 = 20 ms.  Every profile is defined in output-shaft degrees, so the
 same profile is the same motion on both firmwares.  The PDOs are mapped here,
 in PRE-OPERATIONAL, and put back afterwards (RAM only):
-  RPDO1 = 0x6040 controlword, 0x607A target position             (event, 255)
+  RPDO1 = 0x6040 controlword, 0x607A target position             (SYNC, 1)
   TPDO1 = 0x3008,1 raw alpha, 0x3009,1 raw beta, 0x60EA theta_e,
           0x6078 current                                          (SYNC, 1)
   TPDO2 = 0x6064 position, 0x606C velocity                        (SYNC, 1)
