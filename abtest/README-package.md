@@ -12,7 +12,7 @@ run's output.
 | `can-adapters.md` | PEAK PCAN-USB and CANable: drivers, bring-up, which one you have |
 | `ab_testing.py`, `testp4.py`, `csvdiff.py` | The A/B runner and the two scripts it imports. Keep them together, next to `csv/` and `firmware/` |
 | `csv/` | One configuration CSV per actuator and firmware. The name says which (`fw4.3.5`, `fw5.0.5`) |
-| `firmware/` | STM32 application images for 4.3.5 and 5.0.5 |
+| `firmware/` | STM32 application images (.bin) for 4.3.5 and 5.0.5, for flashloader 3.0.7 |
 | `eds/` | The EDS of each firmware |
 | `docs/` | The CANopen manual for each firmware (.pdf, and the .odt source), and the 4.3.3 to 5.0.5 release report |
 | `wheels/` | `p4core` and `puckutility`, for `install.md` |

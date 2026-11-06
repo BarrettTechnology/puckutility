@@ -161,7 +161,7 @@ on 5.x; the CLI reads both.
 ```
 $ puckutility --can can3 --id 13 --json info --no-flashloader
 {
-  "bus_voltage_v": 41.0,
+  "bus_voltage_v": 40.8,
   "encoder_comp": null,
   "firmware": "4.3.5",
   "firmware_line": "4.3.x",
@@ -170,9 +170,10 @@ $ puckutility --can can3 --id 13 --json info --no-flashloader
   "model": "P4-32",
   "node_id": 13,
   "product_code": 5760,
+  "pwm_hz": 80000,
   "serial": 1002,
   "settling_ns": 500,
-  "temperature_c": 37
+  "temperature_c": 46
 }
 ```
 
@@ -191,7 +192,10 @@ Found 2 node(s): [4, 20]
 4 20
 ```
 (It was set back with `--id 20 -y set-id 13`.) Pick an ID no other node
-uses; `scan` first.
+uses; `scan` first. On 5.x the firmware moves the PDO COB-IDs with the node
+ID by itself, so the CLI also prints one line per PDO,
+`remap 0x1400: node field 0x14 != old id 0x04; leaving alone`: nothing is
+wrong, the COB-IDs already follow the new ID.
 
 ### 2.4 Save NV to JSON: `nv save FILE`
 ```
@@ -213,7 +217,11 @@ Saved; rebooting...
 269 written, 0 refused, 0 differ after the reboot
 ```
 The identity entries (0x1018,x, serial 0x3005,1/2) and the node ID (0x21B0)
-are never written, which is the difference between 275 and 269. A file
+are never written, which is the difference between 275 and 269. On 5.0.5
+four saved entries are read-only (1200,1, 1200,2, 2386,5, 302E,16): the
+restore prints `not written: ... Attempt to write a read only object` for
+each and ends `312 written, 4 refused, 0 differ after the reboot`. That is
+a good restore; `0 differ` is what counts. A file
 saved on a different firmware version is refused unless `--force`: NV
 layouts and units differ between 4.3.5 and 5.x (section 7). To move a node
 between firmwares, use `prepare` (section 4), not `nv restore`.
@@ -268,10 +276,12 @@ Programming puck4.app.stm32.release.v4.3.5-0-g6605fba.bin (55704 bytes)...
 Application validated. Launching...
 Node 4 running 4.3.5
 ```
-The package ships encrypted `.ebin` images. Flashloader 3.0.7 takes a
-`.ebin` or a plain `.bin`; 3.1.0 and later take only the `.ebin`. `info`
-(without `--no-flashloader`) shows the flashloader version. Flashing does not touch NV, which is why a downgrade must be followed
-by a wipe (section 1.3).
+The package ships plain `.bin` images, for flashloader 3.0.7, which the
+test actuators run. 3.1.0 and later take only an encrypted `.ebin`; ask for
+those if `info` (without `--no-flashloader`) shows a newer flashloader. An
+`.ebin` that fails authentication leaves the node in its flashloader with
+no application: flash the `.bin` to recover it. Flashing does not touch
+NV, which is why a downgrade must be followed by a wipe (section 1.3).
 
 ### 2.9 Calibrate: `calibrate [STEP ...]`
 
@@ -428,25 +438,27 @@ The stages also exist as subcommands (`flash FILE`, `wipe --backup F`,
 A real 5.0.5 prepare on node 13 (the console shows each command's last
 lines; percent lines dropped):
 ```
-prepare node 13: BO3518 on puck4.app.stm32.release.v5.0.5.bin with P4-32-42V-7A-BO3518-fw5.0.5-v1.2.0-2026-11-06.csv
-$ p4core nv save .../nv_before.json
+prepare node 13: BO3518 on puck4.app.stm32.release.v5.0.5-0-gc38572a.bin with P4-32-42V-7A-BO3518-fw5.0.5-v1.2.0-2026-11-06.csv
+$ p4core nv save .../runs/20261106-151514-n13-5.0.5-prepare/nv_before.json
   Reading node 13's NV...
-  275 NV value(s) -> .../nv_before.json
-$ p4core flash .../puck4.app.stm32.release.v5.0.5.bin
+  275 NV value(s) -> .../runs/20261106-151514-n13-5.0.5-prepare/nv_before.json
+$ p4core flash .../puck4.app.stm32.release.v5.0.5-0-gc38572a.bin
   Rebooting node 13 into its flashloader...
   Node 13: flashloader 3.0.7
   Erasing...
-  Programming puck4.app.stm32.release.v5.0.5.bin (89328 bytes)...
+  Programming puck4.app.stm32.release.v5.0.5-0-gc38572a.bin (89280 bytes)...
   Application validated. Launching...
   Node 13 running 5.0.5
 $ p4core version
-  5.0.5 <githash>
-$ p4core wipe-nvm --no-template --backup .../prewipe.csv
-  ...
+  5.0.5 c38572a
+$ p4core wipe-nvm --no-template --backup .../runs/20261106-151514-n13-5.0.5-prepare/prewipe.csv
+  Backing node 13 up to .../runs/20261106-151514-n13-5.0.5-prepare/prewipe.csv...
+  Backup: .../runs/20261106-151514-n13-5.0.5-prepare/prewipe.csv
   Erasing NVM...
   Rebooting...
   WARNING: No template loaded: load the configuration CSV next; the drive cannot be enabled until it is
 $ p4core config load .../P4-32-42V-7A-BO3518-fw5.0.5-v1.2.0-2026-11-06.csv
+  Rebooting...
   Loading P4-32-42V-7A-BO3518-fw5.0.5-v1.2.0-2026-11-06.csv into node 13...
   File information: Configure Puck 13
   File version: V1.2.0 (2026-11-06)
@@ -457,21 +469,19 @@ $ p4core config load .../P4-32-42V-7A-BO3518-fw5.0.5-v1.2.0-2026-11-06.csv
 $ p4core calibrate ab
   Calibration turns the motor (one revolution each way for the encoder zero). Is the motor free to turn? [yes: --yes]
   Calibrating current-sense bias...
-  Bias: alpha 1993.938 (was 2048.000), beta 2024.500 (was 2048.000) counts, 100-sample average
-  Beta reference correction: reference 1495.38 counts (0x3009,9)
+  Bias: alpha 1994.500 (was 2048.000), beta 2022.188 (was 2048.000) counts, 100-sample average
+  Beta reference correction: reference 1493.62 counts (0x3009,9)
   Calibrating current-sense gain...
-  Rotating gain fit: |A| 3482.0 |B| 3440.1 (48 steps, id ~3277 mA)
-  Beta gain factor 4146 (was 0, a/b 1.01217, id 3277 mA)
+  Rotating gain fit: |A| 3519.4 |B| 3455.5 (48 steps, id ~3316 mA)
+  Beta gain factor 4172 (was 0, a/b 1.01849, id 3316 mA)
   Calibrating encoder zero (one revolution each way)...
-  Encoder zero 533 (was 0, -32.1 deg elec), polarity +1 (was -1); friction split 0.0 deg, points scatter +-15.3 deg (rms 7.7)
+  Encoder zero 533 (was 0, -32.1 deg elec), polarity +1 (was -1); friction split 0.1 deg, points scatter +-15.7 deg (rms 7.7)
 0 rows differ, 0 missing
-$ p4core nv save .../nv_after.json
+$ p4core nv save .../runs/20261106-151514-n13-5.0.5-prepare/nv_after.json
   Reading node 13's NV...
-  322 NV value(s) -> .../nv_after.json
-prepared: 5.0.5 (record in .../runs/20261106-124534-n13-5.0.5-prepare)
-```
-(The bench ran a 5.0.5 release candidate; its version and file name are
-shown here as the release's.) On 5.x the bias prints fractional counts
+  322 NV value(s) -> .../runs/20261106-151514-n13-5.0.5-prepare/nv_after.json
+prepared: 5.0.5 (record in .../runs/20261106-151514-n13-5.0.5-prepare)
+``` On 5.x the bias prints fractional counts
 (Q12.4) and adds the beta reference correction; on 4.3.5 the bias is whole
 counts and there is no reference line.
 
@@ -805,7 +815,7 @@ A host that treats a refused mode as "unsupported" must accept both
 
 | | 4.3.5 | 5.x |
 |---|---|---|
-| 0x100A firmware version | UNSIGNED32 major<<24 \| minor<<8 \| patch: 4.3.5 reads 0x04000305 | VISIBLE_STRING "5.0.5" (segmented upload) |
+| 0x100A firmware version | UNSIGNED32 major<<24 vs minor<<8 vs patch: 4.3.5 reads 0x04000305 | VISIBLE_STRING "5.0.5" (segmented upload) |
 | 0x3003 git hash | absent (0x06020000) | UNSIGNED32: bits 0-27 the 7-digit short hash, bit 31 set for a dirty tree |
 | 0x1000 device type | 0x0402 | 0x00020192 (CiA 402 servo) |
 | 0x1008 device name | "Barr" | "Barrett" |
@@ -1064,19 +1074,39 @@ The lag and the error after the lag answer different questions. The lag
 is what a user sees at the output. The error after the lag shows whether
 the firmware follows the shape of the trajectory.
 
-### 10.3 Bench results (42 V, single runs)
+### 10.3 Bench results (42 V, A B B A)
 
-| | Lag 4.3.5 / 5.0.5 | Pos err RMS ramp | chirp | square peak | After the lag, RMS |
-|---|---|---|---|---|---|
-| node 4 BO4523 | 32 / 24 ms | 0.67 / 0.25 deg | 0.68 / 0.27 | 2.9 / 1.0 deg | 0.03-0.05 both |
-| node 13 BO3518 | 30 / 21 ms | 0.59 / 0.10 deg | 0.55 / 0.09 | 2.8 / 0.8 deg | 0.04 / 0.06-0.08 |
+Run on 2026-11-06 from this package, as section 4.4 says: per actuator
+prepare 4.3.5, warm-up ramp, run (A1); prepare 5.0.5, run (B1), run (B2);
+prepare 4.3.5, run (A2). Every run passed section 4.3. Each cell is
+A1 / A2 (4.3.5) vs B1 / B2 (5.0.5).
 
-4.3.5 trails by about 1 output degree at 90 deg/s: its velocity
-feed-forward (0x2382,2) acts on the measured velocity, so it has no
-trajectory feed-forward. 5.0.5 feeds forward the interpolation slope and
-trails by about 0.1 deg. The hold is the same on both (0.001-0.004 deg RMS).
-These are single runs. The A B B A repeat (section 4.4) is what makes them a
-result.
+| | node 4 BO4523 | node 13 BO3518 |
+|---|---|---|
+| Lag, chirp (ms) | 32 / 32 vs 25 / 25 | 30 / 30 vs 21 / 21 |
+| Pos err RMS, ramp (deg) | 0.660 / 0.657 vs 0.241 / 0.246 | 0.589 / 0.587 vs 0.100 / 0.100 |
+| Pos err RMS, chirp | 0.679 / 0.681 vs 0.266 / 0.264 | 0.551 / 0.551 vs 0.092 / 0.089 |
+| Pos err peak, square | 2.81 / 2.82 vs 1.03 / 1.01 | 2.76 / 2.79 vs 0.88 / 0.89 |
+| After the lag, RMS, chirp | 0.046 / 0.046 vs 0.046 / 0.048 | 0.039 / 0.040 vs 0.059 / 0.056 |
+| After the lag, RMS, ramp | 0.044 / 0.042 vs 0.037 / 0.039 | 0.043 / 0.043 vs 0.074 / 0.075 |
+| Vel err RMS, chirp (deg/s) | 10.9 / 11.0 vs 4.3 / 4.3 | 6.6 / 6.7 vs 1.9 / 2.0 |
+| iq RMS, chirp (mA) | 303 / 304 vs 233 / 233 | 225 / 230 vs 167 / 156 |
+| Hold, pos err RMS | 0.002 vs 0.002-0.003 | 0.001 vs 0.001 |
+
+The run-to-run spread is small, so these are results:
+- 5.0.5 trails less. The lag is 7-9 ms shorter on both actuators, and the
+  position error is 2.5x (node 4) to 6x (node 13) smaller. Both
+  differences are about 100x the spread. 4.3.5 trails by about 1 output
+  degree at 90 deg/s: its velocity feed-forward (0x2382,2) acts on the
+  measured velocity, so it has no trajectory feed-forward. 5.0.5 feeds
+  forward the interpolation slope.
+- Shape after the lag: node 4 is the same on both, or slightly better on
+  5.0.5 (ramp). Node 13 is worse on 5.0.5 (0.057 against 0.040 deg on the
+  chirp, 0.075 against 0.043 on the ramp). That is well outside the spread.
+- The hold is the same on both.
+- One run is noisy: node 13 square B1 (after the lag 0.097 deg, iq RMS
+  191 mA, against 0.047 and 81 in B2). The A runs and B2 agree. Treat
+  node 13 square's still-segment numbers as unresolved.
 
 ### 10.4 The report
 
@@ -1098,8 +1128,12 @@ values of each prepare (`prepare.log`), the firmware and CSV SHA-256
   example by a JTAG flashloader update), or it is sitting in its
   flashloader. `info --id 127` tells which. Set the ID back with `set-id`,
   then restore its NV.
-- **`flash` fails at once.** A plain `.bin` on flashloader 3.1.0 or later,
-  which takes only `.ebin`. Use the package's `.ebin` (section 2.8).
+- **`flash` fails with "the encrypted image failed authentication".**
+  The `.ebin` was encrypted for another flashloader. The node waits in its
+  flashloader (`version` shows the flashloader's 3.x.x): flash the package's
+  `.bin` (section 2.8).
+- **`flash` of a `.bin` fails at once.** Flashloader 3.1.0 or later, which
+  takes only `.ebin`.
 - **4.3.5 behaves wildly after a downgrade.** The bias trap (section 1.3):
   `nv save` the node and check 0x3008,3 / 0x3009,3. Values near 32000 mean
   5.x NV. Run `prepare` (wipe, load, calibrate) before enabling again.
