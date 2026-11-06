@@ -178,7 +178,8 @@ def build_parser():
     p.add_argument('steps', nargs='*', metavar='STEP', type=_step_name,
                    help='any of ' + ', '.join(_calibrate.STEPS))
     p.add_argument('--no-save', action='store_true',
-                   help='leave the winding, runout and cogging results in RAM '
+                   help='leave the winding, runout, friction and cogging '
+                   'results in RAM '
                    'instead of saving each step to NV (the board calibrations '
                    'and the encoder filter still save themselves)')
     p.add_argument('--all', action='store_true', help='every puck on the bus')

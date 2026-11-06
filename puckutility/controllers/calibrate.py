@@ -4,7 +4,7 @@ A manufacturing batch shares one configuration CSV, loaded first (flash,
 config load, Save.All, reboot).  The actuator calibration is then what the
 CSV cannot carry, measured on each unit: p4core.actuator.plans.ACTUATOR
 (encoder, current-sense bias, gain, slope and fold, electrical zero, runout
-table, cogging).  The steps are p4core's, run through a p4core.actuator
+table, friction: the drag's J/B/Tc and the Coulomb feed-forward, cogging).  The steps are p4core's, run through a p4core.actuator
 Session in STEPS order; pucktuner and p4gui run the same ones.  The loop
 gains are not searched here: pucktuner does that.  This keeps puckutility's
 entry points to them (the CLI's calibrate, the system-config calibrate

@@ -93,7 +93,11 @@
                             <handler>calibrate_step_runout</handler>
                         </item>
                         <item>
-                            <label>8. Cogging feed-forward</label>
+                            <label>8. Friction calibration</label>
+                            <handler>calibrate_step_friction</handler>
+                        </item>
+                        <item>
+                            <label>9. Cogging feed-forward</label>
                             <handler>calibrate_step_cogging</handler>
                         </item>
                     </menu>

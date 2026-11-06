@@ -168,13 +168,18 @@ turns), `-q` prints only results, warnings and errors, `-v` more, and
 
 `calibrate` runs the actuator calibration the GUI's Actuator Calibration
 menu runs (p4core.actuator's steps): encoder, bias, gain, slope, fold,
-winding, runout, cogging (`puckutility calibrate --help`); without STEP
-arguments, the ones the puck's firmware can run.  Load the batch CSV first.
+winding, runout, friction, cogging (`puckutility calibrate --help`);
+without STEP arguments, the ones the puck's firmware can run.  Load the batch
+CSV first.  friction drags the rotor with the field for J, B and Coulomb Tc
+(0x3011,7/17/18), rescales the CSV's velocity gains when its J differs, then
+sizes the Coulomb feed-forward (0x2381,3) from that Tc (firmware without
+0x2381,3 gets the drag alone).  It runs before cogging, because the
+firmware applies the feed-forward on cogging's slow spins.
 The motor turns, continuously for cogging.  Each step's results are saved to
 NV (Save.App + Save.Mfg) as soon as it passes, so a later failure does not lose them.  A
 failed step saves nothing, and the next run reboots the puck first so that
-what it left in RAM cannot be saved.  `--no-save` leaves the winding, runout
-and cogging results in RAM instead, where a reboot loses them; the board
+what it left in RAM cannot be saved.  `--no-save` leaves the winding, runout,
+friction and cogging results in RAM instead, where a reboot loses them; the board
 calibrations and the encoder filter save themselves either way.
 
 ### The old flags

@@ -55,7 +55,9 @@ class puckutilityapp_frame(wx.Frame):
         self.Bind(wx.EVT_MENU, self.calibrate_step_winding, item)
         item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "7. Encoder runout table", "")
         self.Bind(wx.EVT_MENU, self.calibrate_step_runout, item)
-        item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "8. Cogging feed-forward", "")
+        item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "8. Friction calibration", "")
+        self.Bind(wx.EVT_MENU, self.calibrate_step_friction, item)
+        item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "9. Cogging feed-forward", "")
         self.Bind(wx.EVT_MENU, self.calibrate_step_cogging, item)
         wxglade_tmp_menu.Append(wx.ID_ANY, "Actuator Calibration Steps", wxglade_tmp_menu_sub, "")
         wxglade_tmp_menu.AppendSeparator()
@@ -311,6 +313,10 @@ class puckutilityapp_frame(wx.Frame):
 
     def calibrate_step_runout(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
         print("Event handler 'calibrate_step_runout' not implemented!")
+        event.Skip()
+
+    def calibrate_step_friction(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
+        print("Event handler 'calibrate_step_friction' not implemented!")
         event.Skip()
 
     def calibrate_step_cogging(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>

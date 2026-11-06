@@ -125,6 +125,9 @@ class ActuatorCal:
     def calibrate_step_runout(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
         return self._actuator_step('runout')
 
+    def calibrate_step_friction(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
+        return self._actuator_step('friction')
+
     def calibrate_step_cogging(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
         return self._actuator_step('cogging')
 

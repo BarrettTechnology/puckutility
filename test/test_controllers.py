@@ -69,7 +69,7 @@ class TestCalibrate(unittest.TestCase):
     def test_the_steps_are_the_actuator_plan_numbered(self):
         self.assertEqual(list(calibrate.STEPS), [
             'encoder', 'bias', 'gain', 'slope', 'fold', 'winding', 'runout',
-            'cogging'])
+            'friction', 'cogging'])
         self.assertEqual(set(calibrate.STEPS), set(calibrate.plans.ACTUATOR))
         self.assertEqual(calibrate.STEPS['bias'], 'Current-sense bias')
 
