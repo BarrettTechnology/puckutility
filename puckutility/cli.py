@@ -5,6 +5,7 @@
     puckutility flash FIRMWARE [--all]
     puckutility config load CSV [--all]       (and export/check/templates)
     puckutility calibrate [STEP ...] [--no-save] [--all]
+    puckutility version / nv save FILE / nv restore FILE
     puckutility system-config INI
     puckutility set-id NEW_ID
     puckutility reset [--all]
@@ -158,7 +159,8 @@ def build_parser():
         version='v' + __version__)
     sub.add_parser('gui', help='start the GUI (the default)')
     cli.add_common_commands(
-        sub, only=('scan', 'flash', 'config', 'set-id', 'reset', 'wipe-nvm'))
+        sub, only=('scan', 'version', 'nv', 'flash', 'config', 'set-id', 'reset',
+                   'wipe-nvm'))
 
     p = sub.add_parser('info', help='firmware, flashloader, model and live '
                        'readings (reads the flashloader by rebooting the puck)')
@@ -173,10 +175,14 @@ def build_parser():
         'CSV cannot carry (load the CSV first). With no STEP, all of them in '
         'order; named steps run in that order too. Each step saves to NV as it '
         'passes, unless --no-save. Steps: ' +
-        '; '.join('{}: {}'.format(k, t) for k, t in _calibrate.STEPS.items()))
+        '; '.join('{}: {}'.format(k, t) for k, t in _calibrate.STEPS.items()) +
+        '. Also: offsets (bias), gainfactor (gain), encoder-offset or ezero '
+        '(winding: encoder zero, electrical zero and winding order are one '
+        'sweep), and ab for bias, gain and winding.')
     p.set_defaults(func=_cmd_calibrate, needs_bus=True)
     p.add_argument('steps', nargs='*', metavar='STEP', type=_step_name,
-                   help='any of ' + ', '.join(_calibrate.STEPS))
+                   help='any of ' + ', '.join(_calibrate.STEPS) +
+                   ', offsets, gainfactor, encoder-offset, or ab')
     p.add_argument('--no-save', action='store_true',
                    help='leave the winding, runout, friction and cogging '
                    'results in RAM '
