@@ -11,7 +11,7 @@ import unittest
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, ROOT)
 
-from abtest import csvaudit, makecsv                           # noqa: E402
+from abtest import csvaudit, csvdiff, makecsv                           # noqa: E402
 
 AB = os.path.join(ROOT, 'abtest')
 TEMPLATES = {'4.3.5': os.path.join(AB, 'templates', 'P4-42-AB-4.3.5.csv'),
@@ -143,6 +143,30 @@ class MakeTest(Base):
         with self.assertRaises(ValueError):
             makecsv.make(TEMPLATES['5.x'], self.path('o.csv'),
                          sets=[makecsv.parse_set('0x3008,3=1')], out=io.StringIO())
+
+
+class DiffTest(Base):
+    def write(self, name, text):
+        path = self.path(name)
+        with open(path, 'w') as f:
+            f.write(text)
+        return path
+
+    def test_equal_values_in_any_spelling(self):
+        a = self.write('a.csv', 'Version,FILE_VERSION,,,STRING,V1.0.0 (2026-11-06)\n'
+                       'Filter,,0x3013,6,UNSIGNED8,0x90\nKp,,0x2381,1,REAL32,0.5\n')
+        b = self.write('b.csv', 'Version,FILE_VERSION,,,STRING,V9.9.9 (2026-11-07)\n'
+                       'Filter,,0x3013,6,UNSIGNED8,144\nKp,,0x2381,1,REAL32,5e-1\n')
+        self.assertEqual(csvdiff.diff(a, b), ([], []))
+        self.assertEqual(csvdiff.main([a, b], out=io.StringIO()), 0)
+
+    def test_a_clamped_row_and_a_missing_row(self):
+        a = self.write('a.csv', 'Poles,,0x3011,3,UNSIGNED8,14\nPWM,,0x3001,1,UNSIGNED32,200000\n')
+        b = self.write('b.csv', 'PWM,,0x3001,1,UNSIGNED32,160000\n')
+        differ, missing = csvdiff.diff(a, b)
+        self.assertEqual(differ, [((0x3001, 1), 'PWM', '200000', '160000')])
+        self.assertEqual(missing, [((0x3011, 3), 'Poles')])
+        self.assertEqual(csvdiff.main([a, b], out=io.StringIO()), 1)
 
 
 if __name__ == '__main__':
