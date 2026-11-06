@@ -688,11 +688,18 @@ def flash_canable(firmware_path=None, verbose=False):
                     capture_output=True,
                 )
             if nudged is None or nudged.returncode != 0:
-                subprocess.run(
-                    ['/sbin/ip', 'link', 'set', iface,
-                     'type', 'can', 'bitrate', '1000000', 'txqueuelen', '1000', 'fd', 'on'],
-                    capture_output=True,
-                )
+                # Same order as can-up@.service: FD with the bench timing,
+                # FD on default timing, classic.
+                for opts in (['bitrate', '1000000', 'sample-point', '0.687', 'sjw', '50',
+                              'dbitrate', '5000000', 'dsample-point', '0.687', 'dsjw', '10',
+                              'fd', 'on'],
+                             ['bitrate', '1000000', 'dbitrate', '5000000', 'fd', 'on'],
+                             ['bitrate', '1000000']):
+                    if subprocess.run(['/sbin/ip', 'link', 'set', iface, 'type', 'can'] + opts,
+                                      capture_output=True).returncode == 0:
+                        break
+                subprocess.run(['/sbin/ip', 'link', 'set', iface, 'txqueuelen', '1000'],
+                               capture_output=True)
                 subprocess.run(['/sbin/ip', 'link', 'set', iface, 'up'],
                                capture_output=True)
             for _ in range(30):  # give the bring-up up to 3 s to take effect
