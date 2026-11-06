@@ -268,9 +268,9 @@ Programming puck4.app.stm32.release.v4.3.5-0-g6605fba.bin (55704 bytes)...
 Application validated. Launching...
 Node 4 running 4.3.5
 ```
-Flashloader 3.0.x takes the plain `.bin`; 3.1.0 and later take only the
-encrypted `.ebin`. `info` (without `--no-flashloader`) tells you which you
-have. Flashing does not touch NV, which is why a downgrade must be followed
+The package ships encrypted `.ebin` images. Flashloader 3.0.7 takes a
+`.ebin` or a plain `.bin`; 3.1.0 and later take only the `.ebin`. `info`
+(without `--no-flashloader`) shows the flashloader version. Flashing does not touch NV, which is why a downgrade must be followed
 by a wipe (section 1.3).
 
 ### 2.9 Calibrate: `calibrate [STEP ...]`
@@ -1098,8 +1098,8 @@ values of each prepare (`prepare.log`), the firmware and CSV SHA-256
   example by a JTAG flashloader update), or it is sitting in its
   flashloader. `info --id 127` tells which. Set the ID back with `set-id`,
   then restore its NV.
-- **`flash` fails at once.** Wrong image type for the flashloader: 3.0.x
-  needs `.bin`, 3.1.0 needs `.ebin` (section 2.8).
+- **`flash` fails at once.** A plain `.bin` on flashloader 3.1.0 or later,
+  which takes only `.ebin`. Use the package's `.ebin` (section 2.8).
 - **4.3.5 behaves wildly after a downgrade.** The bias trap (section 1.3):
   `nv save` the node and check 0x3008,3 / 0x3009,3. Values near 32000 mean
   5.x NV. Run `prepare` (wipe, load, calibrate) before enabling again.
