@@ -23,7 +23,7 @@ tar -C "$SRC" -cf - --exclude=.git --exclude=.venv --exclude=build \
     --exclude=./data_dump --exclude='*.egg-info' --exclude=__pycache__ . \
     | tar -C "$WORK" -xf -
 cd "$WORK"
-bash scripts/setup-venv.sh
+NO_DEV_TOOLS=1 bash scripts/setup-venv.sh  # wxGlade is a git install
 .venv/bin/puckutility --version
 xvfb-run -a .venv/bin/python - <<'PY'
 import importlib, wx

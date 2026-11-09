@@ -54,7 +54,10 @@ uv pip install --python "$REPO_ROOT/.venv" -e "$REPO_ROOT/p4core" -e "$REPO_ROOT
 # bundled into the .deb (the app never imports it, and the Docker build installs
 # requirements.txt, not this file). wxGlade is a git install, so it needs `git`
 # on PATH. Skip entirely with NO_DEV_TOOLS=1 (e.g. in a minimal/CI environment).
-if [ "${NO_DEV_TOOLS:-}" != "1" ] && [ -f "$REPO_ROOT/requirements-dev.txt" ]; then
+if [ "${NO_DEV_TOOLS:-}" != "1" ] && [ -f "$REPO_ROOT/requirements-dev.txt" ] \
+        && ! command -v git >/dev/null 2>&1; then
+    echo "Skipping dev tools (requirements-dev.txt): wxGlade needs git." >&2
+elif [ "${NO_DEV_TOOLS:-}" != "1" ] && [ -f "$REPO_ROOT/requirements-dev.txt" ]; then
     echo "Installing dev tools (requirements-dev.txt)..."
     uv pip install --python "$REPO_ROOT/.venv" \
         --find-links "$WX_FIND_LINKS" \
