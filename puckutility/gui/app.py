@@ -165,6 +165,15 @@ import wx.lib.agw.pygauge as PG
 import argparse
 import configparser
 
+# A scan whose sends the adapter refused: that says nothing about whether
+# pucks are present, so it is not reported as "No Pucks Found".
+_TX_FULL_STATUS = 'CAN adapter TX buffer full'
+_TX_FULL_MSG = ('CAN adapter transmit buffer full: the scan could not be sent.\n\n'
+                'Either nothing on the bus acknowledges frames (pucks unpowered, '
+                'CAN cable or termination missing) or the adapter is backed up.\n\n'
+                'Check power and the CAN connection, then retry the scan. If it '
+                'persists, replug the CAN adapter.')
+
 def _find_dfu_device():
     """Return True if an STM32 DFU bootloader (0483:df11) is connected."""
     try:
@@ -1299,7 +1308,10 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 print('CAN reset succeeded — continuing scan')
             except Exception as e2:
                 # print(e)
-                if "buffer" in str(e2) or "heavy" in str(e2):
+                if can_backend.is_tx_buffer_error(e2):
+                    print(f'CAN adapter transmit buffer full ({e2}) — scan could not send')
+                    status_msg, msg = _TX_FULL_STATUS, _TX_FULL_MSG
+                elif "heavy" in str(e2):
                     print('No Pucks Found') # Establish error for no pucks
                     status_msg = 'No Pucks Found'
                     msg = 'No Pucks Found! \nDebug:\nPower Connection\nCAN Connection\n\nVerify Connection and Retry'
@@ -1516,7 +1528,13 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                         self._scan_reset_done = False
                     if _recovered:
                         return self.scan_pucks(event, selfCALL=selfCALL, skipADC=skipADC)
-                print('No Pucks Found') # Establish error for no pucks
+                if can_backend.is_tx_buffer_error(e):
+                    print(f'CAN adapter transmit buffer full ({e}) — scan could not send')
+                    status_msg, msg = _TX_FULL_STATUS, _TX_FULL_MSG
+                else:
+                    print('No Pucks Found') # Establish error for no pucks
+                    status_msg = 'No Pucks Found'
+                    msg = 'No Pucks Found! \nDebug:\nPower Connection\nCAN Connection\n\nVerify Connection and Retry'
                 # No active puck — clear ID, firmware-version, and the
                 # Select ID dropdown.
                 self.text_id.ChangeValue('')
@@ -1525,10 +1543,9 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                 self.choice_id.SetSelection(wx.NOT_FOUND)
                 self._scan_error = True
                 self.progress.Hide()
-                self.frame_statusbar.SetStatusText('No Pucks Found', 1)
+                self.frame_statusbar.SetStatusText(status_msg, 1)
                 self.frame_statusbar.Refresh()
                 self.frame_statusbar.Update()
-                msg = 'No Pucks Found! \nDebug:\nPower Connection\nCAN Connection\n\nVerify Connection and Retry'
                 dlg = wx.MessageDialog(None,msg)
                 dlg.ShowModal()
                 dlg.Destroy()
@@ -3085,7 +3102,7 @@ def _setup_linux_desktop_integration(app_id, display_name):
     GTK3 derives the app_id from GLib's program name, so we (1) pin it via
     g_set_prgname() through ctypes (no PyGObject dependency) before the first
     window is mapped, and (2) when running from source — where no installed
-    .desktop exists (frozen builds get one from install-ubuntu.sh) — drop a
+    .desktop exists (frozen builds get one from the .deb) — drop a
     matching <app_id>.desktop into the per-user applications dir pointing Icon=
     at the in-tree PNG. Both steps are best-effort; failures are non-fatal.
     """
@@ -3096,12 +3113,12 @@ def _setup_linux_desktop_integration(app_id, display_name):
         ctypes.CDLL('libglib-2.0.so.0').g_set_prgname(app_id.encode())
     except Exception:
         pass
-    if getattr(sys, 'frozen', False):
-        return
     # Defer to a system-installed (.deb) entry of the same id. Writing a
     # per-user entry would shadow it (XDG precedence) and make the dock launch
     # the source tree instead of the installed app. Clean up any stale per-user
-    # entry a previous source run left, so the installed one wins.
+    # entry so the installed one wins: a previous source run's, or the one the
+    # v1.2.x install-ubuntu.sh left pointing at /usr/local/bin -- the installed
+    # app too, so this runs before the frozen return below.
     try:
         if os.path.exists(os.path.join(
                 '/usr/share/applications', f'{app_id}.desktop')):
@@ -3116,6 +3133,8 @@ def _setup_linux_desktop_integration(app_id, display_name):
             return
     except Exception:
         pass
+    if getattr(sys, 'frozen', False):
+        return
     try:
         src_dir = paths.APP_DIR
         entry = (

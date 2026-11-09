@@ -323,6 +323,9 @@ export GIO_MODULE_DIR="/tmp/puck-empty-gio-$(id -un)"
 mkdir -p "$GIO_MODULE_DIR" 2>/dev/null
 LOG="/tmp/puckutilityapp-$(id -un).log"
 echo "=== launch $(date --iso-8601=seconds) ===" >> "$LOG"
+# pipefail: the wrapper exits with the app's status, not tee's, so a failed
+# CLI run (calibrate, flash) is not reported as success.
+set -o pipefail
 /usr/share/puckutilityapp/PuckUtilityApp "$@" 2>&1 | tee -a "$LOG"
 WRAPPER
     chmod 755 "${DEB_ROOT}/usr/bin/PuckUtilityApp"
@@ -478,21 +481,21 @@ integrate_for_user() {
     _home=$(getent passwd "$_uid" | cut -d: -f6)
     [ -n "$_user" ] && [ -n "$_home" ] || return 0
 
-    # File ops run as root (the postinst user); only the GUI D-Bus calls are
-    # dropped to the session user via runuser. XDG_RUNTIME_DIR is passed
-    # alongside the bus address so gio/gsettings resolve the user's session.
+    # Everything in the user's home runs AS the user, via runuser: the home
+    # is theirs, and root's cp/chmod/chown there would follow a symlink they
+    # planted at the shortcut's path to any file on the system.
+    # XDG_RUNTIME_DIR is passed alongside the bus address so gio/gsettings
+    # resolve the user's session.
     _runas="runuser -u ${_user} -- env DBUS_SESSION_BUS_ADDRESS=unix:path=${_bus} XDG_RUNTIME_DIR=/run/user/${_uid}"
 
     # Deploy a trusted Desktop shortcut.
     if [ -d "${_home}/Desktop" ]; then
         _df="${_home}/Desktop/PuckUtilityApp.desktop"
-        cp /usr/share/applications/PuckUtilityApp.desktop "$_df"
-        chmod 755 "$_df"
-        chown "${_user}:" "$_df"
+        $_runas install -m 755 /usr/share/applications/PuckUtilityApp.desktop "$_df" || return 0
         # Ubuntu 22+ Nautilus needs the executable bit (above) AND the
-        # metadata::trusted xattr. Set it directly as root; fall back to gio
-        # over the session bus on older GVFS-only systems.
-        python3 -c "
+        # metadata::trusted xattr. Set it directly; fall back to gio over the
+        # session bus on older GVFS-only systems.
+        $_runas python3 -c "
 import os, sys
 try:
     os.setxattr(sys.argv[1], 'user.metadata::trusted', b'true')
@@ -530,6 +533,20 @@ for _b in /run/user/[0-9]*/bus; do
     _u=$(basename "$(dirname "$_b")")
     [ "$_u" -ge 1000 ] 2>/dev/null || continue
     integrate_for_user "$_u" || true
+done
+
+# The v1.2.x install-ubuntu.sh left a per-user menu entry,
+# ~/.local/share/applications/PuckUtilityApp.desktop, launching
+# /usr/local/bin/PuckUtilityApp. A per-user entry shadows this package's
+# (XDG precedence), so the menu and the dock kept starting the old install.
+# Every user, logged in or not; only that entry (its Exec line), and removed
+# as the user (see integrate_for_user).
+getent passwd | while IFS=: read -r _user _ _uid _ _ _home _; do
+    [ "$_uid" -ge 1000 ] 2>/dev/null || continue
+    _le="${_home}/.local/share/applications/PuckUtilityApp.desktop"
+    [ -f "$_le" ] && [ ! -L "$_le" ] || continue
+    grep -q '^Exec=/usr/local/bin/PuckUtilityApp' "$_le" || continue
+    runuser -u "$_user" -- rm -f "$_le" || true
 done
 
 exit 0
