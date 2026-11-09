@@ -82,13 +82,16 @@ class ActuatorCal:
         if not self._actuator_ready(every_puck=True):
             return False
         starting_id = self.getID()
-        lines, all_ok = [], True
+        lines, all_ok, incomplete = [], True, []
         for node_id in list(self.network.scanner.nodes):
             self.choice_id.SetSelection(self.network.scanner.nodes.index(node_id))
             self.select_id(None)
             print('--- Actuator calibration, node {} ---'.format(node_id))
             ok, session = self._run_actuator(actuator.supported(self.node),
                                              fresh=True)
+            if not ok:
+                incomplete.append(getattr(self, '_calIncomplete', None) or
+                                  'puck {}: did not finish'.format(node_id))
             verdict = 'PASS, saved' if ok else \
                 'FAILED (the steps before the failure are saved)'
             if session is not None and session.unsaved:
@@ -97,6 +100,10 @@ class ActuatorCal:
             lines.append('Node {}: {}'.format(node_id, verdict))
             if session is not None:
                 print(actuator.summary_text(session))
+        # Every puck's outcome, not just the last one's.
+        self.requireCal = bool(incomplete)
+        self._calIncomplete = '; '.join(incomplete) or None
+        self._calReminded = False
         if starting_id in self.network.scanner.nodes:
             self.choice_id.SetSelection(
                 self.network.scanner.nodes.index(starting_id))
@@ -207,6 +214,7 @@ class ActuatorCal:
             # A cached session still logs to the run that made it.
             session.dev._log = session.log = reporter.note
             session.dev._should_abort = reporter.should_abort
+            session.confirm = reporter.confirm
         session.dev._pump = _pump
         return session
 
@@ -224,8 +232,8 @@ class ActuatorCal:
             ok, session = actuator.calibrate_actuator(
                 self.node, reporter, steps=keys,
                 session=self._actuator_session(reporter, fresh))
-            if ok and set(actuator.supported(self.node)) <= set(keys):
-                self.requireCal = False
+            if set(actuator.supported(self.node)) <= set(keys):
+                self._note_full_calibration(ok, session)
             return ok, session
         except Exception as exc:
             self._cal_fault(exc)
@@ -245,6 +253,34 @@ class ActuatorCal:
             print('Actuator calibration finished in {:.1f} s.'.format(
                 time.time() - t0))
             self._ui_unlock()
+
+    def _note_full_calibration(self, ok, session):
+        """After a whole calibration: the Test menu's reminder goes when every
+        step passed, and otherwise names what did not (the steps that passed
+        are saved either way)."""
+        self._calReminded = False
+        if ok:
+            self.requireCal = False
+            self._calIncomplete = None
+            return
+        missed = ['{} ({})'.format(plans.title(k), r.get('status', '?'))
+                  for k, r in session.results.items()
+                  if r.get('status') in ('fail', 'skipped')
+                  and r.get('detail') != 'not in this firmware'] \
+            if session is not None else []
+        self.requireCal = True
+        self._calIncomplete = 'puck {}: {}'.format(
+            self.getID(), ', '.join(missed) or 'did not finish')
+
+    def _cal_reminder_text(self):
+        """Why the Test menu reminds: no calibration since the configuration,
+        or one that did not finish."""
+        if getattr(self, '_calIncomplete', None):
+            return ('The last actuator calibration did not complete ({}).\n'
+                    'The steps that passed are saved.'.format(
+                        self._calIncomplete))
+        return ('Actuator calibration has not been run since the '
+                'configuration was loaded.')
 
     def _actuator_done(self, session, keys):
         """The summary.  Each step saved itself as it passed; if a Save.App + Save.Mfg

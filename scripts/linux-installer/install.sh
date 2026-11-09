@@ -10,7 +10,9 @@
 #
 # Both adapters come up automatically as can0, can1, ... when plugged in
 # (CAN-FD 1M/5M, classic 1M fallback). Re-running the installer changes the
-# selection: a deselected adapter's package is removed.
+# selection: a deselected adapter's package is removed, unless another puck
+# app is installed (the packages are shared). A CAN package already installed
+# at a newer version (from another app's installer) is kept, never downgraded.
 #
 # Options:
 #   --peak / --no-peak         select / deselect Peak PCAN-USB support
@@ -79,6 +81,32 @@ gui_ok() {
 tty_ok() { [ -t 0 ] && [ -t 1 ]; }
 
 installed() { dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q 'ok installed'; }
+installed_version() { dpkg-query -W -f='${Version}' "$1" 2>/dev/null; }
+
+# The shared CAN package <pkg> is installed at a version above ours.
+newer_installed() {
+    installed "$1" && dpkg --compare-versions "$(installed_version "$1")" gt "$VERSION"
+}
+
+# The other puck apps installed now (they share the CAN packages).
+siblings_installed() {
+    local p out=()
+    for p in "${SIBLING_APPS[@]}"; do installed "$p" && out+=("$p"); done
+    echo "${out[*]:-}"
+}
+
+# /etc files that override the CAN packages' /usr/lib ones (an older app's or
+# setup-socketcan.sh's): the interfaces then come up at that file's timing.
+CAN_ETC_SHADOWS=(/etc/udev/rules.d/60-can.rules /etc/udev/rules.d/61-can-up.rules
+                 /etc/udev/rules.d/90-canable.rules /etc/systemd/system/can-up@.service)
+check_can_shadows() {
+    local f found=()
+    for f in "${CAN_ETC_SHADOWS[@]}"; do [ -e "$f" ] && found+=("$f"); done
+    [ ${#found[@]} -eq 0 ] && return 0
+    warn "these files override the puck CAN set-up (CAN timing, bring-up):"
+    for f in "${found[@]}"; do warn "  $f  ($(dpkg -S "$f" 2>/dev/null | cut -d: -f1 || true))"; done
+    warn "remove them (sudo rm) and replug the CAN adapter, or the bus can go bus-off under load."
+}
 
 in_container() {
     [ -f /.dockerenv ] || [ -f /run/.containerenv ] && return 0
@@ -266,12 +294,27 @@ kernel_extras() {   # echo linux-modules-extra-<kver> if a needed driver is miss
 
 do_install() {
     [ -f "$DEBS/${APP_PKG}_${VERSION}_amd64.deb" ] || die "package not found: $DEBS/${APP_PKG}_${VERSION}_amd64.deb"
-    local pkgs=("$DEBS/${APP_PKG}_${VERSION}_amd64.deb" "$DEBS/puck-can-common_${VERSION}_all.deb")
-    local remove=()
-    if [ "$PEAK" = 1 ]; then pkgs+=("$DEBS/puck-can-peak_${VERSION}_all.deb")
-    elif installed puck-can-peak; then remove+=(puck-can-peak); fi
-    if [ "$CANABLE" = 1 ]; then pkgs+=("$DEBS/puck-can-canable_${VERSION}_all.deb")
-    elif installed puck-can-canable; then remove+=(puck-can-canable); fi
+    local pkgs=("$DEBS/${APP_PKG}_${VERSION}_amd64.deb")
+    local remove=() siblings
+    siblings=$(siblings_installed)
+    add_can() {   # add_can <pkg>: ours, unless a newer one is installed
+        if newer_installed "$1"; then
+            say "Keeping $1 $(installed_version "$1") (newer than $VERSION, from another puck app)."
+        else
+            pkgs+=("$DEBS/$1_${VERSION}_all.deb")
+        fi
+    }
+    drop_can() {  # drop_can <pkg>: deselected -- removed unless another app uses it
+        installed "$1" || return 0
+        if [ -n "$siblings" ]; then
+            say "Keeping $1: another puck app ($siblings) is installed and may use it."
+        else
+            remove+=("$1")
+        fi
+    }
+    add_can puck-can-common
+    if [ "$PEAK" = 1 ]; then add_can puck-can-peak; else drop_can puck-can-peak; fi
+    if [ "$CANABLE" = 1 ]; then add_can puck-can-canable; else drop_can puck-can-canable; fi
 
     export DEBIAN_FRONTEND=noninteractive
     say "==> Updating the package lists"
@@ -285,7 +328,10 @@ do_install() {
         run apt-get remove -y -q "${remove[@]}"
     fi
     say "==> Installing: $(for p in "${pkgs[@]}"; do basename "$p" .deb; done | tr '\n' ' ')"
+    # --allow-downgrades is for the app only: add_can never offers an older
+    # CAN package than the one installed.
     run apt-get install -y -q --allow-downgrades "${pkgs[@]}"
+    $DRY_RUN || check_can_shadows
 
     if ! in_container && ! $DRY_RUN; then
         [ "$PEAK" = 1 ] && { modprobe peak_usb 2>/dev/null || warn "could not load peak_usb (a reboot into the new kernel may be needed)."; }

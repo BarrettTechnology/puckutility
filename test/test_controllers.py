@@ -99,8 +99,10 @@ class TestCalibrate(unittest.TestCase):
         self.assertEqual(self.session.runs,
                          [['encoder', 'bias', 'gain', 'winding']])
         text = calibrate.summary_text(session)
+        # One numbered line per step; its detail follows, indented.
         self.assertEqual([line.split('.')[0].strip()
-                          for line in text.splitlines()], ['1', '2', '3', '4'])
+                          for line in text.splitlines()
+                          if not line.startswith('      ')], ['1', '2', '3', '4'])
         self.assertNotIn('runout', text.lower())
         self.assertNotIn('firmware', text.lower())
 

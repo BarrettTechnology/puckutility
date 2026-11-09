@@ -211,6 +211,35 @@ class TestActuatorMenu(unittest.TestCase):
         self.assertEqual(s.results['runout']['status'], 'skipped')
         self.assertIn('FAIL', f.messages[-1])
 
+    def test_a_failure_names_the_step_in_the_test_reminder(self):
+        # The Test menu reminds once (it no longer locks): the reminder says
+        # which step did not pass, and that the rest are saved.
+        self.fail_keys = ('winding',)
+        f = AFrame()
+        f.calibrate_actuator(None)
+        text = f._cal_reminder_text()
+        self.assertIn('did not complete', text)
+        self.assertIn('puck 5: ' + plans.title('winding') + ' (fail)', text)
+        self.assertIn('saved', text)
+        self.assertFalse(f._calReminded)
+
+    def test_a_pass_clears_the_reminder(self):
+        self.fail_keys = ('winding',)
+        f = AFrame()
+        f.calibrate_actuator(None)
+        self.fail_keys = ()
+        f.calibrate_actuator(None)
+        self.assertFalse(f.requireCal)
+        self.assertIsNone(f._calIncomplete)
+
+    def test_all_pucks_reminder_lists_every_failed_puck(self):
+        self.fail_keys = ('winding',)
+        f = AFrame(nodes=(3, 4))
+        f.calibrate_actuator_all_pucks(None)
+        self.assertTrue(f.requireCal)
+        self.assertIn('puck 3:', f._calIncomplete)
+        self.assertIn('puck 4:', f._calIncomplete)
+
     def test_legacy_firmware_offers_only_what_it_can_run(self):
         # No warning and no list of what the firmware lacks: the steps it
         # can run, numbered from 1, and only those run.

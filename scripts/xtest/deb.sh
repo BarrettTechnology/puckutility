@@ -17,8 +17,17 @@ run_installer() {  # $@ = installer options; prints its output only on failure
     bash "$R" --yes "$@" >/tmp/inst.out 2>&1 || { cat /tmp/inst.out; exit 1; }
 }
 
+# An older app's /etc copies (P4-Checkout 1.2.3, Puck Fader 1.2.0) shadow the
+# /usr/lib ones; the packages must move them aside, and put them back on removal.
+SHADOWS="/etc/udev/rules.d/60-can.rules /etc/udev/rules.d/61-can-up.rules
+         /etc/udev/rules.d/90-canable.rules /etc/systemd/system/can-up@.service"
+for f in $SHADOWS; do mkdir -p "$(dirname "$f")"; echo '# old app' > "$f"; done
+
 echo '  installer: both adapters'
 run_installer
+for f in $SHADOWS; do
+    [ ! -e "$f" ] && [ -e "$f.puck-diverted" ] || { echo "  $f not moved aside"; exit 1; }
+done
 for f in /usr/lib/udev/rules.d/60-can.rules /usr/lib/udev/rules.d/61-can-up.rules \
          /usr/lib/udev/rules.d/90-canable.rules /usr/lib/systemd/system/can-up@.service \
          /etc/NetworkManager/conf.d/99-puck-can.conf /usr/bin/dfu-util /usr/bin/candump; do
@@ -64,4 +73,8 @@ for p in puckutilityapp puck-can-common puck-can-peak puck-can-canable; do
     ! has "$p" || { echo "  $p still installed"; exit 1; }
 done
 [ ! -e /etc/NetworkManager/conf.d/99-puck-can.conf ] || { echo '  NM conf left behind'; exit 1; }
+for f in $SHADOWS; do
+    [ -e "$f" ] && [ ! -e "$f.puck-diverted" ] || { echo "  $f not restored"; exit 1; }
+    rm -f "$f"
+done
 echo '  uninstall OK'

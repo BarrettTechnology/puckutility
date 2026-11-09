@@ -1,5 +1,5 @@
 # A/B test configuration (5.0.5) for the P4-32 BO3518 -- see ab-testing.md.
-# Communication: termination off, boot to operational, no heartbeat, 5 ms EMCY
+# Communication: termination off, boot to PRE-OPERATIONAL (0x1F80 = 4: the host starts the node), no heartbeat, 5 ms EMCY
 # inhibit, every PDO empty (ab-testing.py and testp4.py map their own).
 # No per-actuator calibration: run the four calibration steps after loading.
 Name,FILE_INFO,,,STRING,Configure Puck $ID

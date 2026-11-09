@@ -119,5 +119,59 @@ class TestBehaviour(unittest.TestCase):
         self.assertIsNone(f._reconnect_timer)
 
 
+
+@unittest.skipIf(app is None, 'needs wxPython')
+class TestCanSetupCheck(unittest.TestCase):
+    """After the port opens: the link's timing goes to the log, and another
+    app's /etc CAN files (which override the installed timing) are warned
+    about once a session."""
+
+    def _check(self, f, shadow):
+        with mock.patch.object(app.can_backend, 'iface_timing_text',
+                               return_value='can0: 1000000 bit/s, sample point 0.750, SJW 20'), \
+                mock.patch.object(app.can_backend, 'shadowed_can_files_message',
+                                  return_value=shadow), \
+                mock.patch.object(app.wx, 'MessageDialog') as dlg, \
+                mock.patch('builtins.print') as out:
+            app.MyFrame._check_can_setup(f)
+        return dlg, ' '.join(str(c.args[0]) for c in out.call_args_list)
+
+    def test_the_timing_is_logged(self):
+        f = _frame(open_port='can0')
+        f._can_setup_warned = False
+        dlg, log = self._check(f, '')
+        self.assertIn('sample point 0.750, SJW 20', log)
+        dlg.assert_not_called()
+
+    def test_shadowing_files_warn_once(self):
+        f = _frame(open_port='can0')
+        f._can_setup_warned = False
+        dlg, log = self._check(f, 'Another program\'s CAN set-up overrides this one')
+        dlg.assert_called_once()
+        self.assertIn('WARNING', log)
+        dlg, _ = self._check(f, 'Another program\'s CAN set-up overrides this one')
+        dlg.assert_not_called()
+
+
+@unittest.skipIf(app is None, 'needs wxPython')
+class TestFaultText(unittest.TestCase):
+
+    def _desc(self, code):
+        e = mock.Mock(code=code)
+        e.get_desc.return_value = 'generic'
+        return app.puck_fault_desc(e)
+
+    def test_bus_off_is_a_communication_fault_not_the_supply(self):
+        text = self._desc(0x8140)
+        self.assertIn('BUS-OFF', text)
+        self.assertIn('NOT the supply', text)
+        self.assertIn('sample point', text)
+
+    def test_codes_the_app_table_lacks_come_from_p4core(self):
+        from p4core import cia402
+        self.assertEqual(self._desc(0x2392), cia402.ERROR_CODES[0x2392])
+        self.assertEqual(self._desc(0x1234), 'generic')
+
+
 if __name__ == '__main__':
     unittest.main()

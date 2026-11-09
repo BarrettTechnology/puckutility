@@ -129,6 +129,15 @@ PUCK_FAULT_DESC = {
     0x7122: "phasing (commutation / encoder alignment)",
     0x7320: "position sensor",
     0x7321: "encoder magnet distance",
+    0x8110: ("CAN OVERRUN -- the puck fell behind the bus (CPU load: PWM/control rate too "
+             "high for it). REMEDY: lower the PWM/control rate or the bus load."),
+    0x8140: ("CAN BUS-OFF -- the puck's CAN controller counted too many bus errors and left "
+             "the bus (it recovers by itself). A communication fault, NOT the supply. "
+             "Usually CAN bit timing that does not match the puck (sample point / SJW: see "
+             "the CAN timing line in this log after Scan), or cabling / termination. "
+             "REMEDY: re-run the app installer (it removes other apps' CAN files that "
+             "override the timing), check the cable and the 120 ohm terminators."),
+    0x8180: "SYNC timeout -- the puck stopped seeing SYNC from the host",
     0x8411: "velocity tracking warning",
     0x8414: "velocity tracking fault",
     0x8418: "velocity limit",
@@ -139,8 +148,12 @@ PUCK_FAULT_DESC = {
 
 
 def puck_fault_desc(emcy_error):
-    """Puck-specific description for an EMCY, falling back to the library's generic text."""
-    return PUCK_FAULT_DESC.get(emcy_error.code, emcy_error.get_desc())
+    """Puck-specific description for an EMCY, then p4core's table of the
+    firmware's codes (5.x's included), then the library's generic text."""
+    from p4core import cia402
+    return (PUCK_FAULT_DESC.get(emcy_error.code)
+            or cia402.ERROR_CODES.get(emcy_error.code)
+            or emcy_error.get_desc())
 
 # Give the app its own Application User Model ID so Windows groups the
 # taskbar entry under our icon instead of the generic python.exe icon.
@@ -341,6 +354,10 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
 
         # Extra Safety Flags
         self.requireCal = False
+        self._calReminded = False
+        # What the last full actuator calibration did not finish (text), or
+        # None when it has not run since the configuration (cal_actuator).
+        self._calIncomplete = None
         self.requireConfig = False
         # Re-entrancy guard: True while a firmware flash or config upload is in flight. The upload
         # loops call wx.Yield (to keep the UI alive), which lets a second dropped file / task start
@@ -511,6 +528,32 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         from p4core import can_backend
         self.network = can_backend.make_network(can_device, bitrate=bitrate)
         return self.network
+
+    def _check_can_setup(self):
+        """After the port opens: log the link's timing, and warn (once a
+        session) when another app's /etc CAN files override the installed
+        bring-up -- can0 then runs at their timing (the kernel's 75 % sample
+        point, SJW 20) and a puck can go bus-off under load."""
+        port = getattr(self, '_open_port', None)
+        try:
+            timing = can_backend.iface_timing_text(port) if port else ''
+        except Exception:
+            timing = ''
+        if timing:
+            print('CAN ' + timing)
+        if getattr(self, '_can_setup_warned', False):
+            return
+        try:
+            msg = can_backend.shadowed_can_files_message()
+        except Exception:
+            msg = ''
+        if not msg:
+            return
+        self._can_setup_warned = True
+        print('WARNING: ' + msg.replace('\n\n', '\n'))
+        dlg = wx.MessageDialog(None, msg, 'CAN Set-up', wx.OK | wx.ICON_WARNING)
+        dlg.ShowModal()
+        dlg.Destroy()
 
     def _on_can_device_lost(self):
         """Runs on the wx main thread when the CAN adapter is unexpectedly lost."""
@@ -1414,6 +1457,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self.choice_id.SetSelection(wx.NOT_FOUND)
             if not self.can_port(None, skipADC=True):
                 return
+            self._check_can_setup()
 
         self.frame_statusbar.SetStatusText("Scanning Pucks...", 1)
         self.frame_statusbar.Update()
@@ -1979,6 +2023,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             print(result)
 
             self.requireCal = True
+            self._calReminded = False
+            self._calIncomplete = None
             self.requireConfig = True
 
             # Reconnect, then send NMT Reset Node to the flashed puck so it exits
@@ -2197,6 +2243,8 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             print("Success!")
 
             self.requireCal = True
+            self._calReminded = False
+            self._calIncomplete = None
             self.requireConfig = False
 
             print("Establishing a new network...")
@@ -2285,15 +2333,25 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             if answer == wx.ID_YES:
                 self.file_to_p4(None)
             return
-        elif self.requireCal:
+        elif self.requireCal and not getattr(self, '_calReminded', False):
+            # A reminder, not a lock: once a calibration has run, the steps
+            # that passed are saved, and a failed refinement (cogging) must
+            # not keep the Test menu shut.  Asked once per configuration /
+            # calibration; No runs the test.
+            choice = self.choice_test.GetSelection()
             self.choice_test.SetSelection(0)
-            msg = "Actuator calibration is required after configuration.\nWould you like to calibrate all Pucks?"
-            dlg = wx.MessageDialog(None, msg, 'Warning!', wx.YES_NO | wx.ICON_WARNING)
+            msg = self._cal_reminder_text() + \
+                "\n\nCalibrate all Pucks now?\n(No runs the test anyway.)"
+            dlg = wx.MessageDialog(None, msg, 'Actuator Calibration',
+                                   wx.YES_NO | wx.ICON_WARNING)
             answer = dlg.ShowModal()
             dlg.Destroy()
+            self._calReminded = True
             if answer == wx.ID_YES:
                 self.calibrate_actuator_all_pucks(None)
-            return
+                return
+            print('Test run without a complete actuator calibration.')
+            self.choice_test.SetSelection(choice)
 
         quick_test = self.choice_test.GetSelection()
 
