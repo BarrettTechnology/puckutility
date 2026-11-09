@@ -35,7 +35,17 @@ uv pip install --python "$REPO_ROOT/.venv" \
 
 # The shared core (the p4core submodule) and puckutility itself, editable, so
 # `puckutility` / `puckutility-gui` run this checkout.
-git -C "$REPO_ROOT" submodule update --init p4core
+# Check the submodules out when this is a git checkout; a copied tree (the
+# cross-Ubuntu container, a source tarball) must already carry them.
+if command -v git >/dev/null 2>&1 && git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+    git -C "$REPO_ROOT" submodule update --init p4core
+fi
+for sub in p4core; do
+    [ -n "$(ls -A "$REPO_ROOT/$sub" 2>/dev/null)" ] || {
+        echo "ERROR: $REPO_ROOT/$sub is empty: run 'git submodule update --init' (needs git)." >&2
+        exit 1
+    }
+done
 uv pip install --python "$REPO_ROOT/.venv" -e "$REPO_ROOT/p4core" -e "$REPO_ROOT"
 
 # --- Dev-only tools (optional) ------------------------------------------------
