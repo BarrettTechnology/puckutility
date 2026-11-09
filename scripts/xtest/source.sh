@@ -11,10 +11,10 @@ SRC="$(cd "${1:-$(dirname "$0")/../..}" && pwd)"
 export DEBIAN_FRONTEND=noninteractive
 
 apt-get update -qq
-apt-get install -y -qq curl ca-certificates xvfb >/dev/null
+apt-get install -y -qq curl ca-certificates xvfb git >/dev/null  # git: wxGlade (dev tools)
 # Work on a copy so the venv never lands in the (possibly read-only) checkout.
 # The whole source tree, submodules included: setup-pip.sh installs the app and
-# p4core editable.  Not .git (the container has no git; the submodules must
+# p4core editable.  Not .git (a plain tree, as from a tarball: the submodules must
 # already be checked out) nor venvs and build output.
 WORK="$(mktemp -d)"
 tar -C "$SRC" -cf - --exclude=.git --exclude=.venv --exclude=build \
@@ -23,7 +23,7 @@ tar -C "$SRC" -cf - --exclude=.git --exclude=.venv --exclude=build \
     --exclude=./data_dump --exclude='*.egg-info' --exclude=__pycache__ . \
     | tar -C "$WORK" -xf -
 cd "$WORK"
-NO_DEV_TOOLS=1 bash scripts/setup-venv.sh  # wxGlade is a git install
+bash scripts/setup-venv.sh
 .venv/bin/puckutility --version
 xvfb-run -a .venv/bin/python - <<'PY'
 import importlib, wx
