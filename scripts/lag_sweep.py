@@ -23,12 +23,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from p4core import can_backend
+from p4core import can_backend, nvsave
 from p4core.paths import puck4_eds
 from p4core.calibrate import permille_base_ma
 from p4core.cia402 import CLEAR_FAULT, SHUTDOWN, OP_ENABLED, MODE_IDLE, MODE_PROFILE_VEL
 
-SAVE_MAGIC = 0x65766173  # 'save'
 
 
 def _mean(a):
@@ -121,8 +120,7 @@ def main():
         print("  -> chosen lag: {} (peak {} - {} margin)".format(chosen, best[0], a.margin))
         set_lag(node, chosen)
         if a.save:
-            node.sdo.download(0x1010, 1, struct.pack('<I', SAVE_MAGIC))
-            time.sleep(0.3)
+            nvsave.save_all(node)       # in IDLE; waits for the commit
             print("  saved LagFactor={} to NV.".format(chosen))
         else:
             print("  applied live (not saved). Re-run with --save to persist.")

@@ -36,15 +36,13 @@ REPO_ROOT = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, REPO_ROOT)
 
-import canopen          # noqa: E402  (after sys.path tweak)
-from p4core import can_backend      # noqa: E402
+from p4core import can_backend, nvsave      # noqa: E402
 from p4core.paths import puck4_eds   # noqa: E402
 
 EDS_PATH = puck4_eds()
 
 PRODUCT_CODE_INDEX = 0x1018
 PRODUCT_CODE_SUB   = 2
-SAVE_KEY           = 0x65766173  # 'SAVE' little-endian -> Save All to EEPROM
 
 # Model number -> product code to WRITE when converting to that model.
 MODEL_TO_CODE = {16: 5707, 32: 5760, 37: 1323, 42: 5755}
@@ -151,21 +149,15 @@ def main(argv=None):
         return 1
 
     # --- Save to EEPROM (Save All) ------------------------------------------
-    # The save takes ~0.55 s and the flashloader/app may not answer the SDO
-    # immediately, so bump the response timeout the way the app's config-save
-    # does, then restore it.
+    # nvsave waits for the commit (0x1010 save-pending bit): the reboot below
+    # would lose a save still queued.  A refused save (drive enabled) is named.
     print('Saving to EEPROM...')
-    default_timeout = canopen.sdo.SdoClient.RESPONSE_TIMEOUT
-    canopen.sdo.SdoClient.RESPONSE_TIMEOUT = 1.0
     try:
-        node.sdo['Save']['All'].raw = SAVE_KEY
+        nvsave.save_all(node)
     except Exception as e:
         print('ERROR: save to EEPROM failed: {}'.format(e))
-        canopen.sdo.SdoClient.RESPONSE_TIMEOUT = default_timeout
         network.disconnect()
         return 1
-    finally:
-        canopen.sdo.SdoClient.RESPONSE_TIMEOUT = default_timeout
 
     # --- Reboot so the Puck comes up as the new model -----------------------
     print('Rebooting puck...')
