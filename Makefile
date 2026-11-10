@@ -2,10 +2,10 @@
 # (CONTRIBUTING.md says more).
 #
 #   make               set up .venv (scripts/setup-venv.sh the first time,
-#                      scripts/setup-pip.sh after requirements.txt or
-#                      pyproject.toml changes)
-#   make test          unit tests (on a private Xvfb when xvfb-run is installed)
-#
+#                      scripts/setup-pip.sh after a requirements*.txt or
+#                      pyproject.toml change)
+#   make test          unit tests, in parallel (pytest-xdist,
+#                      requirements-test.txt); GUI tests on a private Xvfb
 #   make run           start the GUI from this checkout
 #   make package       Linux .run installer (build/), built in the Ubuntu 20.04 image
 #   make package-deb   the .deb only
@@ -36,12 +36,17 @@ all: venv
 
 venv: .venv/.installed
 
-.venv/.installed: requirements.txt pyproject.toml
+.venv/.installed: requirements.txt requirements-test.txt pyproject.toml
 	@if [ -x .venv/bin/python ]; then scripts/setup-pip.sh; else scripts/setup-venv.sh; fi
 	@touch $@
 
 test:
-	$(XVFB) $(PYTHON) -m unittest discover -s test -t .
+	@if $(PYTHON) -c 'import xdist' 2>/dev/null; then \
+	    $(XVFB) $(PYTHON) -m pytest -n auto -q -p no:cacheprovider test; \
+	else \
+	    echo "pytest-xdist is not installed (make venv): running the tests one by one." >&2; \
+	    $(XVFB) $(PYTHON) -m unittest discover -s test -t .; \
+	fi
 
 run:
 	$(PYTHON) -m puckutility gui

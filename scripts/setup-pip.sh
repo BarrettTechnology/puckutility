@@ -48,6 +48,11 @@ for sub in p4core; do
 done
 uv pip install --python "$REPO_ROOT/.venv" -e "$REPO_ROOT/p4core" -e "$REPO_ROOT"
 
+# The test runner (make test): pytest + pytest-xdist, not in the app.
+if [ -f "$REPO_ROOT/requirements-test.txt" ]; then
+    uv pip install --python "$REPO_ROOT/.venv" -r "$REPO_ROOT/requirements-test.txt"
+fi
+
 # --- Dev-only tools (optional) ------------------------------------------------
 # wxGlade (and any future dev tooling) for editing the GUI: it regenerates
 # *_gui.py from configure-*.wxg. Installed into the SOURCE venv only — never

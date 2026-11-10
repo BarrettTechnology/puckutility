@@ -60,10 +60,13 @@ It takes the tag `v<fw_version>` from `system-config.ini` (override with
 ## Unit tests
 
 ```
-python -m unittest discover -s test -t . -v
+make test
 ```
-Run them before every push. On a machine without a display, prefix with
-`xvfb-run -a` (`sudo apt install xvfb`).
+runs this repo's tests on every CPU (pytest-xdist, installed by
+`scripts/setup-pip.sh` from `requirements-test.txt`), the GUI tests on a
+private Xvfb (`sudo apt install xvfb`) rather than your screen. Without
+pytest-xdist it falls back to `python -m unittest discover -s test -t .`, one
+test at a time. Run it before every push.
 
 ## Cross-Ubuntu tests
 
