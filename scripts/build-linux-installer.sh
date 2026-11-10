@@ -36,7 +36,7 @@ os_name() {
 }
 need_docker() {
     echo "ERROR: Linux builds must run on Ubuntu 20.04 and this machine is $(os_name), but $1." >&2
-    echo "       Fix Docker so the build can use the 20.04 builder image, or run this on Ubuntu 20.04." >&2
+    echo "       Fix Docker (or podman, CONTAINER=podman) so the build can use the 20.04 builder image, or run this on Ubuntu 20.04." >&2
     exit 1
 }
 if ! is_ubuntu_2004 && [ "$USE_DOCKER" = false ]; then
@@ -52,17 +52,28 @@ fi
 # BUILDER_IMAGE) holds the system libs, CPython 3.12 and the prebuilt wxPython
 # wheel. This repo's requirements.txt is installed into it on every run, so
 # --rebuild-docker is only needed after a Python/wxPython or Dockerfile change.
+#
+# CONTAINER=docker|podman picks the runtime (default docker when installed, else
+# podman). Rootless podman maps the container's --user to a sub-uid unless
+# --userns=keep-id, so the build output would not be the caller's.
 if [ "$USE_DOCKER" = true ]; then
-    command -v docker >/dev/null 2>&1 || need_docker "docker is not installed"
-    docker info >/dev/null 2>&1 || need_docker "the Docker daemon cannot be reached"
+    if [ -z "${CONTAINER:-}" ]; then
+        command -v docker >/dev/null 2>&1 && CONTAINER=docker || CONTAINER=podman
+    fi
+    command -v "$CONTAINER" >/dev/null 2>&1 || need_docker "$CONTAINER is not installed"
+    "$CONTAINER" info >/dev/null 2>&1 || need_docker "$CONTAINER cannot be reached"
+    USERNS=()
+    case "$("$CONTAINER" --version 2>/dev/null)" in  # podman, or podman-docker's docker
+        *[Pp]odman*) USERNS=(--userns=keep-id) ;;
+    esac
 
     IMAGE="${BUILDER_IMAGE:-burt/puck-deb-u20:latest}"
 
-    if [ "$REBUILD_DOCKER" = true ] || ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+    if [ "$REBUILD_DOCKER" = true ] || ! "$CONTAINER" image inspect "$IMAGE" >/dev/null 2>&1; then
         echo "Building Docker builder image..."
         DOCKER_BUILD_FLAGS=()
         [ "$CLEAN_DOCKER" = true ] && DOCKER_BUILD_FLAGS+=(--no-cache)
-        docker build "${DOCKER_BUILD_FLAGS[@]}" -t "$IMAGE" -f scripts/Dockerfile.builder .
+        "$CONTAINER" build "${DOCKER_BUILD_FLAGS[@]}" -t "$IMAGE" -f scripts/Dockerfile.builder .
     fi
 
     CLEAN_ARG=""
@@ -74,7 +85,7 @@ if [ "$USE_DOCKER" = true ]; then
         [ -d "$FIRMWARE_DIR" ] || { echo "ERROR: FIRMWARE_DIR '$FIRMWARE_DIR' not found." >&2; exit 1; }
         FW_ARGS=(-v "$(cd "$FIRMWARE_DIR" && pwd):/firmware:ro" -e FIRMWARE_DIR=/firmware)
     fi
-    docker run --rm \
+    "$CONTAINER" run --rm "${USERNS[@]}" \
         --user "$(id -u):$(id -g)" \
         -v "$(pwd):/build" \
         "${FW_ARGS[@]}" \

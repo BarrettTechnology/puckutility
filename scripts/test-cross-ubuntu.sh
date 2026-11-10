@@ -17,8 +17,11 @@
 #            the 20.04 build env -- the half that the source test cannot see
 #            (e.g. a bundled-GLib vs system-libsecret symbol clash on Ubuntu 26).
 #
-# Requires docker (and your user in the docker group). Run anywhere docker is
-# available; results reflect the target OS, not the host.
+# Requires docker (and your user in the docker group) or rootless podman, which
+# needs no daemon and no group. CONTAINER=docker|podman picks one; the default is
+# docker when it is installed, else podman. Run anywhere one is available;
+# results reflect the target OS, not the host. scripts/xtest/runner.sh runs this
+# on request from a sandboxed agent.
 #
 # Usage:
 #   scripts/test-cross-ubuntu.sh                 # 20.04 22.04 24.04 26.04
@@ -41,10 +44,16 @@ for a in "$@"; do
 done
 [ "${#VERSIONS[@]}" -gt 0 ] || VERSIONS=(20.04 22.04 24.04 26.04)
 
-if ! command -v docker >/dev/null 2>&1; then
-    echo "ERROR: docker not found. Run this where docker is available." >&2
+if [ -z "${CONTAINER:-}" ]; then
+    command -v docker >/dev/null 2>&1 && CONTAINER=docker || CONTAINER=podman
+fi
+export CONTAINER   # build-linux-installer.sh --docker uses the same one
+if ! command -v "$CONTAINER" >/dev/null 2>&1; then
+    echo "ERROR: $CONTAINER not found. Install docker or podman, or set CONTAINER." >&2
     exit 1
 fi
+# Fully qualified, so podman needs no short-name registry config.
+UBUNTU=docker.io/library/ubuntu
 
 # --- Colored PASS/FAIL/SKIP output -------------------------------------------
 # Emit ANSI colors only when stdout is a real terminal, so piping/redirecting to
@@ -76,11 +85,11 @@ declare -A SRC DEB PIP
 # ===========================================================================
 for ver in "${VERSIONS[@]}"; do
     echo "==================  SOURCE  ubuntu:${ver}  =================="
-    if docker run --rm \
+    if "$CONTAINER" run --rm \
             -v "$REPO:/src:ro" \
             -v "$UV_CACHE:/root/.cache/uv" \
             -e UV_LINK_MODE=copy \
-            "ubuntu:${ver}" bash /src/scripts/xtest/source.sh /src; then
+            "$UBUNTU:${ver}" bash /src/scripts/xtest/source.sh /src; then
         SRC["$ver"]=PASS
     else
         SRC["$ver"]=FAIL
@@ -94,11 +103,11 @@ done
 if [ "$NO_PIP" = false ]; then
     for ver in "${VERSIONS[@]}"; do
         echo "==================  PIP  ubuntu:${ver}  =================="
-        if docker run --rm \
+        if "$CONTAINER" run --rm \
                 -v "$REPO:/src:ro" \
                 -v "$UV_CACHE:/root/.cache/uv" \
                 -e UV_LINK_MODE=copy \
-                "ubuntu:${ver}" bash /src/scripts/xtest/pip.sh /src; then
+                "$UBUNTU:${ver}" bash /src/scripts/xtest/pip.sh /src; then
             PIP["$ver"]=PASS
         else
             PIP["$ver"]=FAIL
@@ -125,9 +134,9 @@ if [ "$SOURCE_ONLY" = false ]; then
         for ver in "${VERSIONS[@]}"; do
             echo "==================  DEB  ubuntu:${ver}  =================="
             # scripts/xtest/deb.sh says what is checked.
-            if docker run --rm \
+            if "$CONTAINER" run --rm \
                     -v "$REPO:/src:ro" \
-                    "ubuntu:${ver}" bash /src/scripts/xtest/deb.sh "/src/${DEB_REL}"; then
+                    "$UBUNTU:${ver}" bash /src/scripts/xtest/deb.sh "/src/${DEB_REL}"; then
                 DEB["$ver"]=PASS
             else
                 DEB["$ver"]=FAIL

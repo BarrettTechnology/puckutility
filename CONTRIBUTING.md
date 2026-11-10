@@ -32,6 +32,9 @@ sudo apt install docker.io
 sudo usermod -aG docker $USER
 ```
 Log out and back in (or prefix the commands below with `sg docker -c '…'`).
+Rootless podman works too and needs neither a daemon nor a group
+(`sudo apt install podman`): the scripts use docker when it is installed, else
+podman, and `CONTAINER=podman` picks it explicitly.
 
 **4. A kernel ≥ 5.6** — check with `uname -r`. The Ubuntu 26.04 test container
 runs on your host's kernel, and its `tar` needs a system call (`openat2`) that
@@ -87,6 +90,15 @@ scripts/test-cross-ubuntu.sh 24.04 26.04     # a subset / a new release
 scripts/test-cross-ubuntu.sh --source-only   # skip the installer half
 scripts/test-cross-ubuntu.sh --no-pip        # skip the pip half
 ```
+
+For an agent in a sandbox without a container runtime, start
+`scripts/xtest/runner.sh ~/code/p4gui/puckutility ~/code/p4gui/pucktuner` in a
+terminal outside the sandbox. It runs the test (podman by default) when the
+agent writes the arguments to `build/xtest/request`, and puts the status and
+log in `~/.local/state/puck-xtest/<repo>/`; mount that read-only into the
+sandbox. The two scripts that run on the host (`test-cross-ubuntu.sh`,
+`build-linux-installer.sh`) need your `y` in that terminal on the first run
+and after any change. The script's header says what else it guards.
 
 Nothing is installed on your host and nothing opens on screen. The first run
 pulls the Ubuntu images, builds the `burt/puck-deb-u20` build image and

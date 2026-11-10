@@ -45,11 +45,11 @@ class IsUbuntu2004(unittest.TestCase):
 class OffUbuntu2004(unittest.TestCase):
     """Plain builds never run on this machine: Docker takes them, or they stop."""
 
-    def build(self, docker, *args):
+    def build(self, docker, *args, name="docker", env=None):
         with tempfile.TemporaryDirectory() as bin_dir:
             log = os.path.join(bin_dir, "docker.log")
             if docker is not None:
-                stub = os.path.join(bin_dir, "docker")
+                stub = os.path.join(bin_dir, name)
                 with open(stub, "w") as f:
                     f.write(f'#!/bin/bash\necho "$@" >> {log}\n{docker}\n')
                 os.chmod(stub, os.stat(stub).st_mode | stat.S_IEXEC)
@@ -60,7 +60,7 @@ class OffUbuntu2004(unittest.TestCase):
                 os.symlink(shutil.which(tool), os.path.join(tools, tool))
             path = bin_dir + ":" + tools
             r = subprocess.run(["/bin/bash", SCRIPT, *args], capture_output=True, text=True,
-                               env={"PATH": path, "HOME": bin_dir})
+                               env={"PATH": path, "HOME": bin_dir, **(env or {})})
             if not os.path.exists(log):
                 return r, ""
             with open(log) as f:
@@ -84,8 +84,33 @@ class OffUbuntu2004(unittest.TestCase):
     def test_refuses_when_the_daemon_is_down(self):
         r, calls = self.build("exit 1", "--pyinstaller")
         self.assertEqual(r.returncode, 1)
-        self.assertIn("daemon cannot be reached", r.stderr)
+        self.assertIn("docker cannot be reached", r.stderr)
         self.assertNotIn("run ", calls)
+
+    def run_call(self, *a, **kw):
+        r, calls = self.build(*a, "--pyinstaller", **kw)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        run = [c for c in calls.splitlines() if c.startswith("run ")]
+        self.assertEqual(len(run), 1)
+        return run[0]
+
+    def test_docker_keeps_the_plain_user_mapping(self):
+        self.assertNotIn("--userns", self.run_call('[ "$1" = --version ] && echo "Docker version 27"; exit 0'))
+
+    def test_podman_when_there_is_no_docker(self):
+        # Rootless podman needs keep-id, or the build output belongs to a sub-uid.
+        run = self.run_call('[ "$1" = --version ] && echo "podman version 4.9.3"; exit 0', name="podman")
+        self.assertIn("--userns=keep-id", run)
+        self.assertIn("--user ", run)
+
+    def test_podman_docker_shim_gets_keep_id(self):
+        self.assertIn("--userns=keep-id",
+                      self.run_call('[ "$1" = --version ] && echo "podman version 4.9.3"; exit 0'))
+
+    def test_container_picks_the_runtime(self):
+        r, calls = self.build("exit 0", "--pyinstaller", name="docker", env={"CONTAINER": "podman"})
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("podman is not installed", r.stderr)
 
 
 class RunInstaller(unittest.TestCase):

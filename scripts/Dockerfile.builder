@@ -1,4 +1,4 @@
-FROM ubuntu:20.04
+FROM docker.io/library/ubuntu:20.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 # Land the uv-managed interpreter in a world-readable global path: the build is
