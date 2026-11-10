@@ -152,6 +152,50 @@ class TestAnalysis(unittest.TestCase):
         self.assertLess(m['pos_err_at_lag_rms_deg'], 1e-9)
 
 
+class TestPlateaus(unittest.TestCase):
+    RATE = 50.0
+
+    def test_square_plateaus_last_half_second(self):
+        sp = A._square(A.PROFILES['square'], self.RATE)
+        t = np.arange(len(sp)) / self.RATE
+        # the position arrives 0.4 s into each plateau, short by 0.01 x the level
+        pos = sp.copy()
+        edges = np.flatnonzero(np.diff(sp)) + 1
+        for i0 in np.concatenate([[0], edges]):
+            pos[i0:i0 + int(0.4 * self.RATE)] = np.nan
+        pos = pos - 0.01 * sp
+        pos[-1] = np.nan                    # a lost sample is left out
+        r = A.plateau_errors(t, sp, pos)
+        self.assertEqual(len(r['plateaus']), 9)
+        for p in r['plateaus']:
+            self.assertAlmostEqual(p['err_deg'], 0.01 * p['sp_deg'])
+        self.assertEqual(r['plateaus'][1]['n'], 25)
+        self.assertEqual(r['plateaus'][-1]['n'], 24)
+        self.assertAlmostEqual(r['max_abs_err_deg'], 0.05)
+        self.assertAlmostEqual(r['mean_abs_err_deg'], 2 * (0.005 + 0.05) / 9)
+        self.assertEqual([p['sp_deg'] for p in r['plateaus'][:4]], [0.0, 0.5, 0.0, -0.5])
+
+    def test_short_and_empty_plateaus(self):
+        t = np.arange(10) / self.RATE                   # 0.18 s: too short
+        r = A.plateau_errors(t, np.zeros(10), np.zeros(10))
+        self.assertEqual(r['plateaus'], [])
+        self.assertTrue(math.isnan(r['mean_abs_err_deg']))
+        t = np.arange(50) / self.RATE
+        r = A.plateau_errors(t, np.ones(50), np.full(50, np.nan))
+        self.assertTrue(math.isnan(r['plateaus'][0]['err_deg']))
+        self.assertTrue(math.isnan(r['max_abs_err_deg']))
+
+    def test_only_square_runs_get_them(self):
+        n = 200
+        a = {'t': np.arange(n) / 50.0, 'rate_hz': 50.0, 'sp_deg': np.zeros(n),
+             'ref_deg': np.zeros(n), 'pos_deg': np.zeros(n), 'pos_err_deg': np.zeros(n),
+             'vref_dps': np.zeros(n), 'vel_err_dps': np.zeros(n),
+             'vel_err_606c_dps': np.zeros(n), 'iq_ma': np.zeros(n), 'id_ma': np.zeros(n),
+             'iq_6078_corr': float('nan')}
+        self.assertNotIn('plateaus', A.metrics(a, 'hold'))
+        self.assertIn('plateaus', A.metrics(a, 'square'))
+
+
 class TestCalibrationGate(unittest.TestCase):
     def test_calibrated_passes(self):
         A.check_calibrated(CAL, legacy=True)
@@ -356,9 +400,33 @@ class TestRun(unittest.TestCase):
             paths.append(path)
         png = A.plot_runs(paths, os.path.join(self.tmp.name, 'ab.png'))
         self.assertGreater(os.path.getsize(png), 10000)
-        res = A.compare(paths[0], paths[1], out=lambda s: None)
+        lines = []
+        cwd = os.getcwd()
+        os.chdir(self.tmp.name)
+        try:
+            res = A.compare(paths[0], paths[1], out=lines.append)
+        finally:
+            os.chdir(cwd)
         self.assertEqual((res['A']['fw'], res['B']['fw']), ('4.3.5', '5.0.5'))
-        self.assertTrue(os.path.exists(os.path.join(paths[1], 'compare.json')))
+        # ./compare-<A>-<B>.json, nothing written into either run folder
+        default = os.path.join(self.tmp.name, 'compare-{}-{}.json'.format(
+            os.path.basename(paths[0]), os.path.basename(paths[1])))
+        self.assertTrue(os.path.exists(default))
+        for path in paths:
+            self.assertEqual(sorted(os.listdir(path)), ['data.npz', 'meta.json'])
+        # square: the plateau errors, in the table and per plateau
+        m = res['B']['metrics']
+        self.assertLess(m['plateau_err_max_abs_deg'], 1e-9)
+        self.assertEqual(len(m['plateaus']), 9)     # 0 +A 0 -A per amplitude, then 0
+        self.assertTrue(any(l.startswith('plateau_err_mean_abs_deg') for l in lines))
+        self.assertTrue(any(l.startswith('plateau error') for l in lines))
+        out = os.path.join(self.tmp.name, 'sub', 'c.json')
+        A.compare(paths[0], paths[1], out=lambda s: None, json_out=out)
+        self.assertTrue(os.path.exists(out))
+        with self.assertRaisesRegex(A.AbError, 'inside the run folder'):
+            A.compare(paths[0], paths[1], out=lambda s: None,
+                      json_out=os.path.join(paths[1], 'compare.json'))
+        self.assertEqual(A.parse_args(['compare', 'a', 'b', '--out', 'x.json']).out, 'x.json')
 
     def test_the_wrong_gear_ratio_is_refused(self):
         d, sdo, net = make_fake(False)

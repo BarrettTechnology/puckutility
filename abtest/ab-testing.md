@@ -413,7 +413,7 @@ Bench values (42 V) for comparison. They should repeat within a few counts.
 python ab_testing.py --can can3 --id 4 prepare --fw 4.3.5 --actuator BO4523
 python ab_testing.py --can can3 --id 4 run --actuator BO4523 [--profile chirp,square]
 python ab_testing.py plot runs/RUN_A [runs/RUN_B]
-python ab_testing.py compare runs/RUN_A runs/RUN_B
+python ab_testing.py compare runs/RUN_A runs/RUN_B [--out FILE]
 python ab_testing.py profiles
 ```
 `--runs DIR` sets where results go (default `./runs`).
@@ -481,9 +481,28 @@ $ p4core nv save .../runs/20261106-151514-n13-5.0.5-prepare/nv_after.json
   Reading node 13's NV...
   322 NV value(s) -> .../runs/20261106-151514-n13-5.0.5-prepare/nv_after.json
 prepared: 5.0.5 (record in .../runs/20261106-151514-n13-5.0.5-prepare)
-``` On 5.x the bias prints fractional counts
+```
+On 5.x the bias prints fractional counts
 (Q12.4) and adds the beta reference correction; on 4.3.5 the bias is whole
 counts and there is no reference line.
+
+**How many times prepare resets the puck.** Four NMT resets, three with
+`--no-flash` (counted from the p4core code each stage runs):
+
+| Stage | Resets | Why |
+|---|---|---|
+| `nv save` (both) | 0 | SDO reads only |
+| `flash` | 1, then LAUNCH | The flashloader only runs from a reset (NMT reset, then AutoLaunch = 0 inside its start window). LAUNCH starts the new image: a second boot, but from the flashloader, not an NMT reset. |
+| `version` | 0 | 0x100A and 0x3003 read |
+| `wipe-nvm --no-template` | 1 | The erase (0x1011,3 and 5; 4.3.x without 0x1011,5: the defaults written and Save.All) only reaches the object dictionary at boot. No template, so no second reset. |
+| `config load` | 2 | One before the load, so that what is saved is the CSV over a freshly booted dictionary and not the PDO map or modes a tool left in RAM; one after Save.All, because much of the configuration (PWM, poles, encoder, PDOs, 0x1F80) is latched at boot. |
+| `calibrate ab` | 0 | Bias, gain and encoder zero are live; each step saves its own result |
+| CSV read-back | 0 | SDO reads only |
+
+So the puck boots five times in a full prepare (flashloader, application,
+wipe, before load, after load) and three times with `--no-flash`. Every
+boot clears any fault and puts the drive back in PRE-OPERATIONAL (the CSVs
+set 0x1F80 = 4).
 
 ### 4.2 run
 
@@ -1056,7 +1075,29 @@ moving_iq_sd_ma                   276.3          245.5
 lag_ms                               32             24
 pos_err_at_lag_rms_deg          0.04031        0.03702
 ```
-It also writes `compare.json`. All angles are output-shaft degrees.
+It also writes the two runs' metrics to `./compare-<RUN_A>-<RUN_B>.json`
+(the run folder names), or to `--out FILE`. It never writes into a run
+folder: those hold what `run` wrote and nothing else, and `compare`
+refuses an `--out` inside one. All angles are output-shaft degrees.
+
+A `square` run adds the error held on each plateau. For every stretch
+where the set-point stays put for at least 0.5 s (each 1 s level, the
+settle before and after), the plateau error is the mean of set-point -
+0x6064 over its last 0.5 s, in output degrees. The table gets
+`plateau_err_mean_abs_deg` (the mean of |e| over the plateaus) and
+`plateau_err_max_abs_deg`, and a second table lists each plateau:
+```
+plateau error, set-point - 0x6064 over the last 0.5 s (output deg):
+  #     t (s)  sp (deg)    4.3.5 4.3.5    5.0.5 5.0.5
+  0      0.00     0.000         ...            ...
+  1      2.00     0.500         ...            ...
+```
+`metrics.json` of a square run and the compare JSON have the list too
+(`plateaus`: t_start, t_end, sp_deg, err_deg, n samples). The function is
+`ab_testing.plateau_errors(t, sp, pos, last_s=0.5)`, on plain arrays. A
+geared actuator whose CSV leaves the settle integrator 0x2381,4 at 0 stops
+short of each plateau by its friction band; `csvaudit.py` warns about
+such a CSV.
 
 | Metric | Meaning |
 |---|---|
@@ -1069,6 +1110,7 @@ It also writes `compare.json`. All angles are output-shaft degrees.
 | moving_iq_sd_ma | iq ripple while moving |
 | lag_ms | the delay that best fits 0x6064 to the set-point |
 | pos_err_at_lag_rms_deg | the position error after removing that delay: tracking shape, not delay |
+| plateau_err_mean/max_abs_deg | square runs: set-point - 0x6064 over the last 0.5 s of each plateau, mean and max of \|e\| |
 
 The lag and the error after the lag answer different questions. The lag
 is what a user sees at the output. The error after the lag shows whether

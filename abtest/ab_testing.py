@@ -5,7 +5,7 @@ CSP trajectories, plot and compare.
     ab-testing.py --can can0 --id 4 prepare --fw 4.3.5 --actuator BO4523
     ab-testing.py --can can0 --id 4 run --actuator BO4523 [--profile chirp,square]
     ab-testing.py plot runs/RUN_A [runs/RUN_B]
-    ab-testing.py compare runs/RUN_A runs/RUN_B
+    ab-testing.py compare runs/RUN_A runs/RUN_B [--out compare.json]
     Windows: --can 0 is the first CandleLight (or PCAN) adapter.
 
 prepare = nv save -> flash -> wipe -> load the actuator's CSV -> the 4
@@ -27,8 +27,10 @@ in PRE-OPERATIONAL, and put back afterwards (RAM only):
   TPDO3 = 0x60F4 following error, 0x3010,9 iq, 0x3010,12 id, mA   (5.x only)
 4.3.5 sends TPDO1 and TPDO2 only, so TPDO1/2 are the same-path data on both.
 Each run writes runs/<date>-<time>-n<id>-<fw>-<profile>/ with meta.json and
-data.npz.  plot draws Id/Iq, velocity error and position error; compare prints
-the metrics of two runs side by side and writes compare.json.
+data.npz (and metrics.json; a square run's include the error held on each
+plateau, plateau_errors).  plot draws Id/Iq, velocity error and position
+error; compare prints the metrics of two runs side by side and writes them
+to --out (default ./compare-<A>-<B>.json, never into a run folder).
 """
 
 import argparse
@@ -327,8 +329,47 @@ def fit_lag(sp, pos, rate, max_periods=5.0, step=0.05):
     return best
 
 
-def metrics(a):
-    """Summary numbers of one analysed run."""
+def plateau_errors(t, sp, pos, last_s=0.5):
+    """The steady error of each set-point plateau.
+
+    *t* (s), *sp* and *pos* (the set-point and 0x6064, both in output
+    degrees) are the samples of one run.  A plateau is a stretch where the
+    set-point stays the same for at least *last_s*; its error is the mean of
+    sp - pos over its last *last_s* (samples with no position are left out,
+    a plateau with none reads nan).  Returns {'plateaus': [{'t_start',
+    't_end', 'sp_deg', 'err_deg', 'n'}, ...], 'mean_abs_err_deg',
+    'max_abs_err_deg'} -- the two summaries over the plateaus with a value,
+    nan if there are none.  A pure function of the arrays."""
+    t = np.asarray(t, float)
+    sp = np.asarray(sp, float)
+    pos = np.asarray(pos, float)
+    out = []
+    if len(sp):
+        edges = np.flatnonzero(np.abs(np.diff(sp)) > 1e-9) + 1
+        starts = np.concatenate([[0], edges])
+        ends = np.concatenate([edges, [len(sp)]])          # exclusive
+        for i0, i1 in zip(starts, ends):
+            if t[i1 - 1] - t[i0] < last_s - 1e-9:
+                continue
+            tail = (t[i0:i1] > t[i1 - 1] - last_s + 1e-9)
+            e = (sp[i0:i1] - pos[i0:i1])[tail]
+            e = e[np.isfinite(e)]
+            out.append({'t_start': float(t[i0]), 't_end': float(t[i1 - 1]),
+                        'sp_deg': float(sp[i0]),
+                        'err_deg': float(np.mean(e)) if len(e) else float('nan'),
+                        'n': int(len(e))})
+    errs = np.array([p['err_deg'] for p in out], float)
+    errs = np.abs(errs[np.isfinite(errs)])
+    return {'plateaus': out,
+            'mean_abs_err_deg': float(np.mean(errs)) if len(errs) else float('nan'),
+            'max_abs_err_deg': float(np.max(errs)) if len(errs) else float('nan')}
+
+
+def metrics(a, kind=None):
+    """Summary numbers of one analysed run.  *kind* is the profile's
+    (PROFILES[...]['kind']): a square run adds the plateau errors
+    (plateau_errors) as 'plateau_err_mean_abs_deg', 'plateau_err_max_abs_deg'
+    and the per-plateau list 'plateaus'."""
     moving = np.abs(np.nan_to_num(a['vref_dps'])) > 1e-6
     still = ~moving
     out = {
@@ -356,7 +397,17 @@ def metrics(a):
         out['err60f4_rms_deg'] = _rms(a['err60f4_deg'])
     if 'iq_fw_corr' in a:
         out['iq_fw_corr'] = a['iq_fw_corr']
+    if kind == 'square':
+        pl = plateau_errors(a['t'], a['sp_deg'], a['pos_deg'])
+        out['plateau_err_mean_abs_deg'] = pl['mean_abs_err_deg']
+        out['plateau_err_max_abs_deg'] = pl['max_abs_err_deg']
+        out['plateaus'] = pl['plateaus']
     return out
+
+
+def _kind(meta):
+    p = PROFILES.get(meta.get('profile'))
+    return p['kind'] if p else None
 
 
 # ---------------------------------------------------------------------------
@@ -743,7 +794,7 @@ def run(args, out=print):
                 raise AbError('{}: {}'.format(profile, exc)) from exc
             path = run_dir(args.runs, args.id, meta['fw'], profile)
             save_run(path, meta, data)
-            met = metrics(analyse(data, meta))
+            met = metrics(analyse(data, meta), _kind(meta))
             with open(os.path.join(path, 'metrics.json'), 'w') as f:
                 json.dump(met, f, indent=2)
             out('   {}: pos err rms {:.3f} deg, peak {:.3f}{}; vel err rms {:.2f} deg/s; '
@@ -754,6 +805,11 @@ def run(args, out=print):
                     if 'lag_ms' in met else '',
                     met['vel_err_rms_dps'], met['iq_rms_ma'], met['iq_peak_ma'],
                     met['iq_6078_corr'], meta['tpdo_frames']))
+            if 'plateaus' in met:
+                out('   plateau error (set-point - 0x6064, last 0.5 s of each): mean |e| '
+                    '{:.4f} deg, max |e| {:.4f} over {} plateaus'.format(
+                        met['plateau_err_mean_abs_deg'], met['plateau_err_max_abs_deg'],
+                        len(met['plateaus'])))
             # 4.3.5's 0x6078 follows the one-sample spikes of a step loosely (r ~0.3)
             if met['iq_6078_corr'] < 0 and 'lag_ms' in met:
                 out('   WARNING: the alpha/beta -> iq reconstruction runs against 0x6078 '
@@ -821,24 +877,61 @@ def plot_runs(paths, png=None):
     return png
 
 
-def compare(path_a, path_b, out=print):
-    rows = []
+def compare_path(path_a, path_b):
+    """The default compare output: ./compare-<A>-<B>.json, named after the
+    two run folders, in the current directory -- never inside a run."""
+    def name(p):
+        return os.path.basename(os.path.normpath(p))
+    return os.path.join(os.getcwd(), 'compare-{}-{}.json'.format(name(path_a), name(path_b)))
+
+
+def _inside(path, folder):
+    path, folder = os.path.realpath(path), os.path.realpath(folder)
+    return os.path.commonpath([path, folder]) == folder
+
+
+def compare(path_a, path_b, out=print, json_out=None):
+    """Print the metrics of two runs side by side and write them to
+    *json_out* (default compare_path).  Square runs add a table of the
+    per-plateau errors.  Refuses a *json_out* inside either run folder: a
+    run folder holds what the run wrote and nothing else."""
+    json_out = json_out or compare_path(path_a, path_b)
+    for path in (path_a, path_b):
+        if _inside(json_out, path):
+            raise AbError('compare output {} is inside the run folder {}; '
+                          'give --out somewhere else'.format(json_out, path))
     res = {}
     for key, path in (('A', path_a), ('B', path_b)):
         meta, data = load_run(path)
-        res[key] = {'run': os.path.basename(path), 'fw': meta['fw'],
+        res[key] = {'run': os.path.basename(os.path.normpath(path)), 'fw': meta['fw'],
                     'version': meta.get('version'), 'profile': meta['profile'],
-                    'metrics': metrics(analyse(data, meta))}
+                    'metrics': metrics(analyse(data, meta), _kind(meta))}
     if res['A']['profile'] != res['B']['profile']:
         out('WARNING: comparing {} with {}'.format(res['A']['profile'], res['B']['profile']))
-    keys = [k for k in res['A']['metrics'] if k in res['B']['metrics']]
+    ma, mb = res['A']['metrics'], res['B']['metrics']
+    keys = [k for k in ma if k in mb and not isinstance(ma[k], list)]
     out('{:<24} {:>14} {:>14}'.format('', _short(res['A']), _short(res['B'])))
     for k in keys:
-        a, b = res['A']['metrics'][k], res['B']['metrics'][k]
-        rows.append((k, a, b))
-        out('{:<24} {:>14.4g} {:>14.4g}'.format(k, a, b))
-    with open(os.path.join(path_b, 'compare.json'), 'w') as f:
+        out('{:<24} {:>14.4g} {:>14.4g}'.format(k, ma[k], mb[k]))
+    if 'plateaus' in ma and 'plateaus' in mb:
+        out('')
+        out('plateau error, set-point - 0x6064 over the last 0.5 s (output deg):')
+        out('{:>3} {:>9} {:>9} {:>14} {:>14}'.format('#', 't (s)', 'sp (deg)',
+                                                      _short(res['A']), _short(res['B'])))
+        pa, pb = ma['plateaus'], mb['plateaus']
+        for i in range(max(len(pa), len(pb))):
+            a = pa[i] if i < len(pa) else None
+            b = pb[i] if i < len(pb) else None
+            ref = a or b
+            out('{:>3} {:>9.2f} {:>9.3f} {:>14} {:>14}'.format(
+                i, ref['t_start'], ref['sp_deg'],
+                '{:.4f}'.format(a['err_deg']) if a else '-',
+                '{:.4f}'.format(b['err_deg']) if b else '-'))
+    folder = os.path.dirname(os.path.abspath(json_out))
+    os.makedirs(folder, exist_ok=True)
+    with open(json_out, 'w') as f:
         json.dump(res, f, indent=2)
+    out('wrote ' + json_out)
     return res
 
 
@@ -898,6 +991,8 @@ def parse_args(argv=None):
     sp = sub.add_parser('compare', help='metrics of two runs side by side')
     sp.add_argument('run_a')
     sp.add_argument('run_b')
+    sp.add_argument('--out', help='the JSON it writes (default ./compare-<A>-<B>.json; '
+                    'never inside a run folder)')
     sp = sub.add_parser('profiles', help='list the profiles')
     return p.parse_args(argv)
 
@@ -925,7 +1020,7 @@ def main(argv=None):
         elif args.cmd == 'plot':
             print(plot_runs(args.rundirs, args.output))
         elif args.cmd == 'compare':
-            compare(args.run_a, args.run_b)
+            compare(args.run_a, args.run_b, json_out=args.out)
         elif args.cmd == 'profiles':
             for name, p in PROFILES.items():
                 print('{:<8} {}'.format(name, p['help']))

@@ -20,6 +20,18 @@ EDS = {'4.3.5': os.path.join(AB, 'eds', 'puck4-4.3.5.eds'),
        '5.x': os.path.join(AB, 'eds', 'puck4-5.0.5.eds')}
 
 
+def _set_row(text, index, sub, value):
+    """*text* (a CSV) with the data of row index,sub set to *value*."""
+    tag = ',0x{:04X},{},'.format(index, sub)
+    lines = text.split('\n')
+    hits = [i for i, l in enumerate(lines) if tag in l]
+    assert len(hits) == 1, tag
+    cells = lines[hits[0]].split(',')
+    cells[5] = str(value)
+    lines[hits[0]] = ','.join(cells)
+    return '\n'.join(lines)
+
+
 class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -55,7 +67,10 @@ class TemplateTest(Base):
             line = '4.3.5' if 'fw4.3.5' in name else '5.x'
             with self.subTest(csv=name):
                 r = csvaudit.audit(os.path.join(AB, 'csv', name), EDS[line])
-                self.assertEqual((r['missing'], r['errors'], r['warnings']), ([], [], []))
+                self.assertEqual((r['missing'], r['errors']), ([], []))
+                # 5.0.5's geared CSVs ship with settle ki 0: a warning only
+                self.assertEqual([w.split(':')[0] for w in r['warnings']],
+                                 ['line 96 (2381,4)'] if line == '5.x' else [])
 
     def test_main_exit_status(self):
         out = io.StringIO()
@@ -108,6 +123,24 @@ class AuditTest(Base):
         with open(out, 'w') as f:
             f.write(text)
         self.assertEqual(csvaudit.audit(out, EDS['5.x'])['errors'], [])
+
+    def test_settle_ki_0_on_a_gearhead_warns(self):
+        with open(TEMPLATES['5.x']) as f:
+            text = f.read()
+        for ratio, ki, warned in (((264, 10), '0', True), ((264, 10), '0.0004', False),
+                                  ((1, 1), '0', False)):
+            t = text
+            for sub, v in zip((1, 2), ratio):
+                t = _set_row(t, 0x6091, sub, v)
+            t = _set_row(t, 0x2381, 4, ki)
+            out = self.path('ki.csv')
+            with open(out, 'w') as f:
+                f.write(t)
+            r = csvaudit.audit(out, EDS['5.x'])
+            with self.subTest(ratio=ratio, ki=ki):
+                self.assertEqual(r['errors'], [])
+                self.assertEqual(any('settle ki is 0 on a 26.4:1' in w
+                                     for w in r['warnings']), warned)
 
     def test_missing_row(self):
         r = self.edited('5.x', 'Motor poles,,0x3011,3,UNSIGNED8,0\n', '')
