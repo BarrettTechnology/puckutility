@@ -156,7 +156,7 @@ release*).
 
 ## The build image
 
-The CI jobs (p4core's and p4sysid's `test` too) and
+The CI jobs (p4core's `test` too) and
 `scripts/build-linux-installer.sh` run in
 `burt/puck-deb-u20` (`scripts/Dockerfile.builder`, identical in pucktuner):
 Ubuntu 20.04 for the oldest glibc/GTK, CPython 3.12, the prebuilt wxPython
