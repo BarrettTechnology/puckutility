@@ -15,6 +15,8 @@ and the CSV must also
   - on 5.x, once the velocity loop is tuned (0x2381,1 not 0), set the CSI
     gains 0x2383,1-2 too: at 0, cyclic sync impedance (-2) gives no torque,
   - write nothing the EDS does not have, and nothing read-only.
+A geared CSV (0x6091,1 / 0x6091,2 > 1) that leaves the settle integrator
+0x2381,4 at 0 gets a warning: held positions stop short through the friction.
 
 Exit status 1 on any MISSING row or error.  Rows that are writable but not
 non-volatile (lost at reboot) are warnings.  The NV list comes from the
@@ -185,6 +187,7 @@ def audit(csv_path, eds_path, line=None):
                 row.line, *key, row.data, want))
 
     errors += _csi_gains(written)
+    warnings += _settle_ki(written)
 
     present, excluded, missing = [], [], []
     for key in sorted(nv):
@@ -226,6 +229,24 @@ def _csi_gains(written):
                        'gives no torque (start from kd = velocity Kp 0x2381,1, kp = position Kp 0x2382,1 x velocity Kp)'
                        .format(row.line, sub, name))
     return out
+
+
+def _settle_ki(written):
+    """A warning when a geared actuator's CSV leaves the settle integrator
+    0x2381,4 at 0: through the gearhead's friction the position stops short
+    of a held set-point by the stiction band and stays there (the plateau
+    error of ab_testing.py's square runs).  Not an error: 0 is valid, and
+    a direct-drive motor (ratio 1) needs none."""
+    ki = written.get((0x2381, 4))
+    motor, shaft = written.get((0x6091, 1)), written.get((0x6091, 2))
+    if ki is None or motor is None or shaft is None or _value(ki):
+        return []
+    m, s = _value(motor), _value(shaft)
+    if not m or not s or m / s <= 1:
+        return []
+    return ['line {} (2381,4): settle ki is 0 on a {:g}:1 gearhead; a held position '
+            'stops short by the friction band'
+            .format(ki.line, m / s)]
 
 
 def report(result, verbose=False, out=None):

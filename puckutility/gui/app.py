@@ -69,7 +69,7 @@ import webbrowser
 import sys
 import math
 import datetime
-from p4core import config_csv
+from p4core import config_csv, nvsave
 from p4core.calibrate import (id_scale, permille_base_ma, rated_torque_mnm,
                               read_bus_mv)
 from p4core.cia402 import (
@@ -2251,12 +2251,11 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
             self._replace_network(can_device, bitrate=1000000)
             self.node = self.network.add_node(int(node_id), EDS)
 
-            # Save all OD entries to EEPROM (takes about 0.55 sec)
+            # Save all OD entries to NV (~0.55 s), and wait until the flash
+            # write is committed (nvsave): the reboot below would lose a save
+            # that is still queued.
             print("Saving OD entries")
-            default_timeout = canopen.sdo.SdoClient.RESPONSE_TIMEOUT
-            canopen.sdo.SdoClient.RESPONSE_TIMEOUT = 1.0
-            self.node.sdo['Save']['All'].raw = 0x65766173 # Key = 'SAVE'
-            canopen.sdo.SdoClient.RESPONSE_TIMEOUT = default_timeout
+            nvsave.save_all(self.node)
 
             # Transmit an NMT reboot command to this node
             print("Rebooting puck")

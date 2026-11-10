@@ -242,9 +242,28 @@ class TestOtherCommands(CliTest):
     def test_the_shared_commands_are_there(self):
         parser = cli.build_parser()
         text = parser.format_help()
-        for command in ('scan', 'flash', 'config', 'set-id', 'reset', 'info',
-                        'calibrate', 'system-config', 'flash-canable'):
+        for command in ('scan', 'flash', 'config', 'set-id', 'serial', 'reset',
+                        'info', 'calibrate', 'system-config', 'flash-canable'):
             self.assertIn(command, text)
+
+    def test_serial_reads(self):
+        with mock.patch.object(ops, 'serial', return_value=dict(
+                node_id=5, serial=0xFFFFFFFF, serial_set=False,
+                written=False)) as serial:
+            code, out, _err = self.run_cli('--id', '5', 'serial')
+        self.assertEqual(code, 0)
+        self.assertIn('node 5: serial not set', out)
+        self.assertIsNone(serial.call_args[0][2])
+
+    def test_serial_set_and_json(self):
+        with mock.patch.object(ops, 'serial', return_value=dict(
+                node_id=5, serial=1234, serial_set=True,
+                written=True)) as serial:
+            code, out, _err = self.run_cli('--json', '-y', '--id', '5',
+                                           'serial', '--set', '1234')
+        self.assertEqual(code, 0)
+        self.assertEqual(serial.call_args[0][2], 1234)
+        self.assertEqual(json.loads(out)['serial'], 1234)
 
 
 class TestSources(unittest.TestCase):

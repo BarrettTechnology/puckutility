@@ -9,7 +9,12 @@ released" were never tagged and were internal development builds.
 
 ## [1.4.2] - 2026-11-09
 
+### Added
+- Command line: `serial --id N` reads the serial number (0x1018,4); `--set S` writes it (with the firmware's serial key where it has one), reads it back and saves it. A serial of 0 or 0xFFFFFFFF shows as "not set" and cannot be written.
+- A/B package: square runs report the error held on each set-point plateau (set-point - 0x6064 over its last 0.5 s, with mean and max |e|) in `metrics.json` and the compare tables; `csvaudit.py` warns when a geared actuator's CSV leaves the settle integrator 0x2381,4 at 0.
+
 ### Fixed
+- Saving to NV waits until the puck has committed the save (0x1010 save-pending bit), so a reboot right after a save (configuration load) no longer loses it, and a save the firmware refuses while the drive is enabled says "disable the drive before saving". The current-sense bias calibration now saves after the drive is back in IDLE.
 - A failed calibration step no longer locks the Test menu: a one-time reminder names the steps that did not pass (the rest are saved), and All Pucks reports every puck's outcome.
 - Calibration messages: friction asks before rescaling the velocity gains (old and new values shown), a cogging failure leaves the table as it was, CAN loss is named as such, one verdict line per step, and tracebacks go to the debug log only.
 - EMCY 0x8140 is reported as CAN bus-off (a communication fault, not the supply) with the remedy.
@@ -18,6 +23,8 @@ released" were never tagged and were internal development builds.
 - Linux package: the desktop shortcut is written as the user rather than as root (a planted symlink could redirect it), and the stale per-user menu entry left by the v1.2.x installer is removed.
 
 ### Changed
+- Command line: `--id N` asks that node only (one SDO read) instead of scanning the bus; `scan`, and commands without `--id` or with `--all`, still scan.
+- A/B package: `compare` writes `./compare-<A>-<B>.json` (or `--out FILE`) and never into a run folder; the guide counts the resets `prepare` makes.
 - At Scan the log shows the CAN link's bit timing, and a dialog warns once about old `/etc` CAN files that override the installed bring-up.
 - CAN packages: `/etc` copies left by older Barrett apps are diverted so they no longer override the `/usr/lib` bring-up (restored on removal); the installer never downgrades a shared CAN package and keeps an adapter another puck app still needs.
 - `setup-socketcan.sh` installs to `/usr/lib` and moves `/etc` copies aside.
