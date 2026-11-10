@@ -3,7 +3,8 @@
 #
 #   make               set up .venv (scripts/setup-venv.sh the first time,
 #                      scripts/setup-pip.sh after a requirements*.txt or
-#                      pyproject.toml change)
+#                      pyproject.toml change) and the git hooks (.githooks:
+#                      pre-push checks release tags)
 #   make test          unit tests, in parallel (pytest-xdist,
 #                      requirements-test.txt); GUI tests on a private Xvfb
 #   make run           start the GUI from this checkout
@@ -14,7 +15,8 @@
 #   make clean         build output and caches; keeps .venv and the wine prefix
 #                      (build/wine); make distclean removes .venv too
 #
-# PYTHON overrides the interpreter (default .venv/bin/python). FIRMWARE_DIR and
+# PYTHON overrides the interpreter (default .venv/bin/python), TEST_JOBS the
+# number of test workers (default auto: one per CPU). FIRMWARE_DIR and
 # CONTAINER pass through to the package and xtest scripts.
 
 PYTHON ?= $(if $(shell test -x .venv/bin/python && echo y),.venv/bin/python,python3)
@@ -26,15 +28,24 @@ MESA_EGL := $(wildcard /usr/share/glvnd/egl_vendor.d/50_mesa.json)
 XVFB := $(if $(shell command -v xvfb-run 2>/dev/null),env $(if $(MESA_EGL),__EGL_VENDOR_LIBRARY_FILENAMES=$(MESA_EGL)) \
 	xvfb-run -a -s "-screen 0 1280x1024x24 -noreset" env -u WAYLAND_DISPLAY GDK_BACKEND=x11)
 XTEST_ARGS ?=
+TEST_JOBS ?= auto
 # Threaded BLAS only spins on the tests' small matrices.
 export OPENBLAS_NUM_THREADS = 1
 export OMP_NUM_THREADS = 1
 
-.PHONY: all venv test run package package-deb package-win xtest clean distclean help
+.PHONY: all venv hooks test run package package-deb package-win xtest clean distclean help
 
 all: venv
 
-venv: .venv/.installed
+venv: .venv/.installed hooks
+
+# git runs .githooks/* from this checkout; a no-op outside a git work tree.
+hooks:
+	@if git rev-parse --is-inside-work-tree >/dev/null 2>&1 && \
+	    [ "$$(git config --local --get core.hooksPath)" != .githooks ]; then \
+	    git config --local core.hooksPath .githooks && \
+	    echo "git hooks: core.hooksPath = .githooks (pre-push checks release tags)"; \
+	fi
 
 .venv/.installed: requirements.txt requirements-test.txt pyproject.toml
 	@if [ -x .venv/bin/python ]; then scripts/setup-pip.sh; else scripts/setup-venv.sh; fi
@@ -42,7 +53,7 @@ venv: .venv/.installed
 
 test:
 	@if $(PYTHON) -c 'import xdist' 2>/dev/null; then \
-	    $(XVFB) $(PYTHON) -m pytest -n auto -q -p no:cacheprovider test; \
+	    $(XVFB) $(PYTHON) -m pytest -n $(TEST_JOBS) -q -p no:cacheprovider test; \
 	else \
 	    echo "pytest-xdist is not installed (make venv): running the tests one by one." >&2; \
 	    $(XVFB) $(PYTHON) -m unittest discover -s test -t .; \

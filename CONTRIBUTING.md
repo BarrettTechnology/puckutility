@@ -66,7 +66,26 @@ runs this repo's tests on every CPU (pytest-xdist, installed by
 `scripts/setup-pip.sh` from `requirements-test.txt`), the GUI tests on a
 private Xvfb (`sudo apt install xvfb`) rather than your screen. Without
 pytest-xdist it falls back to `python -m unittest discover -s test -t .`, one
-test at a time. Run it before every push.
+test at a time. CI runs it on every push and merge request (the `test` job in
+`.gitlab-ci.yml`); running it before you push saves a round trip.
+
+## Git hooks and CI
+
+`make` sets `core.hooksPath` to `.githooks/`, which holds one hook:
+`pre-push` refuses a `release-v*` tag whose version does not match
+`__version__`, or whose window title still says `DEV`. It runs
+`scripts/check-release-tag.sh`, the same check as the CI `release` job, so a
+tag the pipeline would reject never becomes public. Nothing runs on commit, and
+the tests are left to CI.
+
+| When | Where | What |
+|---|---|---|
+| `git push` of a release tag | your machine | `scripts/check-release-tag.sh` |
+| every push and merge request | CI `test` | `make test` |
+| tag push, after `test` | CI `release` | the tag check, then the `.run` installer and debs |
+
+Make `test` required for merging (Settings > Merge requests > Pipelines must
+succeed).
 
 ## Cross-Ubuntu tests
 
@@ -115,21 +134,21 @@ Run it before every release, and whenever you change `requirements.txt`,
 
 ## Releasing
 
-1. Set `__version__` in `puckutility/__init__.py` and remove `DEV` from the
+1. Set `__version__` in `puckutility/version.py` and remove `DEV` from the
    window title (`SetTitle` in `puckutility/gui/app.py`).
 2. Fetch the firmware the release ships (prerequisite 5), and update
    `system-config.ini` if the firmware changed.
 3. Unit tests pass.
 4. `scripts/test-cross-ubuntu.sh` (all four releases) prints `ALL PASSED`.
-5. Commit, tag and push:
+5. Commit, tag and push (the pre-push hook checks the tag):
    ```
    git tag release-vX.Y.Z
    git push origin release-vX.Y.Z
    ```
-6. The tag pipeline's `release` job checks that the tag matches `__version__`
-   (a suffix such as `release-vX.Y.Z-linux` is allowed) and that the title has
-   no `DEV`, fetches the firmware, builds the `.run`
-   installer and the debs, and keeps them (Build > Pipelines > the tag's
+6. The tag pipeline runs `make test`, then the `release` job checks that the
+   tag matches `__version__` (a suffix such as `release-vX.Y.Z-linux` is
+   allowed) and that the title has no `DEV`, builds the `.run` installer and
+   the debs, and keeps them (Build > Pipelines > the tag's
    pipeline > `release` > Download artifacts).
 
 The Windows installer is built on Windows (see the README, *Building a
@@ -137,7 +156,8 @@ release*).
 
 ## The build image
 
-The tag pipeline and `scripts/build-linux-installer.sh` build in
+The CI jobs (p4core's and p4sysid's `test` too) and
+`scripts/build-linux-installer.sh` run in
 `burt/puck-deb-u20` (`scripts/Dockerfile.builder`, identical in pucktuner):
 Ubuntu 20.04 for the oldest glibc/GTK, CPython 3.12, the prebuilt wxPython
 wheel and `requirements.txt`. The script only builds on Ubuntu 20.04: anywhere else it re-runs itself in
@@ -149,3 +169,5 @@ after a Python, wxPython or `Dockerfile.builder` change — on your machine with
 docker build --no-cache -t burt/puck-deb-u20 -f scripts/Dockerfile.builder .
 ```
 A `requirements.txt` change does not need a rebuild: each build syncs it first.
+An image built before `make`, `git`, `xvfb` and `xauth` were added to it still
+works: the `test` jobs apt-install them each run, and say so in the log.

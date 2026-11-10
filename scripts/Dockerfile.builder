@@ -19,6 +19,8 @@ ENV PATH=/usr/local/bin:$PATH
 # Build tools: curl/ca-certificates for the uv installer; binutils for the
 # objdump/strip PyInstaller runs; zip for the release archive; unzip for
 # puckutility's scripts/fetch-firmware.sh.
+# CI test job: make (make test), git (p4sysid clones p4core), xvfb + xauth
+# (the GUI tests, on xvfb-run).
 # Runtime libs: exactly the DT_NEEDED set of the wx wheel's core/base/adv/aui/
 # html/stc/xml/net libraries (readelf on wxPython-4.2.2 ubuntu-20.04 cp312).
 # PyInstaller copies these into the bundle, so they must exist here. Not
@@ -33,7 +35,8 @@ RUN apt-get update -qq && \
         libsecret-1-0 libnotify4 libsdl2-2.0-0 \
         libxxf86vm1 libxtst6 libsm6 libxkbcommon0 \
         libjpeg8 libtiff5 libpng16-16 libpcre2-32-0 libexpat1 libcurl4 \
-        libusb-1.0-0 && \
+        libusb-1.0-0 \
+        make git xvfb xauth && \
     rm -rf /var/lib/apt/lists/* && \
     GDK_QUERY=$(find /usr/lib -name 'gdk-pixbuf-query-loaders' 2>/dev/null | head -1) && \
     if [ -n "$GDK_QUERY" ] && [ ! -f /usr/bin/gdk-pixbuf-query-loaders ]; then \

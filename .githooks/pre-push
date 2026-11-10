@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Stop a release tag that the CI release job would reject (wrong version, DEV
+# title) before it is public. Nothing else is checked here: the tests run in CI.
+# Installed by `make` (git config core.hooksPath .githooks).
+# Bypass, if you really must: git push --no-verify
+set -uo pipefail
+zero=0000000000000000000000000000000000000000
+rc=0
+while read -r _local_ref local_sha remote_ref _remote_sha; do
+    case "$remote_ref" in refs/tags/release-v*) ;; *) continue ;; esac
+    [ "$local_sha" = "$zero" ] && continue          # deleting the tag
+    bash scripts/check-release-tag.sh "${remote_ref#refs/tags/}" "$local_sha" || rc=1
+done
+[ "$rc" -eq 0 ] || echo "pre-push: push refused (fix the tag, or git push --no-verify)" >&2
+exit "$rc"
