@@ -29,6 +29,7 @@ released" were never tagged and were internal development builds.
 - At Scan the log shows the CAN link's bit timing, and a dialog warns once about old `/etc` CAN files that override the installed bring-up.
 - CAN packages: `/etc` copies left by older Barrett apps are diverted so they no longer override the `/usr/lib` bring-up (restored on removal); the installer never downgrades a shared CAN package and keeps an adapter another puck app still needs.
 - `setup-socketcan.sh` installs to `/usr/lib` and moves `/etc` copies aside.
+- Requires p4core 0.1.1 or later (`set-id --pdo-ids`); install both wheels together.
 
 ## [1.4.1] - 2026-11-03
 
