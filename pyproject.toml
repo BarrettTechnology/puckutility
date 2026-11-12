@@ -10,7 +10,7 @@ requires-python = ">=3.9"
 # p4core is a submodule, not on an index: install it first
 # (setup-pip.sh does: pip install ./p4core .).
 dependencies = [
-    "p4core",
+    "p4core>=0.1.1",    # set-id --pdo-ids
     "canopen>=2.2",
     "python-can>=4.3",
     "semver>=3",
