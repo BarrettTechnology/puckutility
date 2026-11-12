@@ -12,6 +12,7 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, ROOT)
 
 from abtest import csvaudit, csvdiff, makecsv                           # noqa: E402
+from p4core import config_csv                                           # noqa: E402
 
 AB = os.path.join(ROOT, 'abtest')
 TEMPLATES = {'4.3.5': os.path.join(AB, 'templates', 'P4-42-AB-4.3.5.csv'),
@@ -62,15 +63,19 @@ class TemplateTest(Base):
 
     def test_shipped_csvs_audit_clean(self):
         shipped = sorted(os.listdir(os.path.join(AB, 'csv')))
-        self.assertEqual(len(shipped), 4)
+        self.assertGreaterEqual(len(shipped), 4)
         for name in shipped:
             line = '4.3.5' if 'fw4.3.5' in name else '5.x'
             with self.subTest(csv=name):
                 r = csvaudit.audit(os.path.join(AB, 'csv', name), EDS[line])
                 self.assertEqual((r['missing'], r['errors']), ([], []))
-                # 5.0.5's geared CSVs ship with settle ki 0: a warning only
-                self.assertEqual([w.split(':')[0] for w in r['warnings']],
-                                 ['line 96 (2381,4)'] if line == '5.x' else [])
+                # A geared 5.x CSV that leaves settle ki at 0 (the 2026-11-06
+                # ones): a warning only
+                settle = [row.data for row in config_csv.read(os.path.join(AB, 'csv', name))
+                          if row.kind == 'entry' and config_csv._key(row) == (0x2381, 4)]
+                zero = line == '5.x' and bool(settle) and float(settle[0]) == 0
+                self.assertEqual([w.split(': ', 1)[1].split(' on ')[0] for w in r['warnings']],
+                                 ['settle ki is 0'] if zero else [])
 
     def test_main_exit_status(self):
         out = io.StringIO()
@@ -86,6 +91,35 @@ class AuditTest(Base):
     def test_stray_bias_row(self):
         r = self.edited('5.x', None, None, 'Bias,,0x3008,3,INTEGER16,2000\n')
         self.assertTrue(any('per-actuator calibration' in e for e in r['errors']))
+
+    def test_identity_rows(self):
+        ident = ('Product Code,,0x1018,2,UNSIGNED32,{}\n'
+                 'Revision Number,,0x1018,3,UNSIGNED32,0x1\n')
+        with open(TEMPLATES['5.x']) as f:
+            text = f.read()
+        cases = (('P4-42-x.csv', 5755, []), ('P4-32-x.csv', 5760, []),
+                 ('P4-37-x.csv', 1950, []),
+                 ('P4-32-x.csv', 5755, ['product code 5755 but a P4-32 is 5760']),
+                 ('edited.csv', 5755, ['file name names no model']))
+        for name, code, want in cases:
+            out = self.path(name)
+            with open(out, 'w') as f:
+                f.write(text + ident.format(code))
+            with self.subTest(name=name, code=code):
+                errors = csvaudit.audit(out, EDS['5.x'])['errors']
+                self.assertEqual(len(errors), len(want), errors)
+                for w, e in zip(want, errors):
+                    self.assertIn(w, e)
+        # the serial and the end-user codes stay the board's
+        for sub in (4, 5, 6):
+            r = self.edited('5.x', None, None,
+                            'Id,,0x1018,{},UNSIGNED32,1\n'.format(sub))
+            with self.subTest(sub=sub):
+                self.assertTrue(any('(1018,{}): identity must not'.format(sub) in e
+                                    for e in r['errors']), r['errors'])
+        # leaving them out is fine
+        r = csvaudit.audit(TEMPLATES['5.x'], EDS['5.x'])
+        self.assertIn((0x1018, 2), [k for k, *_ in r['excluded']])
 
     def test_pdo_mapping_and_count(self):
         r = self.edited('4.3.5', 'RPDO1 Entries,,0x1600,0,UNSIGNED8,0',

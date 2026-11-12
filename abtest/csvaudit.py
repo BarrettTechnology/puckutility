@@ -4,8 +4,9 @@
 
 Every non-volatile, writable entry the firmware has is listed as one of
   present    the CSV writes it
-  excluded   the CSV must not write it (per-actuator calibration, identity,
-             node ID, PDO mappings) or need not (communication rows)
+  excluded   the CSV must not write it (per-actuator calibration, identity
+             other than the product code and revision, node ID, PDO
+             mappings) or need not (communication rows)
   MISSING    the CSV leaves it at whatever the puck had
 
 and the CSV must also
@@ -14,7 +15,9 @@ and the CSV must also
   - give each row the EDS's data type, REAL32 rows in float form,
   - on 5.x, once the velocity loop is tuned (0x2381,1 not 0), set the CSI
     gains 0x2383,1-2 too: at 0, cyclic sync impedance (-2) gives no torque,
-  - write nothing the EDS does not have, and nothing read-only.
+  - write nothing the EDS does not have, and nothing read-only,
+  - if it writes the product code 0x1018,2, give the code of the model its
+    file name starts with (P4-32-... = 5760, P4-42-... = 5755).
 A geared CSV (0x6091,1 / 0x6091,2 > 1) that leaves the settle integrator
 0x2381,4 at 0 gets a warning: held positions stop short through the friction.
 
@@ -25,12 +28,14 @@ firmware's co_dict.c (p4core/data/nv), not from the EDS, which does not say.
 
 import argparse
 import os
+import re
 import sys
 
 import canopen
 from canopen.objectdictionary import ODVariable
 
 from p4core import config_csv, nvjson
+from p4core.can_backend import PRODUCT_CODE_MODELS
 from p4core.config_csv import BOARD_CALIBRATION
 
 #: The values every A/B CSV sets: termination off, boot to PRE-OPERATIONAL
@@ -39,17 +44,21 @@ from p4core.config_csv import BOARD_CALIBRATION
 #: script must not fault the drive).
 REQUIRED = {(0x21B2, 0): 0, (0x1F80, 0): 4, (0x1017, 0): 0, (0x1015, 0): 50,
             (0x2406, 0): 0}
+#: The identity rows a CSV may set: product code and revision number.
+IDENTITY_OK = frozenset([(0x1018, 2), (0x1018, 3)])
 PDO_COUNTS = [(i, 0) for i in (0x1600, 0x1601, 0x1602, 0x1603,
                                0x1A00, 0x1A01, 0x1A02, 0x1A03)]
 
-#: Must not appear: per-actuator calibration, the identity object, the node
-#: ID (the CSV is for any puck) and PDO mapping entries (the PDOs are empty;
-#: ab-testing.py and testp4.py map their own).
+#: Must not appear: per-actuator calibration, the identity object but its
+#: product code and revision (a CSV is for one model, so those two are the
+#: model's; the serial and the end-user codes are the board's), the node ID
+#: (the CSV is for any puck of the model) and PDO mapping entries (the PDOs
+#: are empty; ab-testing.py and testp4.py map their own).
 FORBIDDEN_REASON = (
     (lambda k: k in BOARD_CALIBRATION, 'per-actuator calibration'),
     (lambda k: k == (0x3009, 9), 'per-actuator calibration (bias reference)'),
     (lambda k: k == (0x3001, 11), 'per-board bus-voltage trim'),
-    (lambda k: k[0] == 0x1018, 'identity'),
+    (lambda k: k[0] == 0x1018 and k not in IDENTITY_OK, 'identity'),
     (lambda k: k == (0x21B0, 0), 'node ID'),
     (lambda k: 0x1600 <= k[0] < 0x1800 or 0x1A00 <= k[0] < 0x1C00 and k[1],
      'PDO mapping entry'),
@@ -58,6 +67,7 @@ FORBIDDEN_REASON = (
 #: firmware's own bookkeeping, and the encoder filter on 4.3.x, which that
 #: firmware writes into the chip at every boot (it is in the CSV anyway).
 OPTIONAL_REASON = (
+    (lambda k: k in IDENTITY_OK, 'identity (the model\'s, if given)'),
     (lambda k: 0x1000 <= k[0] < 0x2000, 'communication'),
     (lambda k: k[0] == 0x3005, 'firmware bookkeeping'),
     (lambda k: k == (0x3013, 7), 'obsolete, ignored by the firmware'),
@@ -186,6 +196,7 @@ def audit(csv_path, eds_path, line=None):
             errors.append('line {} ({:04X},{}): {} but must be {}'.format(
                 row.line, *key, row.data, want))
 
+    errors += _product_code(written, csv_path)
     errors += _csi_gains(written)
     warnings += _settle_ki(written)
 
@@ -212,6 +223,28 @@ def _value(row):
         return config_csv.encode(row.datatype, row.data, 1)[1]
     except (ValueError, TypeError):
         return None
+
+
+def _product_code(written, csv_path):
+    """0x1018,2 must be a code of the model the file name starts with."""
+    row = written.get((0x1018, 2))
+    if row is None:
+        return []
+    where = 'line {} (1018,2)'.format(row.line)
+    m = re.match(r'(P4-\d+)', os.path.basename(csv_path))
+    if not m:
+        return ['{}: product code in a CSV whose file name names no model '
+                '(P4-32-..., P4-42-...)'.format(where)]
+    model = m.group(1)
+    codes = sorted(c for c, name in PRODUCT_CODE_MODELS.items() if name == model)
+    try:
+        got = config_csv.encode(row.datatype, row.data, 1)[1]
+    except ValueError:
+        return []
+    if got not in codes:
+        return ['{}: product code {} but a {} is {}'.format(
+            where, row.data, model, ' or '.join(map(str, codes)) or 'not known')]
+    return []
 
 
 def _csi_gains(written):
