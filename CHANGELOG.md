@@ -7,10 +7,11 @@ the release tags and the version shown in the window title at the time, and an
 untagged version is dated by the commit that set it. Versions marked "not
 released" were never tagged and were internal development builds.
 
-## [1.4.2] - 2026-11-09
+## [1.4.2] - 2026-11-12
 
 ### Added
 - Command line: `serial --id N` reads the serial number (0x1018,4); `--set S` writes it (with the firmware's serial key where it has one), reads it back and saves it. A serial of 0 or 0xFFFFFFFF shows as "not set" and cannot be written.
+- Command line: `set-id --pdo-ids predefined` also moves the PDO COB-IDs left on node 127's identifiers (pucks configured at 127 and re-numbered by a tool that kept the PDOs) to the puck's node ID, keeping disabled PDOs disabled. Without a new ID (`--id 13 set-id --pdo-ids predefined`) it fixes the puck's current ID with no reboot. It lists each change and asks first (`-y` to skip), then saves communication (Save.Comm). A PDO keyed to any other node is left alone. A COB-ID change disables the PDO first, as 5.x firmware requires.
 - A/B package: square runs report the error held on each set-point plateau (set-point - 0x6064 over its last 0.5 s, with mean and max |e|) in `metrics.json` and the compare tables; `csvaudit.py` warns when a geared actuator's CSV leaves the settle integrator 0x2381,4 at 0.
 
 ### Fixed

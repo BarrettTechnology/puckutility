@@ -154,6 +154,7 @@ puckutility --can can0 --all calibrate        # actuator calibration
 puckutility --can can0 --id 1 calibrate slope fold
 puckutility --can can0 system-config system-config.ini
 puckutility --can can0 --id 5 set-id 7
+puckutility --can can0 --id 13 set-id --pdo-ids predefined   # PDOs left on node 127's IDs
 puckutility --can can0 --id 5 reset           # NMT reset, wait for it
 puckutility flash-canable [FIRMWARE]
 puckutility --help                            # and: puckutility COMMAND --help
