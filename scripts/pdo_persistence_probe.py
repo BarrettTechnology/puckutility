@@ -33,7 +33,7 @@ import sys
 import time
 
 sys.path.insert(0, __file__.rsplit('/scripts/', 1)[0])
-from p4core import can_backend  # noqa: E402
+from p4core import can_backend, nvsave  # noqa: E402
 from p4core.paths import puck4_eds  # noqa: E402
 
 RPDO = {1: (0x1400, 0x200), 2: (0x1401, 0x300), 3: (0x1402, 0x400), 4: (0x1403, 0x500)}
@@ -41,7 +41,6 @@ TPDO = {1: (0x1800, 0x180), 2: (0x1801, 0x280), 3: (0x1802, 0x380), 4: (0x1803, 
 
 SCRATCH_INDEX, SCRATCH_SUB, SCRATCH_BASE = 0x1803, 1, 0x480
 SENTINEL_NODE = 0x33
-SAVE_SIGNATURE = 0x65766173
 VALID_BIT = 0x80000000
 ABORT_NO_OBJECT = 0x06020000
 
@@ -63,6 +62,15 @@ def rd(node, i, s):
 def wr(node, i, s, v):
     try:
         node.sdo.download(i, s, int(v).to_bytes(4, 'little', signed=False)); return None
+    except Exception as e:
+        return abort_code(e) or str(e)
+
+
+def save_all(node):
+    """Save.All the p4core way (PRE-OP on 5.0.7, waits for the commit);
+    None, or the abort as wr() gives it."""
+    try:
+        nvsave.save_all(node); return None
     except Exception as e:
         return abort_code(e) or str(e)
 
@@ -213,7 +221,7 @@ def phase3_persist(net, node, node_id):
 
         if (got & 0x7F) != SENTINEL_NODE:
             wr(node, SCRATCH_INDEX, SCRATCH_SUB, sentinel)
-            serr = wr(node, 0x1010, 1, SAVE_SIGNATURE)
+            serr = save_all(node)
             verdict['save_supported'] = 'aborted ({})'.format(serr) if serr else 'accepted'
             print("  [save 0x1010:1] {}".format(verdict['save_supported']))
             prompt("POWER-CYCLE the puck now (save WAS issued)")
@@ -230,7 +238,7 @@ def phase3_persist(net, node, node_id):
         wr(node, SCRATCH_INDEX, SCRATCH_SUB, orig | VALID_BIT)
         wr(node, SCRATCH_INDEX, SCRATCH_SUB, orig)
         if verdict.get('save_supported', '').startswith('accepted'):
-            wr(node, 0x1010, 1, SAVE_SIGNATURE)
+            save_all(node)
     return verdict
 
 

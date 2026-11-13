@@ -33,7 +33,7 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-from p4core import can_backend
+from p4core import can_backend, nvsave
 from p4core.paths import puck4_eds
 from p4core.calibrate import permille_base_ma
 from p4core.cia402 import (CLEAR_FAULT, SHUTDOWN, OP_ENABLED, MODE_IDLE, MODE_PROFILE_VEL,
@@ -224,7 +224,7 @@ def main():
             msg = "APPLIED MaxSettlingTime = {} ns (live)".format(pick)
             if args.save:
                 try:
-                    node.sdo['Save']['Single'].raw = ((IDX_SETTLE[0] << 8) | IDX_SETTLE[1])
+                    nvsave.save_single(node, *IDX_SETTLE)   # PRE-OP on 5.0.7, waits
                     msg += " + SAVED to NV"
                 except Exception as e:
                     msg += " (NV save FAILED: {})".format(e)

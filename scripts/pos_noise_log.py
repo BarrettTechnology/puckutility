@@ -25,7 +25,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from p4core import can_backend
+from p4core import can_backend, nvsave
 from p4core.paths import puck4_eds
 from p4core.calibrate import permille_base_ma
 from p4core.cia402 import CLEAR_FAULT, SHUTDOWN, OP_ENABLED, MODE_IDLE, MODE_PROFILE_VEL
@@ -80,8 +80,7 @@ def main():
         if a.encvel_fc is not None:
             was = struct.unpack('<H', node.sdo.upload(0x2100, 1))[0]
             node.sdo.download(0x2100, 1, struct.pack('<H', a.encvel_fc))
-            node.sdo.download(0x1010, 1, struct.pack('<I', 0x65766173))  # 'save' all
-            time.sleep(0.3)
+            nvsave.save_all(node)   # PRE-OP on 5.0.7, waits for the commit
             node.nmt.state = 'RESET'
             time.sleep(2.2)
             try:

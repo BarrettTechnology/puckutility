@@ -34,12 +34,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from p4core import can_backend
+from p4core import can_backend, nvsave
 from p4core.paths import puck4_eds
 from p4core.calibrate import permille_base_ma
 from p4core.cia402 import CLEAR_FAULT, SHUTDOWN, OP_ENABLED, MODE_IDLE, MODE_PROFILE_VEL
 
-SAVE_MAGIC = 0x65766173  # 'save' -> 0x1010:1 Save All
 
 
 def _mean(a):
@@ -61,8 +60,7 @@ def set_pwm(node, hz):
         print("  WARNING: wrote {} Hz, read back {} Hz -- firmware clamp (needs the".format(hz, rb))
         print("           128 kHz-guard build). Skipping this rate.")
         return None
-    node.sdo.download(0x1010, 1, struct.pack('<I', SAVE_MAGIC))
-    time.sleep(0.3)
+    nvsave.save_all(node)   # PRE-OP on 5.0.7, waits for the commit
     node.nmt.state = 'RESET'
     time.sleep(2.2)
     try:
