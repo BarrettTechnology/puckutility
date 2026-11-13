@@ -13,6 +13,7 @@ released" were never tagged and were internal development builds.
 - Saves follow firmware 5.0.7's procedure (p4core): a puck in NMT OPERATIONAL is sent to PRE-OPERATIONAL, the save is written, 0x1010 is read until bit 2 (save pending) clears, and the puck is started again. 5.0.7 refuses NV writes outside PRE-OP (abort 0x08000022); a puck already in PRE-OP gets no NMT command. Restoring defaults and changing the node ID go to PRE-OP the same way and reboot.
 - The EDS is firmware 5.0.7's.
 - The bench scripts `pos_noise_log`, `pwm_ceiling_walk`, `pdo_persistence_probe` and `settling_behavioral` save through p4core instead of writing 0x1010 themselves.
+- `serial --set 0` is allowed: 0 is a serial like any other. Only 0xFFFFFFFF, what an unprogrammed puck reads, shows as "not set" and is refused.
 
 ## [1.4.2] - 2026-11-12
 
