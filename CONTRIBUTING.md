@@ -82,10 +82,16 @@ the tests are left to CI.
 |---|---|---|
 | `git push` of a release tag | your machine | `scripts/check-release-tag.sh` |
 | every push and merge request | CI `test` | `make test` |
+| schedule, or Build > Pipelines > Run pipeline | CI `xtest`, on the `xtest` runner | `make xtest` (XTEST_ARGS for a subset) |
 | tag push, after `test` | CI `release` | the tag check, then the `.run` installer and debs |
 
 Make `test` required for merging (Settings > Merge requests > Pipelines must
 succeed).
+
+`xtest` runs on a dedicated runner, tagged `xtest`: an Ubuntu 24.04 VM with a
+shell executor and rootless podman (`CONTAINER=podman` in its `config.toml`).
+The runner is protected, so it takes pipelines on protected branches and tags
+only. Schedule it on the release branch (Build > Pipeline schedules).
 
 ## Cross-Ubuntu tests
 
@@ -139,8 +145,11 @@ Run it before every release, and whenever you change `requirements.txt`,
 2. Fetch the firmware the release ships (prerequisite 5), and update
    `system-config.ini` if the firmware changed.
 3. Unit tests pass.
-4. `scripts/test-cross-ubuntu.sh` (all four releases) prints `ALL PASSED`.
-5. Commit, tag and push (the pre-push hook checks the tag):
+4. Commit and push the branch, then run the CI `xtest` job on that commit
+   (Build > Pipelines > Run pipeline, on the branch) and wait for it to pass.
+   Without the runner: `scripts/test-cross-ubuntu.sh` (all four releases)
+   prints `ALL PASSED`.
+5. Tag that commit and push the tag (the pre-push hook checks it):
    ```
    git tag release-vX.Y.Z
    git push origin release-vX.Y.Z

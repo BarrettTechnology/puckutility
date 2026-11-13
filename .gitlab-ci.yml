@@ -6,10 +6,16 @@
 #   release  tag push (release-vX.Y.Z, optionally -suffix) only, after test:
 #            scripts/check-release-tag.sh, then the .run installer and the debs,
 #            kept forever.
-# The cross-Ubuntu tests are NOT run here: run them before tagging (see
-# CONTRIBUTING.md); they need a host kernel >= 5.6 for the 26.04 container.
+#   xtest    scheduled pipelines and "Run pipeline" only, after test:
+#            `make xtest` (scripts/test-cross-ubuntu.sh, Ubuntu 20.04 to 26.04:
+#            source, pip and installer). Runs on the dedicated
+#            `xtest` runner (Ubuntu 24.04 VM, shell executor, rootless podman;
+#            CONTAINER=podman comes from its config.toml). That runner is
+#            protected, so schedule it on a protected branch. XTEST_ARGS picks a
+#            subset in the "Run pipeline" form, e.g. `--no-pip 24.04`. Run it
+#            on the commit you are about to tag: tag pipelines do not run it.
 #
-# Runner setup (once, on the gitlab-runner machine):
+# Docker runner setup (once, on the machine that runs test and release):
 #   docker build -t burt/puck-deb-u20 -f scripts/Dockerfile.builder .
 #   The image is local only, so the runner's docker pull_policy must allow it
 #   (if-not-present), as for burt/firmware-cmake-u20. Rebuild the image after a
@@ -25,6 +31,9 @@ variables:
   GIT_SUBMODULE_STRATEGY: recursive
   # Test workers: the runner also builds other projects, so not every CPU.
   TEST_JOBS: "4"
+  XTEST_ARGS:
+    value: ""
+    description: "xtest only: scripts/test-cross-ubuntu.sh arguments, e.g. --no-pip 24.04 (empty: all four releases, every half)"
 
 # One pipeline per push: a branch with an open merge request gets the merge
 # request pipeline only.
@@ -38,6 +47,7 @@ workflow:
 
 stages:
   - test
+  - xtest
   - release
 
 test:
@@ -51,6 +61,20 @@ test:
     - 'command -v make >/dev/null && command -v xvfb-run >/dev/null || { echo "NOTE: burt/puck-deb-u20 predates the test tools, installing them (rebuild the image)"; apt-get update -qq && apt-get install -y -qq --no-install-recommends make git xvfb xauth >/dev/null; }'
     - uv pip install -q --python /opt/puckbuild -r requirements.txt -r requirements-test.txt
     - make test PYTHON=/opt/puckbuild/bin/python TEST_JOBS=$TEST_JOBS
+
+xtest:
+  stage: xtest
+  tags:
+    - xtest
+  timeout: 4h
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_PIPELINE_SOURCE == "web"
+  script:
+    # Only test-cross-ubuntu.sh's own arguments, so a typo fails here.
+    - 'for a in $XTEST_ARGS; do case "$a" in --source-only|--no-pip|[0-9][0-9].04|[0-9][0-9].10) ;; *) echo "ERROR: XTEST_ARGS: unknown argument $a"; exit 1 ;; esac; done'
+    - podman --version
+    - make xtest XTEST_ARGS="$XTEST_ARGS"
 
 release:
   stage: release
