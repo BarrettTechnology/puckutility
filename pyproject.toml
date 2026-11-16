@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "puckutility"
 dynamic = ["version"]
 description = "Flash, configure and calibrate P4 pucks, as a GUI or a command line"
+license = {file = "LICENSE"}
 requires-python = ">=3.9"
 # p4core is a submodule, not on an index: install it first
 # (setup-pip.sh does: pip install ./p4core .).

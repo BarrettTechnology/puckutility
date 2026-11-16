@@ -232,6 +232,15 @@ else
     pyinstaller "${PYINSTALLER_ARGS[@]}"
 fi
 
+# Barrett's licence and the third-party notices go beside the binary, so every
+# format below carries them. p4core.licensing lists what PyInstaller bundled
+# and stops the build on a component nobody reviewed or a licence the apps may
+# not ship (p4core/licensing/reviewed.toml).
+"${PY:-python3}" -m p4core.licensing --workpath build/PuckUtilityApp \
+    --app "Puck Utility ${VERSION#v}" \
+    --out "${BINARY_STAGE}/PuckUtilityApp/THIRD-PARTY-NOTICES.txt"
+cp LICENSE "${BINARY_STAGE}/PuckUtilityApp/"
+
 # ---------------------------------------------------------------------------
 if [ "$FORMAT" = "pyinstaller" ]; then
 # ---------------------------------------------------------------------------
@@ -296,6 +305,12 @@ elif [ "$FORMAT" = "deb" ] || [ "$FORMAT" = "installer" ]; then
     cp system-config.ini "${APP_DIR}/"
     cp scripts/reset_can.sh "${APP_DIR}/"
     ship_firmware_dir "${APP_DIR}"
+
+    # Debian's place for a package's licence: /usr/share/doc/<package>/copyright
+    mkdir -p "${DEB_ROOT}/usr/share/doc/${PKG_NAME}"
+    cp LICENSE "${DEB_ROOT}/usr/share/doc/${PKG_NAME}/copyright"
+    ln -s ../../puckutilityapp/THIRD-PARTY-NOTICES.txt \
+        "${DEB_ROOT}/usr/share/doc/${PKG_NAME}/THIRD-PARTY-NOTICES.txt"
 
     # reset_can.sh at /usr/bin so the old udev rule path and manual invocation
     # both work (script uses sudo internally for manual use).

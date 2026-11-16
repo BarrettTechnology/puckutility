@@ -110,6 +110,12 @@ rm -f "${ZIP}"
     scripts/windows/PuckUtilityApp.spec
 cp -r "${WIN}/pyinstaller/dist/PuckUtilityApp/." "${OUTDIR}/"
 
+# Barrett's licence and the third-party notices (what PyInstaller bundled; the
+# build stops on an unreviewed component, see p4core/licensing/reviewed.toml).
+"${PY[@]}" -m p4core.licensing --workpath "${WIN}/pyinstaller/work/PuckUtilityApp" \
+    --app "Puck Utility ${APP_VERSION}" --out "${OUTDIR}/THIRD-PARTY-NOTICES.txt"
+cp LICENSE "${OUTDIR}/LICENSE.txt"
+
 # Package data where p4core.paths.resource() looks beside the binary, and the
 # technician's working folders (puckutility/paths.py APP_DIR).
 mkdir -p "${OUTDIR}/puckutility" "${OUTDIR}/p4core" "${OUTDIR}/firmware"

@@ -55,6 +55,29 @@ RUN uv pip install --python /opt/puckbuild \
         -r /tmp/requirements.txt && \
     chmod -R a+rX /opt/uv-python && chmod -R a+rwX /opt/puckbuild
 
+# Layer 4: libtiff without JBIG. Ubuntu's libtiff5 links JBIG-KIT (libjbig0),
+# which is GPL-2.0-or-later and may not ship inside the apps (the build's
+# third-party notices step, p4core.licensing, fails on it). wxWidgets needs
+# libtiff.so.5, so build libtiff 4.4.0 (the last release with that soname,
+# same symbol versions) without JBIG into /usr/local/lib, which the loader and
+# PyInstaller search before the system copy. Its licence goes beside it for
+# the notices. The build tools are removed again in the same layer.
+RUN apt-get update -qq && \
+    apt-get install -y -qq --no-install-recommends build-essential \
+        libjpeg-turbo8-dev zlib1g-dev libwebp-dev libzstd-dev liblzma-dev && \
+    curl -fsSL https://download.osgeo.org/libtiff/tiff-4.4.0.tar.gz | tar xz -C /tmp && \
+    cd /tmp/tiff-4.4.0 && \
+    ./configure -q --prefix=/usr/local --disable-jbig --disable-lerc \
+        --disable-static --disable-cxx --disable-docs --enable-ld-version-script && \
+    make -s -j2 && make -s install && \
+    install -D -m644 COPYRIGHT /usr/local/share/doc/libtiff/copyright && \
+    cd / && rm -rf /tmp/tiff-4.4.0 /usr/local/bin/tiff* /usr/local/bin/*2tiff \
+        /usr/local/bin/fax2ps /usr/local/bin/pal2rgb /usr/local/bin/ppm2tiff /usr/local/bin/raw2tiff && \
+    apt-get purge -y -qq build-essential libjpeg-turbo8-dev zlib1g-dev libwebp-dev \
+        libzstd-dev liblzma-dev && \
+    apt-get autoremove -y -qq && rm -rf /var/lib/apt/lists/* && ldconfig && \
+    ! readelf -d /usr/local/lib/libtiff.so.5 | grep -q libjbig
+
 ENV UV_CACHE_DIR=/tmp/uv-cache
 # Every later `uv pip install` in this image (the build's re-sync, CI) finds the
 # prebuilt wxPython wheel instead of compiling the PyPI source package.
