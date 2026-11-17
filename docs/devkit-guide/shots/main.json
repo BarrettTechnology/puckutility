@@ -1,0 +1,372 @@
+{
+ "name": "main",
+ "title": "Puck Utility v1.4.2",
+ "size": [
+  520,
+  363
+ ],
+ "widgets": {
+  "frame_menubar": [
+   0,
+   -26,
+   520,
+   26
+  ],
+  "frame_statusbar": [
+   0,
+   363,
+   520,
+   27
+  ],
+  "bitmap_button_1": [
+   0,
+   0,
+   520,
+   93
+  ],
+  "choice_port": [
+   139,
+   103,
+   100,
+   34
+  ],
+  "button_1": [
+   244,
+   103,
+   100,
+   34
+  ],
+  "VBus": [
+   441,
+   112,
+   50,
+   16
+  ],
+  "choice_id": [
+   139,
+   142,
+   100,
+   34
+  ],
+  "PTemp": [
+   441,
+   151,
+   50,
+   16
+  ],
+  "text_id": [
+   139,
+   181,
+   100,
+   34
+  ],
+  "button_2": [
+   244,
+   181,
+   100,
+   34
+  ],
+  "MTemp": [
+   441,
+   190,
+   50,
+   16
+  ],
+  "text_version": [
+   139,
+   220,
+   100,
+   34
+  ],
+  "button_8": [
+   244,
+   220,
+   100,
+   34
+  ],
+  "Vrpm": [
+   441,
+   229,
+   50,
+   16
+  ],
+  "button_10": [
+   139,
+   259,
+   100,
+   34
+  ],
+  "choice_test": [
+   10,
+   311,
+   124,
+   34
+  ],
+  "text_testvalue": [
+   139,
+   311,
+   100,
+   34
+  ],
+  "button_6": [
+   244,
+   311,
+   100,
+   34
+  ],
+  "Dial": [
+   362,
+   298,
+   60,
+   60
+  ],
+  "onoffpanel": [
+   441,
+   298,
+   50,
+   60
+  ],
+  "onoff1": [
+   441,
+   311,
+   50,
+   34
+  ],
+  "text:Scan Pucks": [
+   244,
+   103,
+   100,
+   34
+  ],
+  "text:Set": [
+   244,
+   181,
+   100,
+   34
+  ],
+  "text:Update...": [
+   244,
+   220,
+   100,
+   34
+  ],
+  "text:Browse...": [
+   139,
+   259,
+   100,
+   34
+  ],
+  "text:Go": [
+   244,
+   311,
+   100,
+   34
+  ],
+  "text:CAN Port:": [
+   62,
+   108,
+   72,
+   23
+  ],
+  "text:Current:": [
+   373,
+   108,
+   63,
+   23
+  ],
+  "text:N/A": [
+   441,
+   112,
+   50,
+   16
+  ],
+  "text:Select ID:": [
+   63,
+   147,
+   71,
+   23
+  ],
+  "text:Puck Temp:": [
+   351,
+   147,
+   85,
+   23
+  ],
+  "text:New ID:": [
+   74,
+   186,
+   60,
+   23
+  ],
+  "text:Mot. Temp:": [
+   354,
+   186,
+   82,
+   23
+  ],
+  "text:Version:": [
+   73,
+   225,
+   61,
+   23
+  ],
+  "text:RPM:": [
+   397,
+   225,
+   39,
+   23
+  ],
+  "text:Configure:": [
+   56,
+   264,
+   78,
+   23
+  ]
+ },
+ "menus": [
+  {
+   "label": "Menu",
+   "items": [
+    {
+     "label": "Scan Pucks",
+     "accel": "Ctrl+S"
+    },
+    {
+     "sep": true
+    },
+    {
+     "label": "Update All Pucks (Firmware)",
+     "accel": "Ctrl+U"
+    },
+    {
+     "label": "Upload System Config",
+     "accel": ""
+    },
+    {
+     "sep": true
+    },
+    {
+     "label": "ON/OFF ADC Monitor",
+     "accel": "Ctrl+P"
+    },
+    {
+     "sep": true
+    },
+    {
+     "label": "Actuator Calibration",
+     "accel": "",
+     "items": [
+      {
+       "label": "Active Puck",
+       "accel": "Ctrl+C"
+      },
+      {
+       "label": "All Pucks",
+       "accel": ""
+      }
+     ]
+    },
+    {
+     "label": "Actuator Calibration Steps",
+     "accel": "",
+     "items": [
+      {
+       "label": "1. Encoder filter + rest test",
+       "accel": ""
+      },
+      {
+       "label": "2. Current-sense bias",
+       "accel": ""
+      },
+      {
+       "label": "3. Current-sense gain",
+       "accel": ""
+      },
+      {
+       "label": "4. Current-sense slope",
+       "accel": ""
+      },
+      {
+       "label": "5. Current-sense offset fold",
+       "accel": ""
+      },
+      {
+       "label": "6. Electrical zero + winding order",
+       "accel": ""
+      },
+      {
+       "label": "7. Encoder runout table",
+       "accel": ""
+      },
+      {
+       "label": "8. Friction calibration",
+       "accel": ""
+      },
+      {
+       "label": "9. Cogging feed-forward",
+       "accel": ""
+      }
+     ]
+    },
+    {
+     "sep": true
+    },
+    {
+     "label": "Encoder Error Compensation",
+     "accel": "",
+     "items": [
+      {
+       "label": "ON",
+       "accel": "",
+       "checked": false
+      },
+      {
+       "label": "OFF",
+       "accel": "",
+       "checked": true
+      }
+     ]
+    },
+    {
+     "label": "Set User Direction...",
+     "accel": ""
+    },
+    {
+     "label": "Tune Gains...",
+     "accel": ""
+    },
+    {
+     "label": "Save to CSV...",
+     "accel": ""
+    },
+    {
+     "sep": true
+    },
+    {
+     "label": "Help",
+     "accel": ""
+    },
+    {
+     "sep": true
+    },
+    {
+     "label": "Exit",
+     "accel": ""
+    }
+   ]
+  },
+  {
+   "label": "Log",
+   "items": [
+    {
+     "label": "Open Log...",
+     "accel": "Ctrl+L"
+    }
+   ]
+  }
+ ],
+ "status": [
+  "Status:",
+  "Ready"
+ ]
+}
