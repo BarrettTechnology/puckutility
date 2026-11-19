@@ -155,8 +155,28 @@ def _cmd_system_config(ctx):
 # ---------------------------------------------------------------------------
 def _cmd_flash_canable(ctx):
     from .controllers import canable
+    serial = getattr(ctx.args, 'serial', None)
+    if not serial and sys.stdin.isatty():
+        # Several CandleLight adapters and no board in DFU: ask which one, as
+        # flashing one resets it (a board already in DFU is flashed with no
+        # question, and the running adapters are left alone).
+        candles = canable.list_candlelights()
+        in_dfu = canable._usb_find(idVendor=canable.DFU_VID, idProduct=canable.DFU_PID)
+        if in_dfu is None and len(candles) > 1:
+            print('CandleLight adapters connected (flashing one resets it):')
+            for i, (sn, port, iface) in enumerate(candles, 1):
+                print('  {}. {}  serial {}  usb {}'.format(
+                    i, iface or '(no interface)', sn or '?', port or '?'))
+            try:
+                pick = input('Flash which one? [1-{}, Enter to cancel] '.format(len(candles))).strip()
+            except EOFError:
+                pick = ''
+            if not pick.isdigit() or not 1 <= int(pick) <= len(candles):
+                print('Cancelled.')
+                return cli.EXIT_FAILED
+            serial = candles[int(pick) - 1][0]
     ok = canable.flash_canable(ctx.args.firmware or None,
-                               verbose=ctx.args.verbose)
+                               verbose=ctx.args.verbose, serial=serial)
     return cli.EXIT_OK if ok else cli.EXIT_FAILED
 
 
@@ -211,6 +231,9 @@ def build_parser():
     p.set_defaults(func=_cmd_flash_canable, needs_bus=False)
     p.add_argument('firmware', nargs='?',
                    help='firmware image (default: the bundled multiboard build)')
+    p.add_argument('--serial', default=None,
+                   help='the CandleLight to flash, by USB serial (or its tail) when several '
+                        'are connected; a board already in DFU needs none')
     return parser
 
 

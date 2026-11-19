@@ -44,10 +44,75 @@ def _usb_backend():
     return backend
 
 
+# Which CandleLight a flash may touch.  Every lookup of "the" CandleLight below
+# (DFU detach, USB power cycle, Boot0 option bytes, the SocketCAN interface) goes
+# through _is_target, so on a bench with other CandleLight adapters in use only the
+# chosen one is ever reset or reconfigured.  2026-11-19: with the desk's adapter
+# (can0) plugged in, the Boot0 step after flashing a second board took the first
+# CandleLight it found -- the desk's -- detached its driver and reset it, mid-test.
+#   serial  -- touch only this CandleLight (USB serial number)
+#   exclude -- touch any CandleLight but these (the ones running before a board
+#              that was already in DFU was flashed: the new one is the target)
+_TARGET = {'serial': None, 'exclude': frozenset()}
+
+
+def _is_target(serial):
+    if _TARGET['serial'] is not None:
+        return serial == _TARGET['serial']
+    return serial not in _TARGET['exclude']
+
+
+def _usb_serial(dev):
+    try:
+        import usb.util
+        return usb.util.get_string(dev, dev.iSerialNumber)
+    except Exception:
+        return None
+
+
 def _usb_find(**kwargs):
-    """usb.core.find with the platform-appropriate backend wired in."""
+    """usb.core.find with the platform-appropriate backend wired in.  A
+    CandleLight lookup only returns the flash's target (_TARGET)."""
     import usb.core
+    if (kwargs.get('idVendor') == CANDLELIGHT_VID and kwargs.get('idProduct') == CANDLELIGHT_PID
+            and 'custom_match' not in kwargs and not kwargs.get('find_all')):
+        kwargs['custom_match'] = lambda d: _is_target(_usb_serial(d))
     return usb.core.find(backend=_usb_backend(), **kwargs)
+
+
+def _sysfs_serial(dev_dir):
+    try:
+        return open(os.path.join(dev_dir, 'serial')).read().strip()
+    except Exception:
+        return None
+
+
+def list_candlelights():
+    """[(serial, usb port, SocketCAN interface or None)] for every CandleLight
+    (1d50:606f) on USB; Linux only reports the port and interface."""
+    out = []
+    if platform.system() == "Linux":
+        import glob
+        for vf in sorted(glob.glob('/sys/bus/usb/devices/*/idVendor')):
+            d = os.path.dirname(vf)
+            try:
+                if (open(vf).read().strip() != f'{CANDLELIGHT_VID:04x}' or
+                        open(os.path.join(d, 'idProduct')).read().strip() != f'{CANDLELIGHT_PID:04x}'):
+                    continue
+            except Exception:
+                continue
+            port = os.path.basename(d)
+            nets = glob.glob(os.path.join(d, port + ':*', 'net', '*'))
+            out.append((_sysfs_serial(d), port, os.path.basename(nets[0]) if nets else None))
+        return out
+    try:
+        import usb.core
+        for dev in usb.core.find(find_all=True, backend=_usb_backend(),
+                                 idVendor=CANDLELIGHT_VID, idProduct=CANDLELIGHT_PID):
+            out.append((_usb_serial(dev), None, None))
+    except Exception:
+        pass
+    return out
 
 
 def find_dfu_device():
@@ -74,7 +139,8 @@ def _find_can_iface():
                     try:
                         vid = int(open(vid_f).read().strip(), 16)
                         pid = int(open(os.path.join(path, 'idProduct')).read().strip(), 16)
-                        if vid == CANDLELIGHT_VID and pid == CANDLELIGHT_PID:
+                        if (vid == CANDLELIGHT_VID and pid == CANDLELIGHT_PID
+                                and _is_target(_sysfs_serial(path))):
                             return os.path.basename(iface_path)
                     except Exception:
                         pass
@@ -179,7 +245,8 @@ def _try_usb_power_cycle(_dev_unused):
             try:
                 if (open(vf).read().strip() == f'{CANDLELIGHT_VID:04x}' and
                         open(vf.replace('idVendor', 'idProduct')).read().strip()
-                        == f'{CANDLELIGHT_PID:04x}'):
+                        == f'{CANDLELIGHT_PID:04x}'
+                        and _is_target(_sysfs_serial(os.path.dirname(vf)))):
                     dev_name = os.path.basename(os.path.dirname(vf))
                     break
             except Exception:
@@ -334,7 +401,7 @@ def _find_cube_programmer_cli():
     return None
 
 
-def flash_canable(firmware_path=None, verbose=False):
+def flash_canable(firmware_path=None, verbose=False, serial=None):
     """Flash CandleLight Multiboard firmware to an STM32G431-based canable via USB DFU.
 
     No sudo required.  Requires 90-canable.rules udev rules to be installed.
@@ -379,11 +446,45 @@ def flash_canable(firmware_path=None, verbose=False):
         print("Error: pyusb is not installed -- run:  pip install pyusb")
         return False
 
+    # ---- which adapter ------------------------------------------------------
+    _TARGET.update(serial=None, exclude=frozenset())
+    candles = list_candlelights()
+
+    def _list():
+        for sn, port, iface in candles:
+            print("    serial {}  usb {}  {}".format(sn or '?', port or '?', iface or '(no interface)'))
+
     dfu_dev = _usb_find(idVendor=DFU_VID, idProduct=DFU_PID)
-    if dfu_dev is None:
-        if _usb_find(idVendor=CANDLELIGHT_VID, idProduct=CANDLELIGHT_PID) is None:
-            print("Error: no CandleLight (1d50:606f) or DFU (0483:df11) device found.")
+    if serial:
+        hits = [c for c in candles if c[0] and (c[0] == serial or c[0].endswith(serial))]
+        if len(hits) != 1:
+            print("Error: {} CandleLight adapters match serial '{}'. Connected:".format(len(hits), serial))
+            _list()
             return False
+        _TARGET['serial'] = hits[0][0]
+        dfu_dev = None                      # the named adapter is put into DFU, not another board
+        print("Flashing the CandleLight with serial {} (usb {}, {}).".format(
+            hits[0][0], hits[0][1] or '?', hits[0][2] or 'no interface'))
+    elif dfu_dev is not None:
+        # A board already in DFU (Boot pressed): it is the target. The CandleLight
+        # adapters running now are left alone, before and after the flash.
+        _TARGET['exclude'] = frozenset(c[0] for c in candles if c[0])
+        if candles:
+            print("Flashing the board in DFU mode; leaving these CandleLight adapters alone:")
+            _list()
+    elif not candles:
+        print("Error: no CandleLight (1d50:606f) or DFU (0483:df11) device found.")
+        return False
+    elif len(candles) > 1:
+        print("Error: {} CandleLight adapters are connected and flashing one resets it. "
+              "Choose one with --serial, or put the board to flash into DFU by hand "
+              "(hold BOOT while plugging it in):".format(len(candles)))
+        _list()
+        return False
+    else:
+        _TARGET['serial'] = candles[0][0]
+        print("Flashing the only CandleLight connected: serial {} (usb {}, {}).".format(
+            candles[0][0] or '?', candles[0][1] or '?', candles[0][2] or 'no interface'))
 
     # ---- spinner / output helpers -------------------------------------------
     _COLS = 60

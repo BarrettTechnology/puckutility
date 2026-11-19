@@ -237,7 +237,7 @@ class TestOtherCommands(CliTest):
             code, _out, _err = self.run_cli('flash-canable', session=mock.Mock(
                 connect=mock.Mock(side_effect=AssertionError('no bus'))))
         self.assertEqual(code, 0)
-        flash.assert_called_once_with(None, verbose=False)
+        flash.assert_called_once_with(None, verbose=False, serial=None)
 
     def test_the_shared_commands_are_there(self):
         parser = cli.build_parser()
