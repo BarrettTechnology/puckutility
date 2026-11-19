@@ -754,7 +754,7 @@ def flash_canable(firmware_path=None, verbose=False, serial=None):
     # starts can-up@<iface>.service (scripts/61-can-up.rules) to configure and
     # bring the interface up.  (Older installs used a udev RUN+= rule; the poll
     # below is agnostic to which mechanism brought it up.)  Wait until IFF_UP.
-    phase[0] = 'starting can0'
+    phase[0] = 'starting its CAN interface'
 
     def _iface_is_up(name):
         try:
@@ -819,7 +819,8 @@ def flash_canable(firmware_path=None, verbose=False, serial=None):
         if _usb_find(idVendor=CANDLELIGHT_VID, idProduct=CANDLELIGHT_PID):
             print("Flash complete -- now unplug the adapter, wait ~5 s, then replug it.")
             print("  The Boot0 option-byte change needs a power cycle to settle;")
-            print("  can0 then comes up automatically (udev -> can-up@ service).")
+            print("  Its CAN interface then comes up automatically (udev -> can-up@ service),")
+            print("  as the next free name (can1 when can0 is in use).")
             return True
         print("Error: no CAN interface and no CandleLight device found after flash.")
         print("  Unplug/replug the adapter; if it stays in DFU mode, re-run --flash-canable.")
