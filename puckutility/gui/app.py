@@ -53,6 +53,8 @@ import os
 import canopen
 from p4core import can_backend
 from p4core import firmware
+from p4core import nvgate
+nvgate.install()   # 5.0.7+ saves only in NMT PRE-OP, as PuckTuner (p4core/nvgate.py)
 from ..controllers import calibrate as actuator
 from canopen.sdo import SdoAbortedError
 import platform

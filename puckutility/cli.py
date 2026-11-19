@@ -19,7 +19,9 @@ flat flags (--flash FW, --calibrate, ...) into these.
 import argparse
 import sys
 
-from p4core import can_backend, cli, firmware, ops
+from p4core import can_backend, cli, firmware, nvgate, ops
+
+nvgate.install()   # 5.0.7+ saves only in NMT PRE-OP, as PuckTuner (p4core/nvgate.py)
 
 from . import __version__
 from .controllers import calibrate as _calibrate
