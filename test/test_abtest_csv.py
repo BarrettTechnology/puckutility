@@ -128,6 +128,49 @@ class AuditTest(Base):
         self.assertTrue(any('PDO mapping entry' in e for e in r['errors']))
         self.assertTrue(any('(1600,0): 1 but must be 0' in e for e in r['errors']))
 
+    STANDARD = ('RPDO1 Entry 1,,0x1600,1,UNSIGNED32,0x60400010\n'
+                'RPDO1 Entry 2,,0x1600,2,UNSIGNED32,0x60600008\n'
+                'RPDO1 Entry 3,,0x1600,3,UNSIGNED32,0x60710010\n'
+                'RPDO1 Entries,,0x1600,0,UNSIGNED8,3\n'
+                'RPDO2 Entry 1,,0x1601,1,UNSIGNED32,0x60ff0020\n'
+                'RPDO2 Entry 2,,0x1601,2,UNSIGNED32,0x607a0020\n'
+                'RPDO2 Entries,,0x1601,0,UNSIGNED8,2\n'
+                'TPDO1 Entry 1,,0x1A00,1,UNSIGNED32,0x60410010\n'
+                'TPDO1 Entry 2,,0x1A00,2,UNSIGNED32,0x60610008\n'
+                'TPDO1 Entry 3,,0x1A00,3,UNSIGNED32,0x60640020\n'
+                'TPDO1 Entries,,0x1A00,0,UNSIGNED8,3\n'
+                'TPDO2 Entry 1,,0x1A01,1,UNSIGNED32,0x606c0020\n'
+                'TPDO2 Entry 2,,0x1A01,2,UNSIGNED32,0x60780010\n'
+                'TPDO2 Entries,,0x1A01,0,UNSIGNED8,2\n')
+
+    def _standard(self, mapping):
+        with open(TEMPLATES['5.x']) as f:
+            text = f.read()
+        out = self.path('standard.csv')
+        with open(out, 'w') as f:
+            f.write(text.rstrip('\n') + '\n' + mapping)
+        return csvaudit.audit(out, EDS['5.x'], pdos='standard')
+
+    def test_standard_pdos(self):
+        r = self._standard(self.STANDARD)
+        self.assertEqual(r['errors'], [])
+        self.assertEqual(r['warnings'], [])      # count 0 first, then the count: no warning
+
+    def test_standard_pdos_wrong_entry(self):
+        r = self._standard(self.STANDARD.replace('0x606c0020', '0x60690020'))
+        self.assertTrue(any('(1A01,1): 0x60690020 but the standard mapping is 0x606c0020' in e
+                            for e in r['errors']), r['errors'])
+
+    def test_standard_pdos_left_empty(self):
+        r = csvaudit.audit(TEMPLATES['5.x'], EDS['5.x'], pdos='standard')
+        self.assertTrue(any('(1600,0): 0 but must be 3' in e for e in r['errors']), r['errors'])
+        self.assertTrue(any('1A01,2 must map 6078,0' in e for e in r['errors']), r['errors'])
+
+    def test_standard_pdos_3_and_4_stay_empty(self):
+        r = self._standard(self.STANDARD + 'RPDO3 Entry 1,,0x1602,1,UNSIGNED32,0x60400010\n')
+        self.assertTrue(any('(1602,1): PDO mapping entry must not be in the CSV' in e
+                            for e in r['errors']), r['errors'])
+
     def test_required_value(self):
         r = self.edited('5.x', 'Heartbeat period in ms,,0x1017,0,UNSIGNED16,0',
                         'Heartbeat period in ms,,0x1017,0,UNSIGNED16,1000')

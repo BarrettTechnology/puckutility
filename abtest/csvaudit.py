@@ -1,6 +1,6 @@
-"""csvaudit.py — check an A/B test CSV against its firmware's EDS.
+"""csvaudit.py — check a config CSV against its firmware's EDS.
 
-    python csvaudit.py CSV EDS [--line legacy|current] [-v]
+    python csvaudit.py CSV EDS [--line legacy|current] [--pdos empty|standard] [-v]
 
 Every non-volatile, writable entry the firmware has is listed as one of
   present    the CSV writes it
@@ -11,7 +11,10 @@ Every non-volatile, writable entry the firmware has is listed as one of
 
 and the CSV must also
   - set 0x21B2 = 0, 0x1F80 = 4, 0x1017 = 0, 0x1015 = 50 and 0x2406 = 0,
-  - set every RPDO/TPDO mapping count (0x1600-3,0 / 0x1A00-3,0) to 0,
+  - with --pdos empty (the default, the A/B CSVs): set every RPDO/TPDO
+    mapping count (0x1600-3,0 / 0x1A00-3,0) to 0 and map nothing;
+    with --pdos standard: map RPDO1-2 and TPDO1-2 as p4core.pdo_defaults
+    does (the DS402 set the tools use) and leave PDO 3 and 4 empty,
   - give each row the EDS's data type, REAL32 rows in float form,
   - on 5.x, once the velocity loop is tuned (0x2381,1 not 0), set the CSI
     gains 0x2383,1-2 too: at 0, cyclic sync impedance (-2) gives no torque,
@@ -34,7 +37,7 @@ import sys
 import canopen
 from canopen.objectdictionary import ODVariable
 
-from p4core import config_csv, nvjson
+from p4core import config_csv, nvjson, pdo_defaults
 from p4core.can_backend import PRODUCT_CODE_MODELS
 from p4core.config_csv import BOARD_CALIBRATION
 
@@ -91,8 +94,19 @@ UNUSED = {
 VOLATILE_OK = frozenset([(0x6076, 0), (0x3011, 4)])
 
 
-def forbidden(key):
+#: --pdos standard: {mapping index: [(index, sub), ...]} from p4core.pdo_defaults,
+#: PDO 1 and 2 only (PDO 3 and 4 there are the tools' own RAM extras).
+STANDARD_MAPPING = {}
+for _n in (1, 2):
+    STANDARD_MAPPING[0x1600 + _n - 1] = list(pdo_defaults.RPDOS[_n][2])
+    STANDARD_MAPPING[0x1A00 + _n - 1] = list(pdo_defaults.TPDOS[_n][2])
+PDOS = ('empty', 'standard')
+
+
+def forbidden(key, pdos='empty'):
     if key in PDO_COUNTS:
+        return None
+    if pdos == 'standard' and key[0] in STANDARD_MAPPING and key[1]:
         return None
     for test, why in FORBIDDEN_REASON:
         if test(key):
@@ -139,7 +153,7 @@ def is_float_text(text):
     return True
 
 
-def audit(csv_path, eds_path, line=None):
+def audit(csv_path, eds_path, line=None, pdos='empty'):
     """dict(present, excluded, missing, errors, warnings): lists of strings
     (present/excluded/missing are (key, name[, reason]) tuples)."""
     rows = config_csv.read(csv_path)
@@ -161,7 +175,8 @@ def audit(csv_path, eds_path, line=None):
         if key is None:
             continue
         where = 'line {} ({:04X},{})'.format(row.line, *key)
-        if key in written:
+        if key in written and not (pdos == 'standard' and key in PDO_COUNTS):
+            # (a standard mapping writes its count 0, the entries, then the count)
             warnings.append('{}: also written on line {}'.format(where, written[key].line))
         written[key] = row
         var = eds.get(key)
@@ -175,13 +190,15 @@ def audit(csv_path, eds_path, line=None):
                 where, row.datatype, _typename(var)))
         if row.datatype == 'REAL32' and not is_float_text(row.data):
             errors.append('{}: REAL32 {!r} is not in float form'.format(where, row.data))
-        why = forbidden(key)
+        why = forbidden(key, pdos)
         if why:
             errors.append('{}: {} must not be in the CSV'.format(where, why))
         elif key not in nv and key not in VOLATILE_OK and 'w' in var.access_type:
             warnings.append('{}: not non-volatile, lost at reboot'.format(where))
 
-    for key, want in list(REQUIRED.items()) + [(k, 0) for k in PDO_COUNTS]:
+    counts = {k: len(STANDARD_MAPPING.get(k[0], [])) if pdos == 'standard' else 0
+              for k in PDO_COUNTS}
+    for key, want in list(REQUIRED.items()) + list(counts.items()):
         row = written.get(key)
         if key not in eds:
             continue
@@ -196,6 +213,8 @@ def audit(csv_path, eds_path, line=None):
             errors.append('line {} ({:04X},{}): {} but must be {}'.format(
                 row.line, *key, row.data, want))
 
+    if pdos == 'standard':
+        errors += _standard_mapping(written, eds)
     errors += _product_code(written, csv_path)
     errors += _csi_gains(written)
     warnings += _settle_ki(written)
@@ -206,7 +225,7 @@ def audit(csv_path, eds_path, line=None):
         if var is None or 'w' not in var.access_type:
             continue
         item = (key, var.name)
-        why = forbidden(key) or optional(key) or (
+        why = forbidden(key, pdos) or optional(key) or (
             'not used by this firmware' if key in UNUSED[line] else None)
         if key in written:
             present.append(item)
@@ -223,6 +242,30 @@ def _value(row):
         return config_csv.encode(row.datatype, row.data, 1)[1]
     except (ValueError, TypeError):
         return None
+
+
+def _standard_mapping(written, eds):
+    """--pdos standard: the entries of PDO 1 and 2 are p4core.pdo_defaults'."""
+    out = []
+    for index, objects in sorted(STANDARD_MAPPING.items()):
+        for sub, (oi, osub) in enumerate(objects, 1):
+            want = (oi << 16) | (osub << 8) | _bits(eds[(oi, osub)])
+            row = written.get((index, sub))
+            if row is None:
+                out.append('{:04X},{} must map {:04X},{} (not in the CSV)'.format(index, sub, oi, osub))
+            elif _value(row) != want:
+                out.append('line {} ({:04X},{}): {} but the standard mapping is 0x{:08x}'
+                           .format(row.line, index, sub, row.data, want))
+    return out
+
+
+def _bits(var):
+    """The PDO mapping length of a variable, in bits."""
+    from canopen.objectdictionary import datatypes as dt
+    sizes = {dt.BOOLEAN: 8, dt.INTEGER8: 8, dt.UNSIGNED8: 8, dt.INTEGER16: 16,
+             dt.UNSIGNED16: 16, dt.INTEGER32: 32, dt.UNSIGNED32: 32, dt.REAL32: 32,
+             dt.INTEGER64: 64, dt.UNSIGNED64: 64, dt.REAL64: 64}
+    return sizes[var.data_type]
 
 
 def _product_code(written, csv_path):
@@ -315,10 +358,13 @@ def main(argv=None):
     p.add_argument('eds')
     p.add_argument('--line', choices=('legacy', 'current'),
                    help='firmware line (default: from the EDS: 0x3003 = current)')
+    p.add_argument('--pdos', choices=PDOS, default='empty',
+                   help='empty: no PDO mapped (the A/B CSVs, the default); standard: '
+                        'RPDO1-2/TPDO1-2 as p4core.pdo_defaults maps them')
     p.add_argument('-v', '--verbose', action='store_true',
                    help='list present and excluded rows too')
     args = p.parse_args(argv)
-    result = audit(args.csv, args.eds, args.line)
+    result = audit(args.csv, args.eds, args.line, args.pdos)
     report(result, args.verbose)
     return 1 if result['missing'] or result['errors'] else 0
 
