@@ -84,6 +84,7 @@ the tests are left to CI.
 | every push and merge request | CI `test` | `make test` |
 | schedule, or Build > Pipelines > Run pipeline | CI `xtest`, on the `xtest` runner | `make xtest` (XTEST_ARGS for a subset) |
 | tag push, after `test` | CI `release` | the tag check, then the `.run` installer and debs |
+| tag push, after `test` | CI `release-win`, on the `xtest` runner | the tag check, then the Windows setup `.exe` under wine (`scripts/build-win32-wine.sh`) |
 
 Make `test` required for merging (Settings > Merge requests > Pipelines must
 succeed).
@@ -91,7 +92,10 @@ succeed).
 `xtest` runs on a dedicated runner, tagged `xtest`: an Ubuntu 24.04 VM with a
 shell executor and rootless podman (`CONTAINER=podman` in its `config.toml`).
 The runner is protected, so it takes pipelines on protected branches and tags
-only. Schedule it on the release branch (Build > Pipeline schedules).
+only. Schedule it on the release branch (Build > Pipeline schedules), and
+make `release-v*` a protected tag so that `release-win` can run on it. The VM
+needs `wine` (9.0, Ubuntu 24.04's), `curl` and `xvfb`; the first `release-win`
+fills the wine prefix in the runner user's `~/.cache`, and later runs reuse it.
 
 ## Cross-Ubuntu tests
 

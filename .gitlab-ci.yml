@@ -6,6 +6,12 @@
 #   release  tag push (release-vX.Y.Z, optionally -suffix) only, after test:
 #            scripts/check-release-tag.sh, then the .run installer and the debs,
 #            kept forever.
+#   release-win  tag push only, after test, on the `xtest` runner (it has
+#            wine 9.0): the tag check, then scripts/build-win32-wine.sh builds
+#            PuckUtilityApp-win-vX.Y.Z-setup.exe under wine, kept forever. The
+#            wine prefix is cached in the runner user's ~/.cache. The runner is
+#            protected, so release-v* must be a protected tag (Settings >
+#            Repository > Protected tags).
 #   xtest    scheduled pipelines and "Run pipeline" only, after test:
 #            `make xtest` (scripts/test-cross-ubuntu.sh, Ubuntu 20.04 to 26.04:
 #            source, pip and installer). Runs on the dedicated
@@ -94,4 +100,21 @@ release:
     paths:
       - build/*-installer.run
       - build/deb/*.deb
+    expire_in: never
+
+release-win:
+  stage: release
+  tags:
+    - xtest
+  timeout: 2h
+  rules:
+    - if: $CI_COMMIT_TAG
+  script:
+    - bash scripts/check-release-tag.sh "$CI_COMMIT_TAG"
+    - wine --version
+    - bash scripts/build-win32-wine.sh
+  artifacts:
+    name: "puckutility-win-${CI_COMMIT_TAG}"
+    paths:
+      - build/win/*-setup.exe
     expire_in: never
