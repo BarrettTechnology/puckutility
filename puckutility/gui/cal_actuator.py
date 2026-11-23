@@ -1,5 +1,5 @@
 """cal_actuator.py — the Actuator Calibration menu: the default calibration
-(steps 1-5) or the Extended Calibration (steps 1-9) on the active puck or on
+(steps 1-4) or the Extended Calibration (steps 1-8) on the active puck or on
 every puck, and the numbered steps one at a time.
 
 A manufacturing batch shares one configuration CSV, loaded first (the
@@ -10,8 +10,8 @@ p4core's, through controllers.calibrate; this keeps the frame side: the gate and
 confirmations, the progress gauge, the ADC monitor, the reboot an encoder
 filter change needs, and the offer to retry a Save.App + Save.Mfg that failed.
 
-Each step item runs that step alone in this puck's cached Session, so fold
-finds the slope sweep a Slope run left in it.  Bias and gain are p4core
+Each step item runs that step alone in this puck's cached Session, so a
+step finds what an earlier one left in it.  Bias and gain are p4core
 steps like the rest: puckutility keeps no current-sense calibration of its
 own.  Only the steps the puck's firmware can run are offered: the Steps
 menu lists those (app._apply_firmware_gates) and Active Puck runs those.
@@ -135,9 +135,6 @@ class ActuatorCal:
 
     def calibrate_step_slope(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
         return self._actuator_step('slope')
-
-    def calibrate_step_fold(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
-        return self._actuator_step('fold')
 
     def calibrate_step_winding(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
         return self._actuator_step('winding')

@@ -66,15 +66,16 @@ loaded as a configuration, and an `.ini` runs a system configuration.
 | Update All Pucks (Firmware) (Ctrl+U) | Flashes one firmware file to every Puck on the bus, one after another. |
 | Upload System Config | Runs an `.ini` file that names, for each Puck ID, the firmware and configuration it should have. Pucks not on the bus are skipped. |
 | ON/OFF ADC Monitor (Ctrl+P) | The same as the ON/OFF switch. |
-| Actuator Calibration > Active Puck (Ctrl+C) | Runs every calibration step the Puck's firmware supports, on the active Puck. |
+| Actuator Calibration > Active Puck (Ctrl+C) | Runs the default calibration (steps 1-4: encoder, current-sense bias and gain, electrical zero) on the active Puck. |
 | Actuator Calibration > All Pucks | The same, on every Puck on the bus. |
+| Actuator Calibration > Extended: Active Puck / All Pucks | Runs all eight steps: the default ones, then current-sense slope and fold, encoder runout table, friction and cogging. The motor turns continuously for cogging. |
 | Actuator Calibration Steps | Runs one calibration step on its own. Only the steps the Puck's firmware supports are listed, numbered in the order a full calibration runs them. |
 | Encoder Error Compensation > ON / OFF | Turns the encoder runout correction on or off, and saves the setting. Shown only when the firmware supports it. |
 | Set User Direction... | Turn the output by hand, more than 1/8 turn, in the direction you want to be positive; the Puck's direction is set to match and saved. |
 | Help | Opens this guide. |
 | Exit | Closes the app. |
 
-*Tune Gains... and Save to CSV... are not available yet.*
+*Save to CSV... is not available yet. Gain tuning is in pucktuner.*
 
 ### Log
 

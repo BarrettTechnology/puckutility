@@ -128,7 +128,7 @@ Drop a `.bin` / `.ebin` (firmware), `.csv` (configuration) or `.ini`
 
 The **Menu** menu has Scan Pucks, Update All Pucks (Firmware), Upload System
 Config, the ADC monitor, Actuator Calibration (Active Puck / All Pucks: steps
-1-5; Extended: Active Puck / All Pucks: steps 1-9) and each Actuator
+1-4; Extended: Active Puck / All Pucks: steps 1-8) and each Actuator
 Calibration Step on its own, Encoder Error Compensation, Set
 User Direction and Help. Only the calibration steps the selected puck's
 firmware can run are listed. **Log > Open Log...** shows the session log.
@@ -151,9 +151,9 @@ puckutility --can can0 --id 1 config load config/motor.csv   # save and reboot
 puckutility --can can0 --id 1 config export motor.csv        # the puck's values
 puckutility config check config/motor.csv     # validate, no puck needed
 puckutility config templates                  # the shipped templates
-puckutility --can can0 --all calibrate        # actuator calibration (steps 1-5)
-puckutility --can can0 --all calibrate --extended   # steps 1-9
-puckutility --can can0 --id 1 calibrate slope fold
+puckutility --can can0 --all calibrate        # actuator calibration (steps 1-4)
+puckutility --can can0 --all calibrate --extended   # steps 1-8
+puckutility --can can0 --id 1 calibrate slope
 puckutility --can can0 system-config system-config.ini
 puckutility --can can0 --id 5 set-id 7
 puckutility --can can0 --id 13 set-id --pdo-ids predefined   # PDOs left on node 127's IDs
@@ -170,16 +170,16 @@ turns), `-q` prints only results, warnings and errors, `-v` more, and
 3 no adapter/puck, 130 stopped.
 
 `calibrate` runs the actuator calibration the GUI's Actuator Calibration
-menu runs (p4core.actuator's steps).  The default is steps 1-5: encoder,
-bias, gain, slope, winding.  `--extended` (the menu's Extended items) adds
-steps 6-9: fold, runout, friction, cogging (`puckutility calibrate --help`).
+menu runs (p4core.actuator's steps).  The default is steps 1-4: encoder,
+bias, gain, winding.  `--extended` (the menu's Extended items) adds steps
+5-8: slope (current-sense slope and fold, one step), runout, friction, cogging
+(`puckutility calibrate --help`).
 Without STEP arguments, it runs the steps the puck's firmware can run.  Load
 the batch CSV first.  No step changes a loop gain: the gains come from the
 CSV, and pucktuner tunes them.  friction drags the rotor with the field for
 J, B and Coulomb Tc (0x3011,7/17/18), then sizes the Coulomb feed-forward
 (0x2381,3) from that Tc (firmware without 0x2381,3 gets the drag alone).
-fold needs the slope sweep from the same run, so give it with slope or use
-`--extended`.  It runs before cogging, because the
+Friction runs before cogging, because the
 firmware applies the feed-forward on cogging's slow spins.
 The motor turns, continuously for cogging.  Each step's results are saved to
 NV (Save.App + Save.Mfg) as soon as it passes, so a later failure does not lose them.  A
@@ -365,7 +365,7 @@ folder on Windows.
 For technical support, email support@barrett.com.
 
 ## Roadmap
-* Tune Gains and Save to CSV (in the menu, greyed out until implemented)
+* Save to CSV (in the menu, greyed out until implemented)
 * The Factory menu (J-Link flashing and board tests), hidden for now
 
 ## Contributing

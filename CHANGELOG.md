@@ -10,7 +10,11 @@ released" were never tagged and were internal development builds.
 ## [Unreleased]
 
 ### Changed
-- Actuator Calibration (Active Puck / All Pucks, and `calibrate` with no steps) now runs steps 1-5: encoder filter + rest test, current-sense bias, gain, slope, electrical zero + winding order. The new Extended: Active Puck / Extended: All Pucks items and `calibrate --extended` run all nine steps, adding offset fold, runout table, friction and cogging. In the Steps menu, fold moves from 5 to 6, after winding.
+- Actuator Calibration (Active Puck / All Pucks, and `calibrate` with no steps) now runs steps 1-4: encoder filter + rest test, current-sense bias, gain, electrical zero + winding order. The new Extended: Active Puck / Extended: All Pucks items and `calibrate --extended` run all eight steps, adding current-sense slope and fold, runout table, friction and cogging.
+- Current-sense slope and the offset fold are one step, "Current-sense slope and fold" (5 in the Steps menu). `calibrate fold` runs it too.
+
+### Removed
+- Menu > Tune Gains... (never implemented). Gain tuning is in pucktuner.
 - Friction calibration no longer rescales the velocity gains to the measured J (p4core 661787c). Repeat calibrations of one actuator now leave its loop gains as the CSV set them. Velocity-gain rescaling is now done only in pucktuner.
 
 ## [1.4.3] - 2026-11-13

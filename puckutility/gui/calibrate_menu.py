@@ -239,10 +239,6 @@ class calibrate(ActuatorCal):
     # def upload_system_config(self,event):
     #    print('uploading...')
 
-    # def tune_gains(self, event):  # wxGlade: wxp3_frame.<event_handler>
-    #     print("Event handler 'tune_gains' not implemented!")
-    #     event.Skip()
-
     # def save_calibration(self, event):  # wxGlade: wxp3_frame.<event_handler>
     #     print("Event handler 'save_calibration' not implemented!")
     #     event.Skip()

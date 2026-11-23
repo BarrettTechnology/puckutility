@@ -68,13 +68,14 @@ class TestCalibrate(unittest.TestCase):
 
     def test_the_steps_are_the_actuator_plan_numbered(self):
         self.assertEqual(list(calibrate.STEPS), [
-            'encoder', 'bias', 'gain', 'slope', 'winding', 'fold', 'runout',
+            'encoder', 'bias', 'gain', 'winding', 'slope', 'runout',
             'friction', 'cogging'])
         self.assertEqual(set(calibrate.STEPS),
                          set(calibrate.plans.ACTUATOR_ALL))
-        # The default is steps 1-5; the Extended Calibration all nine.
+        # The default is steps 1-4; the Extended Calibration all eight.
         self.assertEqual(calibrate.plan_keys(), (
-            'encoder', 'bias', 'gain', 'slope', 'winding'))
+            'encoder', 'bias', 'gain', 'winding'))
+        self.assertEqual(calibrate.STEPS['slope'], 'Current-sense slope and fold')
         self.assertEqual(calibrate.plan_keys(True), tuple(calibrate.STEPS))
         self.assertEqual(calibrate.plan_title(True), 'Extended Calibration')
         self.assertEqual(calibrate.STEPS['bias'], 'Current-sense bias')
@@ -97,12 +98,12 @@ class TestCalibrate(unittest.TestCase):
         self.assertIn('Electrical zero + winding order', text)
         self.assertNotIn('Encoder runout table', text)
 
-    def test_the_extended_calibration_runs_all_nine(self):
+    def test_the_extended_calibration_runs_all_eight(self):
         self.make()
         ok, session = calibrate.calibrate_actuator(self.node, extended=True)
         self.assertTrue(ok)
         self.assertEqual(self.session.runs, [list(calibrate.STEPS)])
-        self.assertIn('9. Cogging feed-forward',
+        self.assertIn('8. Cogging feed-forward',
                       calibrate.summary_text(session, extended=True))
 
     def test_legacy_firmware_runs_and_reports_only_what_it_can(self):
@@ -138,10 +139,10 @@ class TestCalibrate(unittest.TestCase):
         self.make()
         session = FakePlanSession(self.node)
         ok, out = calibrate.calibrate_actuator(
-            self.node, steps=['fold', 'ezero', 'slope'], session=session)
+            self.node, steps=['slope', 'ezero', 'bias'], session=session)
         self.assertTrue(ok)
         self.assertIs(out, session)
-        self.assertEqual(session.runs, [['slope', 'winding', 'fold']])
+        self.assertEqual(session.runs, [['bias', 'winding', 'slope']])
         self.make_session.assert_not_called()
 
     def test_batch_and_unknown_steps_are_refused(self):

@@ -52,17 +52,15 @@ class puckutilityapp_frame(wx.Frame):
         self.Bind(wx.EVT_MENU, self.calibrate_step_bias, item)
         item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "3. Current-sense gain", "")
         self.Bind(wx.EVT_MENU, self.calibrate_step_gain, item)
-        item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "4. Current-sense slope", "")
-        self.Bind(wx.EVT_MENU, self.calibrate_step_slope, item)
-        item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "5. Electrical zero + winding order", "")
+        item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "4. Electrical zero + winding order", "")
         self.Bind(wx.EVT_MENU, self.calibrate_step_winding, item)
-        item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "6. Current-sense offset fold", "")
-        self.Bind(wx.EVT_MENU, self.calibrate_step_fold, item)
-        item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "7. Encoder runout table", "")
+        item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "5. Current-sense slope and fold", "")
+        self.Bind(wx.EVT_MENU, self.calibrate_step_slope, item)
+        item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "6. Encoder runout table", "")
         self.Bind(wx.EVT_MENU, self.calibrate_step_runout, item)
-        item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "8. Friction calibration", "")
+        item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "7. Friction calibration", "")
         self.Bind(wx.EVT_MENU, self.calibrate_step_friction, item)
-        item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "9. Cogging feed-forward", "")
+        item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "8. Cogging feed-forward", "")
         self.Bind(wx.EVT_MENU, self.calibrate_step_cogging, item)
         wxglade_tmp_menu.Append(wx.ID_ANY, "Actuator Calibration Steps", wxglade_tmp_menu_sub, "")
         wxglade_tmp_menu.AppendSeparator()
@@ -74,8 +72,6 @@ class puckutilityapp_frame(wx.Frame):
         wxglade_tmp_menu.Append(wx.ID_ANY, "Encoder Error Compensation", wxglade_tmp_menu_sub, "")
         item = wxglade_tmp_menu.Append(wx.ID_ANY, "Set User Direction...", "")
         self.Bind(wx.EVT_MENU, self.set_user_dir, item)
-        item = wxglade_tmp_menu.Append(wx.ID_ANY, "Tune Gains...", "")
-        self.Bind(wx.EVT_MENU, self.tune_gains, item)
         item = wxglade_tmp_menu.Append(wx.ID_ANY, "Save to CSV...", "")
         self.Bind(wx.EVT_MENU, self.save_calibration, item)
         wxglade_tmp_menu.AppendSeparator()
@@ -316,10 +312,6 @@ class puckutilityapp_frame(wx.Frame):
         print("Event handler 'calibrate_step_slope' not implemented!")
         event.Skip()
 
-    def calibrate_step_fold(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
-        print("Event handler 'calibrate_step_fold' not implemented!")
-        event.Skip()
-
     def calibrate_step_winding(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
         print("Event handler 'calibrate_step_winding' not implemented!")
         event.Skip()
@@ -342,10 +334,6 @@ class puckutilityapp_frame(wx.Frame):
 
     def set_user_dir(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
         print("Event handler 'set_user_dir' not implemented!")
-        event.Skip()
-
-    def tune_gains(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
-        print("Event handler 'tune_gains' not implemented!")
         event.Skip()
 
     def save_calibration(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>

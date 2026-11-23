@@ -90,27 +90,23 @@
                             <handler>calibrate_step_gain</handler>
                         </item>
                         <item>
-                            <label>4. Current-sense slope</label>
-                            <handler>calibrate_step_slope</handler>
-                        </item>
-                        <item>
-                            <label>5. Electrical zero + winding order</label>
+                            <label>4. Electrical zero + winding order</label>
                             <handler>calibrate_step_winding</handler>
                         </item>
                         <item>
-                            <label>6. Current-sense offset fold</label>
-                            <handler>calibrate_step_fold</handler>
+                            <label>5. Current-sense slope and fold</label>
+                            <handler>calibrate_step_slope</handler>
                         </item>
                         <item>
-                            <label>7. Encoder runout table</label>
+                            <label>6. Encoder runout table</label>
                             <handler>calibrate_step_runout</handler>
                         </item>
                         <item>
-                            <label>8. Friction calibration</label>
+                            <label>7. Friction calibration</label>
                             <handler>calibrate_step_friction</handler>
                         </item>
                         <item>
-                            <label>9. Cogging feed-forward</label>
+                            <label>8. Cogging feed-forward</label>
                             <handler>calibrate_step_cogging</handler>
                         </item>
                     </menu>
@@ -136,10 +132,6 @@
                     <item>
                         <label>Set User Direction...</label>
                         <handler>set_user_dir</handler>
-                    </item>
-                    <item>
-                        <label>Tune Gains...</label>
-                        <handler>tune_gains</handler>
                     </item>
                     <item>
                         <label>Save to CSV...</label>

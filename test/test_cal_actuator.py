@@ -163,7 +163,7 @@ class TestActuatorMenu(unittest.TestCase):
         go, = f.prompts
         for n, key in enumerate(plans.run_order(plans.ACTUATOR), 1):
             self.assertIn('{:2d}. {}'.format(n, plans.title(key)), go)
-        # The default is steps 1-5: no cogging, nothing extended.
+        # The default is steps 1-4: no cogging, nothing extended.
         self.assertNotIn('continuously', go)
         for key in plans.EXTENDED:
             self.assertNotIn(plans.title(key), go)
@@ -181,7 +181,7 @@ class TestActuatorMenu(unittest.TestCase):
         self.assertFalse(f.requireCal)
         self.assertTrue(f.enabled)
 
-    def test_the_extended_calibration_runs_all_nine(self):
+    def test_the_extended_calibration_runs_all_eight(self):
         f = AFrame()
         self.assertTrue(f.calibrate_extended(None))
         go, = f.prompts
@@ -296,12 +296,13 @@ class TestActuatorMenu(unittest.TestCase):
         f = AFrame()
         f.prompt_answer = True
         f._prompt = lambda t, m: f.prompts.append(m) or 'Save' not in m
+        self.assertTrue(f.calibrate_step_gain(None))
         self.assertTrue(f.calibrate_step_slope(None))
-        self.assertTrue(f.calibrate_step_fold(None))
         s, = self.sessions
-        self.assertEqual(s.runs, [['slope'], ['fold']])
-        self.assertNotIn('continuously', f.prompts[0])
-        self.assertIn(' 4. Current-sense slope', f.prompts[0])
+        self.assertEqual(s.runs, [['gain'], ['slope']])
+        self.assertNotIn('continuously', f.prompts[1])
+        self.assertIn(' 5. Current-sense slope and fold', f.prompts[1])
+        self.assertFalse(hasattr(f, 'calibrate_step_fold'))
         self.assertTrue(f.calibrate_step_cogging(None))
         self.assertIn('continuously', f.prompts[-1])
         # A whole calibration starts a fresh session.

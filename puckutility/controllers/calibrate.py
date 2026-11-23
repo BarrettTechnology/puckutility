@@ -3,9 +3,9 @@
 A manufacturing batch shares one configuration CSV, loaded first (flash,
 config load, Save.All, reboot).  The actuator calibration is then what the
 CSV cannot carry, measured on each unit.  The default is
-p4core.actuator.plans.ACTUATOR (encoder, current-sense bias, gain and
-slope, electrical zero); the Extended Calibration adds plans.EXTENDED (the
-offset fold, runout table, friction: the drag's J/B/Tc and the Coulomb
+p4core.actuator.plans.ACTUATOR (encoder, current-sense bias and gain,
+electrical zero); the Extended Calibration adds plans.EXTENDED (current-sense
+slope and fold, runout table, friction: the drag's J/B/Tc and the Coulomb
 feed-forward, cogging).  The steps are p4core's, run through a
 p4core.actuator Session in STEPS order; pucktuner and p4gui run the same
 ones.  No step changes a loop gain: tuning is pucktuner's (p4sysid).  This keeps puckutility's
@@ -88,7 +88,7 @@ def calibrate_actuator(node, reporter=None, steps=None, reboot=None,
     can run (supported; with *extended*, the Extended Calibration's), or
     just the named *steps*, in run order, stopping at the first failure.
     *session*: a Session to run in (make_session), so a step can use an
-    earlier one's result (fold needs this session's slope sweep).  *autosave*
+    earlier one's result.  *autosave*
     False (for a new session) leaves the steps' results in RAM.
     Returns (ok, session)."""
     reporter = _reporter(reporter)

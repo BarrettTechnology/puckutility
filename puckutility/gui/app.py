@@ -430,7 +430,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
         # Disable the unimplemented menu items (a name no longer in the menu
         # is skipped: Enable(wx.NOT_FOUND) asserts)
         for menu, items in [
-            ("Menu", ["Tune Gains...", "Save to CSV..."]),
+            ("Menu", ["Save to CSV..."]),
             ("Factory", ["Initialize Puck", "Test All", "Test Flash", "Test RAM",
                          "Test EEPROM", "Test Amplifier", "Test Encoder"]),
         ]:

@@ -140,9 +140,9 @@ class TestCalibrate(CliTest):
 
     def test_steps(self):
         fn = self.patch()
-        code, _out, _err = self.run_cli('-y', 'calibrate', 'fold', 'slope')
+        code, _out, _err = self.run_cli('-y', 'calibrate', 'slope', 'bias')
         self.assertEqual(code, 0)
-        self.assertEqual(fn.call_args.kwargs['steps'], ['fold', 'slope'])
+        self.assertEqual(fn.call_args.kwargs['steps'], ['slope', 'bias'])
 
     def test_the_question_names_what_moves(self):
         self.patch()
@@ -155,7 +155,7 @@ class TestCalibrate(CliTest):
             self.run_cli('calibrate', '--extended')
         self.assertEqual(len(asked), 3)                 # bias alone: no question
         self.assertNotIn('cogging', asked[0])
-        self.assertNotIn('cogging', asked[1])           # the default: 1-5
+        self.assertNotIn('cogging', asked[1])           # the default: 1-4
         self.assertIn('continuously for cogging', asked[2])
 
     def test_extended(self):

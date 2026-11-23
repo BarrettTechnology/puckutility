@@ -210,7 +210,7 @@ def build_parser():
                    'and the encoder filter still save themselves)')
     p.add_argument('--extended', action='store_true',
                    help='the Extended Calibration: the default steps, then '
-                   'fold, runout, friction and cogging')
+                   'current-sense slope and fold, runout, friction and cogging')
     p.add_argument('--all', action='store_true', help='every puck on the bus')
 
     p = sub.add_parser('system-config',

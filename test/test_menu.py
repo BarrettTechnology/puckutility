@@ -109,9 +109,10 @@ class TestCalibrationMenu(unittest.TestCase):
             self.assertNotIn(gone, labels)
         self.assertEqual(labels.count('Encoder Error Compensation'), 1)
         self.assertIsInstance(sub(menu, 'Encoder Error Compensation'), list)
-        for kept in ('Set User Direction...', 'Tune Gains...',
+        for kept in ('Set User Direction...',
                      'Save to CSV...', 'Upload System Config', 'Help', 'Exit'):
             self.assertIn(kept, labels)
+        self.assertNotIn('Tune Gains...', labels)   # tuning is pucktuner's
 
     def test_frame(self):
         self.check(frame_menu())
