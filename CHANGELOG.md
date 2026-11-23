@@ -17,6 +17,9 @@ released" were never tagged and were internal development builds.
 - Menu > Tune Gains... (never implemented). Gain tuning is in pucktuner.
 - Friction calibration no longer rescales the velocity gains to the measured J (p4core 661787c). Repeat calibrations of one actuator now leave its loop gains as the CSV set them. Velocity-gain rescaling is now done only in pucktuner.
 
+### Fixed
+- Extended calibration's friction step: a drag ramp longer than the firmware's 5 s injection dead-man tripped it and read as a pull-out (p4core f1551f9).
+
 ## [1.4.3] - 2026-11-13
 
 ### Changed
