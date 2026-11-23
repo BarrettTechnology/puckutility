@@ -68,9 +68,15 @@ class TestCalibrate(unittest.TestCase):
 
     def test_the_steps_are_the_actuator_plan_numbered(self):
         self.assertEqual(list(calibrate.STEPS), [
-            'encoder', 'bias', 'gain', 'slope', 'fold', 'winding', 'runout',
+            'encoder', 'bias', 'gain', 'slope', 'winding', 'fold', 'runout',
             'friction', 'cogging'])
-        self.assertEqual(set(calibrate.STEPS), set(calibrate.plans.ACTUATOR))
+        self.assertEqual(set(calibrate.STEPS),
+                         set(calibrate.plans.ACTUATOR_ALL))
+        # The default is steps 1-5; the Extended Calibration all nine.
+        self.assertEqual(calibrate.plan_keys(), (
+            'encoder', 'bias', 'gain', 'slope', 'winding'))
+        self.assertEqual(calibrate.plan_keys(True), tuple(calibrate.STEPS))
+        self.assertEqual(calibrate.plan_title(True), 'Extended Calibration')
         self.assertEqual(calibrate.STEPS['bias'], 'Current-sense bias')
 
     def test_the_whole_calibration_in_ram(self):
@@ -87,7 +93,17 @@ class TestCalibrate(unittest.TestCase):
         self.assertIs(self.make_session.call_args.args[0], self.node)
         self.assertIs(self.make_session.call_args.kwargs['reboot'], reboot)
         self.assertFalse(session.unsaved)         # each step saved itself
-        self.assertIn('Encoder runout table', calibrate.summary_text(session))
+        text = calibrate.summary_text(session)
+        self.assertIn('Electrical zero + winding order', text)
+        self.assertNotIn('Encoder runout table', text)
+
+    def test_the_extended_calibration_runs_all_nine(self):
+        self.make()
+        ok, session = calibrate.calibrate_actuator(self.node, extended=True)
+        self.assertTrue(ok)
+        self.assertEqual(self.session.runs, [list(calibrate.STEPS)])
+        self.assertIn('9. Cogging feed-forward',
+                      calibrate.summary_text(session, extended=True))
 
     def test_legacy_firmware_runs_and_reports_only_what_it_can(self):
         self.node._p4_firmware = LEGACY
@@ -113,7 +129,7 @@ class TestCalibrate(unittest.TestCase):
 
     def test_a_failure_stops_and_runs_no_save_step(self):
         self.make(fail=('winding',))
-        ok, session = calibrate.calibrate_actuator(self.node)
+        ok, session = calibrate.calibrate_actuator(self.node, extended=True)
         self.assertFalse(ok)
         self.assertEqual(len(self.session.runs), 1)
         self.assertEqual(session.results['runout']['status'], 'skipped')
@@ -125,7 +141,7 @@ class TestCalibrate(unittest.TestCase):
             self.node, steps=['fold', 'ezero', 'slope'], session=session)
         self.assertTrue(ok)
         self.assertIs(out, session)
-        self.assertEqual(session.runs, [['slope', 'fold', 'winding']])
+        self.assertEqual(session.runs, [['slope', 'winding', 'fold']])
         self.make_session.assert_not_called()
 
     def test_batch_and_unknown_steps_are_refused(self):

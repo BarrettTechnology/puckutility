@@ -75,16 +75,18 @@ def _reboot(ctx, node_id):
     return lambda: ctx.session.reset_node(node_id)
 
 
-def _calibrate_node(ctx, node_id, steps=None, autosave=True):
-    """The actuator calibration on *node_id*, its summary printed.  Each step
-    saves to NV as it passes, unless *autosave* is False.  Returns (ok,
-    session): ok when every step passed."""
+def _calibrate_node(ctx, node_id, steps=None, autosave=True,
+                    extended=False):
+    """The actuator calibration on *node_id* (with *extended*, the Extended
+    Calibration), its summary printed.  Each step saves to NV as it passes,
+    unless *autosave* is False.  Returns (ok, session): ok when every step
+    passed."""
     node = ctx.session.add_node(node_id)
     ok, session = _calibrate.calibrate_actuator(
         node, ctx.reporter, steps=steps, reboot=_reboot(ctx, node_id),
-        network=ctx.session.network, autosave=autosave)
+        network=ctx.session.network, autosave=autosave, extended=extended)
     ctx.reporter.note('node {}:\n{}'.format(
-        node_id, _calibrate.summary_text(session, steps)))
+        node_id, _calibrate.summary_text(session, steps, extended)))
     if session.unsaved and not autosave:
         ctx.reporter.note('node {}: the results are in RAM only (--no-save): a '
                           'reboot loses them'.format(node_id))
@@ -110,7 +112,12 @@ def _step_name(name):
 
 def _cmd_calibrate(ctx):
     steps = ctx.args.steps
-    turns, cogging = _calibrate.moves(steps or None)
+    extended = getattr(ctx.args, 'extended', False)
+    if steps and extended:
+        ctx.reporter.warn('--extended is for the whole calibration: name '
+                          'steps or give --extended, not both')
+        return cli.EXIT_FAILED
+    turns, cogging = _calibrate.moves(steps or None, extended)
     if turns and not ctx.reporter.confirm(
             'Calibration turns the motor{}. Is the output free to turn?'.format(
                 ', continuously for cogging' if cogging else ''), default=True):
@@ -120,12 +127,14 @@ def _cmd_calibrate(ctx):
     for node_id in cli.targets(ctx):
         ctx.reporter.status('--- Node {} ---'.format(node_id))
         passed, session = _calibrate_node(ctx, node_id, steps or None,
-                                          autosave=not ctx.args.no_save)
+                                          autosave=not ctx.args.no_save,
+                                          extended=extended)
         if not passed:
             ctx.reporter.warn('node {}: calibration failed'.format(node_id))
             ok = False
         if ctx.args.json:
-            rows[str(node_id)] = _calibrate.summary_rows(session, steps or None)
+            rows[str(node_id)] = _calibrate.summary_rows(session, steps or None,
+                                                         extended)
     if ctx.args.json:
         ctx.emit(rows)
     return cli.EXIT_OK if ok else cli.EXIT_FAILED
@@ -179,9 +188,13 @@ def build_parser():
     p = sub.add_parser(
         'calibrate', help='actuator calibration (the motor turns)',
         description='The actuator calibration: the per-unit steps a batch '
-        'CSV cannot carry (load the CSV first). With no STEP, all of them in '
-        'order; named steps run in that order too. Each step saves to NV as it '
-        'passes, unless --no-save. Steps: ' +
+        'CSV cannot carry (load the CSV first). With no STEP, the default '
+        'calibration ({}) in order; --extended adds {}. Named steps run in '
+        'that order too. No step changes a loop gain (that is pucktuner). '
+        'Each step saves to NV as it passes, unless --no-save. Steps: '.format(
+            ', '.join(_calibrate.plan_keys()),
+            ', '.join(k for k in _calibrate.plan_keys(True)
+                      if k not in _calibrate.plan_keys())) +
         '; '.join('{}: {}'.format(k, t) for k, t in _calibrate.STEPS.items()) +
         '. Also: offsets (bias), gainfactor (gain), encoder-offset or ezero '
         '(winding: encoder zero, electrical zero and winding order are one '
@@ -195,6 +208,9 @@ def build_parser():
                    'results in RAM '
                    'instead of saving each step to NV (the board calibrations '
                    'and the encoder filter still save themselves)')
+    p.add_argument('--extended', action='store_true',
+                   help='the Extended Calibration: the default steps, then '
+                   'fold, runout, friction and cogging')
     p.add_argument('--all', action='store_true', help='every puck on the bus')
 
     p = sub.add_parser('system-config',

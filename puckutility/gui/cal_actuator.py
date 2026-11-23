@@ -1,5 +1,6 @@
-"""cal_actuator.py — the Actuator Calibration menu: the whole calibration on
-the active puck or on every puck, and its numbered steps one at a time.
+"""cal_actuator.py — the Actuator Calibration menu: the default calibration
+(steps 1-5) or the Extended Calibration (steps 1-9) on the active puck or on
+every puck, and the numbered steps one at a time.
 
 A manufacturing batch shares one configuration CSV, loaded first (the
 config gate); the actuator calibration is what the CSV cannot carry,
@@ -56,39 +57,50 @@ class _StepReporter(GuiCalReporter):
 
 def _numbered_list(node, keys):
     """*keys* with the numbers the Steps menu gives them on *node* (its
-    firmware's steps, in run order)."""
+    firmware's steps, default and extended, in run order)."""
     return '\n'.join('{:2d}. {}'.format(n, title)
                      for n, key, title in actuator.numbered(
-                         actuator.supported(node))
+                         actuator.supported(node, extended=True))
                      if key in keys)
 
 
 class ActuatorCal:
     # -- the menu items ----------------------------------------------------
-    def calibrate_actuator(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
-        """Actuator Calibration > Active Puck: every step the active puck's
+    def calibrate_actuator(self, event, extended=False):  # wxGlade: puckutilityapp_frame.<event_handler>
+        """Actuator Calibration > Active Puck: every default step (with
+        *extended*, every Extended Calibration step) the active puck's
         firmware can run, each saved as it passes, then the summary."""
-        keys = self._actuator_ready()
+        keys = self._actuator_ready(extended=extended)
         if not keys:
             return False
         ok, session = self._run_actuator(keys, fresh=True)
-        self._actuator_done(session, keys)
+        self._actuator_done(session, keys, extended)
         return ok
 
-    def calibrate_actuator_all_pucks(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
-        """Actuator Calibration > All Pucks: every step on every puck, one
+    def calibrate_extended(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
+        """Actuator Calibration > Extended: Active Puck: steps 1-9."""
+        return self.calibrate_actuator(event, extended=True)
+
+    def calibrate_extended_all_pucks(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
+        """Actuator Calibration > Extended: All Pucks: steps 1-9."""
+        return self.calibrate_actuator_all_pucks(event, extended=True)
+
+    def calibrate_actuator_all_pucks(self, event, extended=False):  # wxGlade: puckutilityapp_frame.<event_handler>
+        """Actuator Calibration > All Pucks: every default step (with
+        *extended*, every Extended Calibration step) on every puck, one
         after another, each step saved to NV as it passes.  Each puck runs
         the steps its firmware can."""
-        if not self._actuator_ready(every_puck=True):
+        if not self._actuator_ready(every_puck=True, extended=extended):
             return False
         starting_id = self.getID()
         lines, all_ok, incomplete = [], True, []
         for node_id in list(self.network.scanner.nodes):
             self.choice_id.SetSelection(self.network.scanner.nodes.index(node_id))
             self.select_id(None)
-            print('--- Actuator calibration, node {} ---'.format(node_id))
-            ok, session = self._run_actuator(actuator.supported(self.node),
-                                             fresh=True)
+            print('--- {}, node {} ---'.format(actuator.plan_title(extended),
+                                                node_id))
+            ok, session = self._run_actuator(
+                actuator.supported(self.node, extended), fresh=True)
             if not ok:
                 incomplete.append(getattr(self, '_calIncomplete', None) or
                                   'puck {}: did not finish'.format(node_id))
@@ -99,7 +111,7 @@ class ActuatorCal:
             all_ok = all_ok and ok
             lines.append('Node {}: {}'.format(node_id, verdict))
             if session is not None:
-                print(actuator.summary_text(session))
+                print(actuator.summary_text(session, extended=extended))
         # Every puck's outcome, not just the last one's.
         self.requireCal = bool(incomplete)
         self._calIncomplete = '; '.join(incomplete) or None
@@ -108,7 +120,8 @@ class ActuatorCal:
             self.choice_id.SetSelection(
                 self.network.scanner.nodes.index(starting_id))
             self.select_id(None)
-        self._actuator_message('Actuator Calibration', '\n'.join(lines))
+        self._actuator_message(actuator.plan_title(extended),
+                               '\n'.join(lines))
         return all_ok
 
     def calibrate_step_encoder(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
@@ -177,26 +190,28 @@ class ActuatorCal:
         self._actuator_done(session, (key,))
         return ok
 
-    def _actuator_ready(self, keys=None, every_puck=False):
+    def _actuator_ready(self, keys=None, every_puck=False, extended=False):
         """The config gate (the batch CSV first), a puck, and the user's
-        go-ahead for *keys* (default: the steps the active puck's firmware
-        can run).  Returns the keys, or () when not going ahead."""
+        go-ahead for *keys* (default: the default calibration's steps, or
+        with *extended* the Extended Calibration's, that the active puck's
+        firmware can run).  Returns the keys, or () when not going ahead."""
         if not self._config_gate():
             return ()
         if self.check_for_node() == False:
             return ()
         if keys is None:
-            keys = actuator.supported(self.node)
+            keys = actuator.supported(self.node, extended)
         if not keys:
             return ()
+        title = actuator.plan_title(extended)
         msg = '{}:\n\n{}\n\n'.format(
-            'Actuator calibration of every puck on the bus' if every_puck
-            else 'Actuator calibration of puck {}'.format(self.getID()),
+            '{} of every puck on the bus'.format(title) if every_puck
+            else '{} of puck {}'.format(title, self.getID()),
             _numbered_list(self.node, keys))
         msg += ('The motor turns{}: the output must be free to turn.\n\n'
                 'Continue?'.format(', continuously for cogging'
                                    if 'cogging' in keys else ''))
-        return tuple(keys) if self._prompt('Actuator Calibration', msg) else ()
+        return tuple(keys) if self._prompt(title, msg) else ()
 
     def _actuator_session(self, reporter, fresh=False):
         """This puck's Session, reporting to *reporter*: cached per
@@ -282,18 +297,19 @@ class ActuatorCal:
         return ('Actuator calibration has not been run since the '
                 'configuration was loaded.')
 
-    def _actuator_done(self, session, keys):
+    def _actuator_done(self, session, keys, extended=False):
         """The summary.  Each step saved itself as it passed; if a Save.App + Save.Mfg
         failed, offer it again."""
         if session is None:
             return
         text = actuator.summary_text(session, keys)
         print(text)
+        title = actuator.plan_title(extended)
         if not session.unsaved:
-            self._actuator_message('Actuator Calibration', text +
+            self._actuator_message(title, text +
                                    '\n\nThe steps that passed are saved to NV.')
             return
-        if self._prompt('Actuator Calibration',
+        if self._prompt(title,
                         text + '\n\nThe last results did not reach NV: they '
                         'are in RAM only.\nTry Save.App + Save.Mfg again?'):
             self._actuator_save(session)

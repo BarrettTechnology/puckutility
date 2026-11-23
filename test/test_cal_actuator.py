@@ -163,7 +163,10 @@ class TestActuatorMenu(unittest.TestCase):
         go, = f.prompts
         for n, key in enumerate(plans.run_order(plans.ACTUATOR), 1):
             self.assertIn('{:2d}. {}'.format(n, plans.title(key)), go)
-        self.assertIn('continuously', go)
+        # The default is steps 1-5: no cogging, nothing extended.
+        self.assertNotIn('continuously', go)
+        for key in plans.EXTENDED:
+            self.assertNotIn(plans.title(key), go)
         self.assertIn('free to turn', go)
         s, = self.sessions
         self.assertEqual(s.runs, [plans.run_order(plans.ACTUATOR)])
@@ -177,6 +180,25 @@ class TestActuatorMenu(unittest.TestCase):
         self.assertIn('saved to NV', f.messages[-1])
         self.assertFalse(f.requireCal)
         self.assertTrue(f.enabled)
+
+    def test_the_extended_calibration_runs_all_nine(self):
+        f = AFrame()
+        self.assertTrue(f.calibrate_extended(None))
+        go, = f.prompts
+        self.assertIn('Extended Calibration of puck 5', go)
+        for n, key in enumerate(plans.run_order(plans.ACTUATOR_ALL), 1):
+            self.assertIn('{:2d}. {}'.format(n, plans.title(key)), go)
+        self.assertIn('continuously', go)
+        s, = self.sessions
+        self.assertEqual(s.runs, [plans.run_order(plans.ACTUATOR_ALL)])
+        self.assertFalse(f.requireCal)
+
+    def test_extended_all_pucks(self):
+        f = AFrame(nodes=(3, 4))
+        f._prompt = lambda t, m: f.prompts.append(m) or 'Save' not in t
+        self.assertTrue(f.calibrate_extended_all_pucks(None))
+        self.assertEqual([s.runs[0] for s in self.sessions],
+                         [plans.run_order(plans.ACTUATOR_ALL)] * 2)
 
     def test_a_save_all_that_failed_is_offered_again(self):
         f = AFrame()
@@ -205,7 +227,7 @@ class TestActuatorMenu(unittest.TestCase):
     def test_a_failure_shows_the_summary_and_keeps_requirecal(self):
         self.fail_keys = ('winding',)
         f = AFrame()
-        self.assertFalse(f.calibrate_actuator(None))
+        self.assertFalse(f.calibrate_extended(None))
         self.assertTrue(f.requireCal)
         s, = self.sessions
         self.assertEqual(s.results['runout']['status'], 'skipped')
@@ -293,7 +315,7 @@ class TestActuatorMenu(unittest.TestCase):
     def test_every_step_item_runs_its_key(self):
         f = AFrame()
         f._prompt = lambda t, m: 'Save' not in m      # go; don't save
-        for key in plans.ACTUATOR:
+        for key in plans.ACTUATOR_ALL:
             getattr(f, 'calibrate_step_' + key)(None)
             self.assertEqual(self.sessions[0].runs[-1][0], key)
 

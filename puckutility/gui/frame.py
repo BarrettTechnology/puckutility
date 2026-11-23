@@ -39,6 +39,11 @@ class puckutilityapp_frame(wx.Frame):
         self.Bind(wx.EVT_MENU, self.calibrate_actuator, item)
         item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "All Pucks", "")
         self.Bind(wx.EVT_MENU, self.calibrate_actuator_all_pucks, item)
+        wxglade_tmp_menu_sub.AppendSeparator()
+        item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "Extended: Active Puck", "")
+        self.Bind(wx.EVT_MENU, self.calibrate_extended, item)
+        item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "Extended: All Pucks", "")
+        self.Bind(wx.EVT_MENU, self.calibrate_extended_all_pucks, item)
         wxglade_tmp_menu.Append(wx.ID_ANY, "Actuator Calibration", wxglade_tmp_menu_sub, "")
         wxglade_tmp_menu_sub = wx.Menu()
         item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "1. Encoder filter + rest test", "")
@@ -49,10 +54,10 @@ class puckutilityapp_frame(wx.Frame):
         self.Bind(wx.EVT_MENU, self.calibrate_step_gain, item)
         item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "4. Current-sense slope", "")
         self.Bind(wx.EVT_MENU, self.calibrate_step_slope, item)
-        item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "5. Current-sense offset fold", "")
-        self.Bind(wx.EVT_MENU, self.calibrate_step_fold, item)
-        item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "6. Electrical zero + winding order", "")
+        item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "5. Electrical zero + winding order", "")
         self.Bind(wx.EVT_MENU, self.calibrate_step_winding, item)
+        item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "6. Current-sense offset fold", "")
+        self.Bind(wx.EVT_MENU, self.calibrate_step_fold, item)
         item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "7. Encoder runout table", "")
         self.Bind(wx.EVT_MENU, self.calibrate_step_runout, item)
         item = wxglade_tmp_menu_sub.Append(wx.ID_ANY, "8. Friction calibration", "")
@@ -285,6 +290,14 @@ class puckutilityapp_frame(wx.Frame):
 
     def calibrate_actuator_all_pucks(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
         print("Event handler 'calibrate_actuator_all_pucks' not implemented!")
+        event.Skip()
+
+    def calibrate_extended(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
+        print("Event handler 'calibrate_extended' not implemented!")
+        event.Skip()
+
+    def calibrate_extended_all_pucks(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>
+        print("Event handler 'calibrate_extended_all_pucks' not implemented!")
         event.Skip()
 
     def calibrate_step_encoder(self, event):  # wxGlade: puckutilityapp_frame.<event_handler>

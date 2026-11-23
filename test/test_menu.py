@@ -22,7 +22,7 @@ WXG = os.path.join(ROOT, 'configure-puckutilityapp.wxg')
 
 def expected_steps():
     return [('{}. {}'.format(n, plans.title(key)), 'calibrate_step_' + key)
-            for n, key in enumerate(plans.run_order(plans.ACTUATOR), 1)]
+            for n, key in enumerate(plans.run_order(plans.ACTUATOR_ALL), 1)]
 
 
 def frame_menu():
@@ -90,7 +90,10 @@ class TestCalibrationMenu(unittest.TestCase):
         cal = sub(menu, 'Actuator Calibration')
         self.assertEqual([tuple(x) for x in cal], [
             ('Active Puck\tCtrl+C', 'calibrate_actuator'),
-            ('All Pucks', 'calibrate_actuator_all_pucks')])
+            ('All Pucks', 'calibrate_actuator_all_pucks'),
+            ('---', None),
+            ('Extended: Active Puck', 'calibrate_extended'),
+            ('Extended: All Pucks', 'calibrate_extended_all_pucks')])
         steps = sub(menu, 'Actuator Calibration Steps')
         self.assertEqual([tuple(x) for x in steps], expected_steps())
         self.assertEqual(labels.index('Actuator Calibration Steps'),

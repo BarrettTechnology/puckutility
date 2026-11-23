@@ -62,6 +62,19 @@
                             <label>All Pucks</label>
                             <handler>calibrate_actuator_all_pucks</handler>
                         </item>
+                        <item>
+                            <label>---</label>
+                            <id>---</id>
+                            <name>---</name>
+                        </item>
+                        <item>
+                            <label>Extended: Active Puck</label>
+                            <handler>calibrate_extended</handler>
+                        </item>
+                        <item>
+                            <label>Extended: All Pucks</label>
+                            <handler>calibrate_extended_all_pucks</handler>
+                        </item>
                     </menu>
                     <menu label="Actuator Calibration Steps" name="">
                         <item>
@@ -81,12 +94,12 @@
                             <handler>calibrate_step_slope</handler>
                         </item>
                         <item>
-                            <label>5. Current-sense offset fold</label>
-                            <handler>calibrate_step_fold</handler>
+                            <label>5. Electrical zero + winding order</label>
+                            <handler>calibrate_step_winding</handler>
                         </item>
                         <item>
-                            <label>6. Electrical zero + winding order</label>
-                            <handler>calibrate_step_winding</handler>
+                            <label>6. Current-sense offset fold</label>
+                            <handler>calibrate_step_fold</handler>
                         </item>
                         <item>
                             <label>7. Encoder runout table</label>

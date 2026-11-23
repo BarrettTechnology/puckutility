@@ -1798,7 +1798,7 @@ class MyFrame(calibrate, factory, puckutilityapp_frame):
                   if not fw.has(feature)}
         _show_menu_items(top, top_items, [it for it in top_items
                                           if it.GetItemLabelText() not in hidden])
-        supported = actuator.supported(self.node)
+        supported = actuator.supported(self.node, extended=True)
         shown = [item for key, item in step_items if key in supported]
         _show_menu_items(steps, [item for _k, item in step_items], shown)
         titles = {key: title for _n, key, title in actuator.numbered(supported)}

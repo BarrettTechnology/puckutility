@@ -152,9 +152,20 @@ class TestCalibrate(CliTest):
             self.run_cli('calibrate', 'offsets')
             self.run_cli('calibrate', 'ab')
             self.run_cli('calibrate')
-        self.assertEqual(len(asked), 2)                 # bias alone: no question
+            self.run_cli('calibrate', '--extended')
+        self.assertEqual(len(asked), 3)                 # bias alone: no question
         self.assertNotIn('cogging', asked[0])
-        self.assertIn('continuously for cogging', asked[1])
+        self.assertNotIn('cogging', asked[1])           # the default: 1-5
+        self.assertIn('continuously for cogging', asked[2])
+
+    def test_extended(self):
+        fn = self.patch()
+        code, _out, _err = self.run_cli('-y', 'calibrate', '--extended')
+        self.assertEqual(code, 0)
+        self.assertTrue(fn.call_args.kwargs['extended'])
+        code, _out, _err = self.run_cli('-y', 'calibrate', '--extended',
+                                        'fold')
+        self.assertEqual(code, 1)
 
     def test_json_is_one_row_per_step(self):
         p = mock.patch.object(calibrate, 'calibrate_actuator', side_effect=lambda *a, **kw: (
