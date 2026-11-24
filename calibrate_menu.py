@@ -979,6 +979,83 @@ class calibrate():
             self._cal_fault(_exc)
             self.Enable()
 
+    def _ramp_ud_to_current(self, i_target_ma, i_peak_ma,
+                            id_offset_ma=0.0, ud_cap=32000, settle_s=0.05,
+                            upd=None, upd_lo=0, upd_hi=30, label="ramp"):
+        """Ramp Motor.ud (0..ud_cap) until the DRIVEN d-axis current reaches i_target_ma, then
+        HOLD there; returns the final ud. Caller must already be in MODE_PHASE_VOLTAGE_ANGLE with
+        uq=0 and Theta_e at the stall angle. Motor.id (raw/1000*i_peak, mA) is the current proxy;
+        id_offset_ma is subtracted so the ramp targets DRIVEN current (preserves enczero's zero-
+        current baseline). i_target_ma is expected already clamped to i_peak by the caller.
+
+        Replaces four copies of the old blind `max(100, 32000 // 12)` (~2666) step: on a LOW-
+        impedance motor (BO4523, i_peak=28 A) that fixed jump drove ~14x i_cal in ONE step and the
+        following multi-second measurement SUSTAINED it -> puck overcurrent-reset (SDO reads abort
+        0x06020000 as it drops off the bus). Higher-impedance motors happened to land near i_cal,
+        so the bug stayed latent. This seeds ud from winding R when available, grows geometrically
+        below the current-measurement floor, and backs ud DOWN if the hold overshoots."""
+        SEED_MIN, SEED_CAP, SEED_FRAC = 150, 4000, 0.35   # R-seed aims LOW, then refines up
+        GEO_CAP, STEP_MIN, STEP_MAX, NEWTON_DAMP, OVERSHOOT = 1500, 100, 2000, 4.0, 1.30
+        FLOOR = max(50.0, 0.15 * i_target_ma)             # below this, id is offset/noise not drive
+
+        # Never SUSTAIN above the motor's continuous rating (I_cont, 0x3011:8 mA; I_cont >= i_cal).
+        i_hold_ceiling = i_target_ma
+        try:
+            _icont = int.from_bytes(self.node.sdo.upload(0x3011, 8), 'little', signed=False)
+            if _icont > 0:
+                i_hold_ceiling = max(i_target_ma, _icont)
+        except Exception:
+            pass
+
+        def _driven():
+            return self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak_ma - id_offset_ma
+        def _report(frac):
+            if upd is not None:
+                upd(int(upd_lo + (upd_hi - upd_lo) * max(0.0, min(1.0, frac))))
+
+        # (1) seed ud from winding R (Calibration.rt 0.01 ohm, Amplifier.BusVoltage 0.1 V) when
+        # present; aim LOW (0.35*target) because current-vs-ud is non-ohmic, then refine by
+        # measurement. Missing/zero/aborted R -> small blind seed + geometric ramp still fixes it.
+        motor_ud = SEED_MIN
+        try:
+            _rt_ohm = self.node.sdo['Calibration']['rt'].raw * 0.01
+            _busv   = self.node.sdo['Amplifier']['BusVoltage'].raw * 0.1
+            if _rt_ohm > 0 and _busv > 0:
+                _v = (SEED_FRAC * i_target_ma / 1000.0) * _rt_ohm
+                motor_ud = max(SEED_MIN, min(SEED_CAP, ud_cap, int(_v / _busv * 32767)))
+                print("  [{}] R-seed ud={} (R={:.3f} ohm, Vbus={:.1f} V, aim {:.0f} mA)".format(
+                    label, motor_ud, _rt_ohm, _busv, SEED_FRAC * i_target_ma))
+        except Exception:
+            pass
+        self.node.sdo['Motor']['ud'].raw = motor_ud
+        time.sleep(max(settle_s, 0.08)); wx.Yield()
+
+        # (2) ramp until driven current reaches target
+        while _driven() < i_target_ma and motor_ud < ud_cap:
+            _idn = _driven()
+            print("  [{}] id(driven)={:.0f} mA  ud={}".format(label, _idn, motor_ud))
+            _report(_idn / i_target_ma if i_target_ma else 1.0)
+            if motor_ud > 0 and _idn > FLOOR:
+                _step = max(STEP_MIN, min(STEP_MAX,
+                            int((motor_ud * i_target_ma / _idn - motor_ud) / NEWTON_DAMP)))
+            else:
+                _step = max(STEP_MIN, min(GEO_CAP, motor_ud))   # geometric (~double), capped
+            motor_ud = min(motor_ud + _step, ud_cap)
+            self.node.sdo['Motor']['ud'].raw = motor_ud
+            time.sleep(settle_s); wx.Yield()
+
+        # (3) back ud DOWN if the hold overshot (never sustain a big overcurrent through the meas.)
+        _held  = _driven()
+        _limit = min(OVERSHOOT * i_target_ma, i_hold_ceiling)
+        if _held > _limit and _held > 0:
+            motor_ud = max(1, int(motor_ud * i_target_ma / _held))
+            self.node.sdo['Motor']['ud'].raw = motor_ud
+            time.sleep(0.1)
+            print("  [{}] backed ud -> {} to hold near target ({:.0f} mA; ramp reached {:.0f} mA)".format(
+                label, motor_ud, i_target_ma, _held))
+        _report(1.0)
+        return motor_ud
+
     def calibrate_igainfactor(self, event, calAll=False, _upd=None):  # wxGlade: wxp3_frame.<event_handler>
         # print("Event handler 'calibrate_igainfactor'")
         if calAll==False:
@@ -1046,33 +1123,11 @@ class calibrate():
 
             _sleep_responsive(1) # Wait at least 75 ms for the filters to settle
 
-            # Increase Motor d-axis voltage (/1000 of i_peak)
-            # until measured d-axis current > calibration_current mA or ud > 32000
-            motor_ud = 0
-            motor_id = self.node.sdo['Motor']['id'].raw
-            while (motor_id < 1000 and self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak) < calibration_current and motor_ud < 32000:
-                print("alpha = {0}, beta = {1}, id = {2}, iq = {3}, ud = {4}".format(
-                    self.node.sdo['Alpha']['Raw'].raw,
-                    self.node.sdo['Beta']['Raw'].raw,
-                    round(self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak, 2),
-                    self.node.sdo['CurrentFeedback'].raw / 1000.0 * i_peak,
-                    self.node.sdo['Motor']['ud'].raw))
-                _id_now = self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak
-                _upd(3 + int(min(1.0, max(0.0, _id_now / calibration_current)) * 27))  # 3→30%
-                if motor_ud > 0 and _id_now > 0:
-                    # Cap the per-step increase. A falsely-low current reading used to
-                    # make this Newton step slam ud to the 32000 ceiling in ONE jump,
-                    # which (a) drives a small motor into overcurrent and (b) pushes the
-                    # PWM to near-full duty, where the bottom-shunt iSense can't sample.
-                    # Gentle ramp also yields a usable id-vs-ud curve for diagnosis.
-                    _ramp_step = max(100, min(2000,
-                        int((motor_ud * calibration_current / _id_now - motor_ud) / 4)))
-                else:
-                    _ramp_step = max(100, 32000 // 12)
-                motor_ud = min(motor_ud + _ramp_step, 32000)
-                self.node.sdo['Motor']['ud'].raw = motor_ud
-                time.sleep(0.05)
-                wx.Yield() # keep wx event loop alive so Windows doesn't mark the app "Not Responding"
+            # Establish drive: ramp ud to ~i_cal at the stall angle via the shared helper
+            # (R-seeded, bounded blind step, and backed off if it overshoots so the rotating fit
+            # below never SUSTAINS a large overcurrent). Supersedes the old blind 32000//12 step.
+            motor_ud = self._ramp_ud_to_current(
+                calibration_current, i_peak, upd=_upd, upd_lo=3, upd_hi=30, label="igain")
 
             # --- Rotating-vector fundamental fit (drift-immune gain measurement) ---
             # The old 2-angle method stalled at Theta_e=+pi (alpha) and -pi/2 (beta); if the
@@ -1096,14 +1151,47 @@ class calibrate():
             _M   = _ROT_STEPS * _ROT_REVS
             _Ac = _As = _Bc = _Bs = 0.0
             _ids = []
+            # FIRMWARE-AGNOSTIC channel read: v3+ builds expose Alpha/Beta 'Filtered' (lower noise);
+            # pre-v3 builds SDO-ABORT it (0x06020000) in VOLTAGE mode -> fall back to 'Raw'. The
+            # whole-rev fundamental fit averages out the extra per-sample noise either way, and the
+            # DC bias cancels over a whole rev, so the |A|/|B| gainfactor is identical. (Same pre-v3
+            # abort class as the 0x3008:8 probe elsewhere in this file.)
+            def _rd_chan(_chan):
+                try:
+                    return float(self.node.sdo[_chan]['Filtered'].raw)
+                except SdoAbortedError as _e:
+                    if getattr(_e, 'code', None) == 0x06020000:
+                        return float(self.node.sdo[_chan]['Raw'].raw)
+                    raise
+            # CONSTANT-CURRENT rotating fit: hold the current magnitude at i_cal at EVERY angle by
+            # trimming ud per step, instead of holding a FIXED ud and letting the current wander with
+            # rotor-angle impedance. Fixed-ud made the current swing ~0.96->1.7 A over one rev on the
+            # BO4523 (a non-circular vector -> skewed |A|/|B| -> a FALSE gain mismatch, and it drifted
+            # toward the bench PSU limit). Constant current gives a clean circular vector for the
+            # fundamental fit AND stays bounded. Hard ceiling 1.25*i_cal keeps it under a PSU limit set
+            # near i_cal (e.g. i_cal=1.5 A -> ceiling 1.875 A, under a 2 A supply).
+            _ud_fit = motor_ud
+            _I_CEIL = int(1.25 * calibration_current)
             for _k in range(_M):
                 _au  = (_k * 65536 // _ROT_STEPS) & 0xFFFF
                 _ang = _au if _au < 32768 else _au - 65536
                 self.node.sdo['Theta_e'].raw = _ang
                 time.sleep(0.12)
+                # trim ud to hold |current| ~ i_cal at this angle (bounded; never exceed the ceiling)
+                for _reg in range(5):
+                    _i_now = self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak
+                    if _i_now > _I_CEIL:
+                        _ud_fit = max(1, int(_ud_fit * 0.85))
+                    else:
+                        _err = (calibration_current - _i_now) / max(1.0, float(calibration_current))
+                        if abs(_err) < 0.08:
+                            break
+                        _ud_fit = max(1, min(32000, int(_ud_fit * (1.0 + 0.4 * _err))))
+                    self.node.sdo['Motor']['ud'].raw = _ud_fit
+                    time.sleep(0.03)
                 _th = 2.0 * math.pi * _k / _ROT_STEPS
-                _a  = float(self.node.sdo['Alpha']['Filtered'].raw)
-                _b  = float(self.node.sdo['Beta']['Filtered'].raw)
+                _a  = _rd_chan('Alpha')
+                _b  = _rd_chan('Beta')
                 _Ac += _a * math.cos(_th);  _As += _a * math.sin(_th)
                 _Bc += _b * math.cos(_th);  _Bs += _b * math.sin(_th)
                 _ids.append(self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak)
@@ -3277,21 +3365,18 @@ class calibrate():
 
           # Ramp d-axis voltage until measured id >= calibration_current (same machinery as
           # calibrate_igainfactor / calibrate_current_slope).
-          motor_ud = 0
-          motor_id = self.node.sdo['Motor']['id'].raw
-          while (motor_id < 1000 and self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak) < calibration_current and motor_ud < 32000:
-            print("id = {0}, ud = {1}".format(
-              self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak,
-              self.node.sdo['Motor']['ud'].raw))
-            _id_now = self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak
-            _upd(int(min(1.0, max(0.0, _id_now / calibration_current)) * 30))   # 0->30%
-            if motor_ud > 0 and _id_now > 0:
-                _ramp_step = max(100, int((motor_ud * calibration_current / _id_now - motor_ud) / 4))
-            else:
-                _ramp_step = max(100, 32000 // 12)
-            motor_ud = min(motor_ud + _ramp_step, 32000)
-            self.node.sdo['Motor']['ud'].raw = motor_ud
-            time.sleep(0.05); wx.Yield()
+          # The measured id at ud=0 is the current-sense OFFSET/noise, not drive current. Baseline-
+          # subtract it so the ramp targets DRIVEN current (a motor whose i_cal is small relative to
+          # the offset -- e.g. P4-42: i_cal=1000 mA, offset ~2263 mA at ud=0 -- would otherwise fail
+          # the entry gate, never ramp, and "0 travel" enczero-fail). Baseline-subtraction is motor-
+          # agnostic and leaves a clean-offset motor (baseline~=0) unchanged.
+          _id_base = self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak
+          print("  [enczero] id offset baseline at ud=0: {:.0f} mA (i_cal target {} mA)".format(
+              _id_base, calibration_current))
+          # Ramp to ~i_cal on DRIVEN (baseline-subtracted) current via the shared helper.
+          motor_ud = self._ramp_ud_to_current(
+              calibration_current, i_peak, id_offset_ma=_id_base,
+              upd=_upd, upd_lo=0, upd_hi=30, label="enczero")
 
           # ---- spin-through helper: sweep Theta_e lo->hi, interpolate RawPosition at Theta_e=0 ----
           # Quick mode uses a coarser spin (48 steps, shorter dwell) to save the fine sweep's time;
@@ -4156,18 +4241,9 @@ class calibrate():
             time.sleep(0.3)
             wx.Yield()
 
-            motor_ud = 0
-            while (self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak) < cal_current \
-                  and motor_ud < 32000:
-                _id_now = self.node.sdo['Motor']['id'].raw / 1000.0 * i_peak
-                if motor_ud > 0 and _id_now > 0:
-                    _step = max(100, int((motor_ud * cal_current / _id_now - motor_ud) / 4))
-                else:
-                    _step = max(100, 32000 // 12)
-                motor_ud = min(motor_ud + _step, 32000)
-                self.node.sdo['Motor']['ud'].raw = motor_ud
-                time.sleep(0.05)
-                wx.Yield()
+            # Ramp ud to ~cal_current at the stall angle via the shared helper (bounded blind step
+            # + R-seed + back-off; supersedes the old blind 32000//12 that slammed low-Z motors).
+            motor_ud = self._ramp_ud_to_current(cal_current, i_peak, label="enc-table")
             _sleep_responsive(0.3)
 
             # Report the drive the sweep actually runs at + how it got there. Too little holding current
