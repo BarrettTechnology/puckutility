@@ -4,8 +4,10 @@
 #            (this repo's unit tests). Make it required for merging
 #            (Settings > Merge requests > Pipelines must succeed).
 #   release  tag push (release-vX.Y.Z, optionally -suffix) only, after test:
-#            scripts/check-release-tag.sh, then the .run installer and the debs,
-#            kept forever.
+#            scripts/check-release-tag.sh, then the .run installer, the debs
+#            and the wheels (the app and p4core: the submodules are on no
+#            index, so `pip install build/wheel/*.whl`, plus wxPython for the
+#            GUI), kept forever.
 #   release-win  tag push only, after test, on the `xtest` runner (it has
 #            wine 9.0): the tag check, then scripts/build-win32-wine.sh builds
 #            PuckUtilityApp-win-vX.Y.Z-setup.exe under wine, kept forever. The
@@ -104,11 +106,13 @@ release:
     - bash scripts/check-release-tag.sh "$CI_COMMIT_TAG"
     - uv pip install -q --python /opt/puckbuild -r requirements.txt
     - VENV_ROOT=/opt/puckbuild bash scripts/build-linux-installer.sh --installer
+    - 'for src in . p4core; do uv build -q --wheel --python /opt/puckbuild/bin/python --out-dir build/wheel "$src"; done'
   artifacts:
     name: "puckutility-linux-${CI_COMMIT_TAG}"
     paths:
       - build/*-installer.run
       - build/deb/*.deb
+      - build/wheel/*.whl
     expire_in: never
 
 release-win:

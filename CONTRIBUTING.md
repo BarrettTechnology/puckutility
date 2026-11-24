@@ -160,8 +160,9 @@ Run it before every release, and whenever you change `requirements.txt`,
    ```
 6. The tag pipeline runs `make test`, then the `release` job checks that the
    tag matches `__version__` (a suffix such as `release-vX.Y.Z-linux` is
-   allowed) and that the title has no `DEV`, builds the `.run` installer and
-   the debs, and keeps them (Build > Pipelines > the tag's
+   allowed) and that the title has no `DEV`, builds the `.run` installer,
+   the debs and the wheels (puckutility and p4core, in `build/wheel/`), and
+   keeps them (Build > Pipelines > the tag's
    pipeline > `release` > Download artifacts).
 
 The Windows installer is built on Windows (see the README, *Building a
