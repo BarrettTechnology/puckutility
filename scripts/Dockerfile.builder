@@ -36,7 +36,7 @@ RUN apt-get update -qq && \
         libxxf86vm1 libxtst6 libsm6 libxkbcommon0 \
         libjpeg8 libtiff5 libpng16-16 libpcre2-32-0 libexpat1 libcurl4 \
         libusb-1.0-0 \
-        make git xvfb xauth && \
+        make git xvfb xauth bc && \
     rm -rf /var/lib/apt/lists/* && \
     GDK_QUERY=$(find /usr/lib -name 'gdk-pixbuf-query-loaders' 2>/dev/null | head -1) && \
     if [ -n "$GDK_QUERY" ] && [ ! -f /usr/bin/gdk-pixbuf-query-loaders ]; then \

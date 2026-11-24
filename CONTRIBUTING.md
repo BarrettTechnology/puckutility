@@ -169,7 +169,7 @@ release*).
 
 ## The build image
 
-The CI jobs (p4core's `test` too) and
+The CI jobs (p4core's and p4gui's `test` too, all on the `puck` runner) and
 `scripts/build-linux-installer.sh` run in
 `burt/puck-deb-u20` (`scripts/Dockerfile.builder`, identical in pucktuner):
 Ubuntu 20.04 for the oldest glibc/GTK, CPython 3.12, the prebuilt wxPython
@@ -177,10 +177,14 @@ wheel and `requirements.txt`. The script only builds on Ubuntu 20.04: anywhere e
 this image, with or without `--docker`, building the image when it is missing, and it
 fails when Docker is not available. Rebuild it
 after a Python, wxPython or `Dockerfile.builder` change — on your machine with
-`--rebuild-docker`, and on the GitLab runner with:
+`--rebuild-docker`, and on the GitLab `puck` runner (ewok, rootless podman,
+as the runner user) with:
 ```
-docker build --no-cache -t burt/puck-deb-u20 -f scripts/Dockerfile.builder .
+podman build --no-cache -t docker.io/burt/puck-deb-u20:latest -f scripts/Dockerfile.builder .
 ```
+The `docker.io/` is needed: the runner reaches podman through its Docker API,
+which looks the job's `burt/puck-deb-u20` up as `docker.io/burt/puck-deb-u20`.
+The runner's setup is at the top of `.gitlab-ci.yml`.
 A `requirements.txt` change does not need a rebuild: each build syncs it first.
-An image built before `make`, `git`, `xvfb` and `xauth` were added to it still
+An image built before `make`, `git`, `xvfb`, `xauth` and `bc` were added to it still
 works: the `test` jobs apt-install them each run, and say so in the log.
