@@ -27,16 +27,23 @@ if [ "$(id -u)" -eq 0 ]; then
     apt-get update -qq
     apt-get install -y -qq curl ca-certificates xvfb >/dev/null
     # The GUI's runtime libraries, as scripts/setup-venv.sh installs them
-    # (24.04+ renamed some to <name>t64).
+    # (24.04+ renamed some to <name>t64). The policy is captured, not piped:
+    # under pipefail `apt-cache policy | grep -q` is SIGPIPE (141) whenever
+    # grep quits before apt-cache has written its version table, and then no
+    # library at all was picked.
     LIBS=()
     for p in libgtk-3-0 libsdl2-2.0-0 libnotify4 libsm6 libxxf86vm1 \
              libpcre2-32-0 libsecret-1-0 libjpeg-turbo8 libtiff5 libtiff6; do
         for c in "$p" "${p}t64"; do
-            if apt-cache policy "$c" 2>/dev/null | grep -q 'Candidate: [^(]'; then
+            pol=$(apt-cache policy "$c" 2>/dev/null || true)
+            if grep -q 'Candidate: [^(]' <<<"$pol"; then
                 LIBS+=("$c"); break
             fi
         done
     done
+    [[ " ${LIBS[*]} " == *" libgtk-3-0"* ]] \
+        || fail "no libgtk-3-0 package found (picked: ${LIBS[*]:-none})"
+    echo "  apt: ${LIBS[*]}"
     apt-get install -y -qq "${LIBS[@]}" >/dev/null
 fi
 if ! command -v uv >/dev/null 2>&1; then
